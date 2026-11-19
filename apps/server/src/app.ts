@@ -1,0 +1,53 @@
+import Fastify from "fastify";
+import type Database from "better-sqlite3";
+import { gatewayConfigSchema, type GatewayConfig } from "@codexdeck/shared";
+import type { CodexDeckDatabase } from "./db/index.js";
+import { registerAuthRoutes } from "./routes/auth.js";
+import { registerProviderRoutes } from "./routes/providers.js";
+import { registerGatewayRoutes } from "./gateway/server.js";
+import { SecretMasker } from "./security/secret-masker.js";
+import { registerStoredCredentials } from "./gateway/credentials.js";
+import { mountPhase2, type Phase2Options } from "./phase2.js";
+import { mountWeb } from "./web-static.js";
+import { repositoryRoot } from "./security/paths.js";
+import path from "node:path";
+
+export interface ServerContext {
+  native: Database.Database;
+  orm: CodexDeckDatabase;
+  masterKey: Buffer;
+  masker: SecretMasker;
+  gatewayConfig: GatewayConfig;
+}
+
+export function createServer(context: ServerContext, options?: Phase2Options & {webRoot?:string}) {
+  const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024, trustProxy: false });
+  const systemPorts = new Set([22, 80, 443]);
+  if (systemPorts.has(context.gatewayConfig.port)) throw new Error("CodexDeck cannot listen on a protected system port.");
+
+  const health = async () => ({ status: "ok", version: process.env.CODEXDECK_VERSION ?? "0.1.0", uptime: Math.floor(process.uptime()) });
+  app.get("/health", health);
+  app.get("/api/health", health);
+  registerStoredCredentials(context);
+  app.addHook("preSerialization", async (request, _reply, payload) =>
+    request.url.startsWith("/api/") ? context.masker.maskObject(payload) : payload);
+  registerAuthRoutes(app, context);
+  registerProviderRoutes(app, context);
+  registerGatewayRoutes(app, context);
+  if (options) mountPhase2(app, context, options);
+  if (options?.webRoot) mountWeb(app,options.webRoot,options.workspaceRoot);
+  else if (process.env.NODE_ENV === "production") mountWeb(app,path.join(repositoryRoot,"apps/web/dist"));
+  app.setErrorHandler((error, _request, reply) => {
+    const status = (error as { statusCode?: number }).statusCode;
+    const code = status && status >= 400 && status < 500 ? status : 500;
+    if (!reply.sent) void reply.code(code).send({ error: code < 500 ? "Invalid request." : "Internal server error." });
+  });
+  return app;
+}
+
+export function parseGatewayConfig(input: Partial<GatewayConfig> = {}): GatewayConfig {
+  const port = input.port ?? Number(process.env.CODEXDECK_PORT ?? 3210);
+  const config = gatewayConfigSchema.parse({ host: process.env.CODEXDECK_HOST, ...input, port });
+  if ([22, 80, 443].includes(config.port)) throw new Error("CodexDeck cannot listen on a protected system port.");
+  return config;
+}

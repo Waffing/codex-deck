@@ -1,0 +1,98 @@
+import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
+import { cpus, freemem, loadavg, totalmem } from "node:os";
+import type { FastifyInstance } from "fastify";
+import type { WebSocket } from "ws";
+import { subscriptionSchema, type ThreadEvent } from "@codexdeck/shared";
+import { authenticated, createRequireAdmin } from "../auth.js";
+import type { ServerContext } from "../app.js";
+
+export class ThreadEvents {
+  private readonly changes = new EventEmitter();
+  constructor(private readonly ctx: ServerContext) { this.changes.setMaxListeners(0); }
+
+  append(threadId: string, type: string, payload: unknown, taskId?: string | null): ThreadEvent {
+    const db = this.ctx.native;
+    const active = taskId === undefined ? db.prepare("SELECT id FROM tasks WHERE thread_id=? AND status='running'").pluck().get(threadId) as string | undefined : taskId;
+    const event = db.transaction(() => {
+      const seq = db.prepare("SELECT coalesce(max(sequence),0)+1 FROM thread_events WHERE thread_id=?").pluck().get(threadId) as number;
+      const value: ThreadEvent = { thread_id: threadId, task_id: active ?? null, seq_id: seq, type: this.ctx.masker.maskString(type),
+        payload: this.ctx.masker.maskObject(payload ?? null), created_at: new Date().toISOString() };
+      db.prepare("INSERT INTO thread_events(id,thread_id,sequence,type,payload_json,task_id,created_at) VALUES(?,?,?,?,?,?,?)")
+        .run(randomUUID(), threadId, seq, value.type, JSON.stringify(value.payload), value.task_id, value.created_at);
+      return value;
+    }).immediate();
+    this.changes.emit("event", event);
+    return event;
+  }
+
+  subscribe(listener: (e: ThreadEvent) => void) {
+    this.changes.on("event", listener);
+    return () => { this.changes.off("event", listener); };
+  }
+
+  // Synchronous SQLite replay and listener registration form a single event-loop operation.
+  follow(thread: string, after: number, send: (event: ThreadEvent) => void, task?: string) {
+    const query = this.ctx.native.prepare(`SELECT thread_id, task_id, sequence AS seq_id, type, payload_json, created_at
+      FROM thread_events WHERE thread_id=? AND sequence>? AND (? IS NULL OR task_id=?) ORDER BY sequence`);
+    for (const row of query.iterate(thread, after, task ?? null, task ?? null) as Iterable<Omit<ThreadEvent, "payload"> & {payload_json:string}>) {
+      const { payload_json, ...base } = row;
+      send({ ...base, payload: JSON.parse(payload_json) });
+    }
+    return this.subscribe(e => { if (e.thread_id === thread && (!task || e.task_id === task)) send(e); });
+  }
+}
+
+export function registerEventRoutes(app: FastifyInstance, ctx: ServerContext, events: ThreadEvents, runningServices = () => 0) {
+  const ticks=()=>cpus().reduce((sum,cpu)=>({
+    idle:sum.idle+cpu.times.idle,total:sum.total+Object.values(cpu.times).reduce((a,b)=>a+b,0),
+  }),{idle:0,total:0});
+  let previous=ticks(), sampledAt=Date.now(), cpuPercent:number|null=null;
+  function heartbeat() {
+    if(Date.now()-sampledAt>=250) {
+      const current=ticks(), elapsed=current.total-previous.total;
+      if(elapsed>0) cpuPercent=Math.round(100*(1-(current.idle-previous.idle)/elapsed));
+      previous=current; sampledAt=Date.now();
+    }
+    const routable=ctx.native.prepare("SELECT 1 FROM models m JOIN providers p ON p.id=m.provider_id WHERE m.enabled AND p.enabled LIMIT 1").get();
+    return { type:"heartbeat",timestamp:new Date().toISOString(),load:loadavg(),free_memory_bytes:freemem(),total_memory_bytes:totalmem(),
+      cpu_percent:cpuPercent,running_services:runningServices(),gateway_healthy:!!routable };
+  }
+  app.get("/ws/events", {
+    websocket: true, preValidation: async (req, reply) => {
+      const origin = req.headers.origin;
+      if (origin && URL.parse(origin)?.host !== req.headers.host) return reply.code(403).send();
+      return createRequireAdmin(ctx)(req, reply);
+    },
+  }, (socket: WebSocket, req) => {
+    let unsubscribe: (() => void) | undefined;
+    const send = (frame: unknown) => {
+      if (socket.readyState !== 1) return;
+      if (!authenticated(ctx, req)) { socket.close(1008, "Session expired"); return; }
+      if (socket.bufferedAmount > 2 * 1024 * 1024) { socket.close(1013, "Reconnect with last_seq_id"); return; }
+      socket.send(JSON.stringify(frame));
+    };
+    const counts = () => send({ type: "approvals_count", count: ctx.native.prepare("SELECT count(*) FROM approvals WHERE status='pending'").pluck().get() });
+    const subscribe = (input: unknown) => {
+      const parsed = subscriptionSchema.safeParse(input);
+      if (!parsed.success) { socket.close(1008, "Invalid subscription"); return; }
+      unsubscribe?.();
+      unsubscribe = undefined;
+      if (parsed.data.thread_id) unsubscribe = events.follow(parsed.data.thread_id, parsed.data.last_seq_id, event => send({ type: "event", event }));
+    };
+    const query = req.query as { thread_id?: string; last_seq_id?: string };
+    subscribe({ type: "subscribe", thread_id: query.thread_id, last_seq_id: Number(query.last_seq_id ?? 0) });
+    counts();
+    send(heartbeat());
+    const offCounts = events.subscribe(e => {
+      if (e.type.startsWith("approval")) counts();
+      if (/^(approval|task_|model_changed)/.test(e.type)) send({type:"thread_changed",thread_id:e.thread_id});
+    });
+    socket.on("message", data => { try { subscribe(JSON.parse(data.toString())); } catch { socket.close(1008, "Invalid frame"); } });
+    const timer = setInterval(() => {
+      send(heartbeat());
+    }, 10000);
+    timer.unref();
+    socket.once("close", () => { clearInterval(timer); unsubscribe?.(); offCounts(); });
+  });
+}

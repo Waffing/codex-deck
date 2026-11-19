@@ -1,0 +1,93 @@
+import type { AddressInfo } from "node:net";
+import path from "node:path";
+import type { FastifyInstance } from "fastify";
+import { serverProfileSchema, deploymentActionSchema, opsTools, type OpsTool, type ServerProfile } from "@codexdeck/shared";
+import type { ServerContext } from "../app.js";
+import { createRequireAdmin } from "../auth.js";
+import type { WorkspaceFiles } from "../files/workspace-files.js";
+import { repositoryRoot, workspaceDirectory } from "../security/paths.js";
+import { verifySignedPayload } from "../security/crypto.js";
+import { PortPool, fail, probeServer } from "./probe.js";
+import { Deployer,type OpsOptions } from "./deployer.js";
+import { registerPreview } from "./preview-proxy.js";
+
+interface Events {append(thread:string,type:string,payload:unknown):unknown}
+interface Approver {requestOpsApproval(thread:string,tool:string,payload:Record<string,unknown>):Promise<unknown>}
+
+export function registerOps(app:FastifyInstance,ctx:ServerContext,files:WorkspaceFiles,events:Events,manager:Approver,options:OpsOptions) {
+  let profile:ServerProfile;
+  let refresh:Promise<ServerProfile>|undefined;
+  const pool=new PortPool(options.portPool ?? [10000,19999],()=> (app.server.address() as AddressInfo|null)?.port ?? ctx.gatewayConfig.port);
+  const root=options.workspaceRoot ?? repositoryRoot;
+  const dataRoot=path.isAbsolute(options.dataDirectory) ? path.dirname(options.dataDirectory) : root;
+  const deployer=new Deployer(ctx,files,pool,options,root);
+  const admin={preHandler:createRequireAdmin(ctx)};
+  function probe() {
+    refresh ??= workspaceDirectory(dataRoot,options.dataDirectory).then(dir=>probeServer(dir,dataRoot,pool))
+      .then(result=>(profile=serverProfileSchema.parse(result))).finally(()=>{refresh=undefined;});
+    return refresh;
+  }
+  function getProfile() {
+    if(!profile) throw fail(503,"Server profile is not ready.");
+    return profile;
+  }
+  app.addHook("onReady",async()=>{await probe();});
+  app.addHook("onClose",async()=>deployer.close());
+  app.get("/api/server/profile",admin,async()=>getProfile());
+  app.post("/api/server/probe",admin,probe);
+  app.get("/api/deployments",admin,async()=>deployer.rows().map(row=>deployer.dto(row)));
+  app.post<{Params:{id:string}}>("/api/deployments/:id/action",admin,async(req,reply)=>{
+    const result=deploymentActionSchema.safeParse(req.body);
+    if(!result.success) return reply.code(400).send({error:"Invalid deployment action."});
+    const {action,...verify}=result.data;
+    const id=req.params.id;
+    switch(action) {
+      case "restart":return deployer.restart(id);
+      case "logs":return {logs:await deployer.logs(id)};
+      case "rollback":return deployer.rollback(id);
+      case "stop":return deployer.stop(id);
+      case "verify":return deployer.verify({deployment_id:id,...verify});
+      case "promote":return deployer.promote({deployment_id:id,...verify});
+    }
+  });
+  app.post<{Params:{tool:string}}>("/internal/ops/:tool",async(req,reply)=>{
+    const remote=req.raw.socket.remoteAddress ?? "";
+    const bearer=/^Bearer (\S+)$/i.exec(req.headers.authorization ?? "")?.[1];
+    const claims=bearer && verifySignedPayload(bearer,ctx.masterKey);
+    const now=Math.floor(Date.now()/1000);
+    if(!["::1","127.0.0.1","::ffff:127.0.0.1"].includes(remote) || !claims || claims.aud!=="codexdeck-ops" ||
+      typeof claims.thread_id!=="string" || typeof claims.exp!=="number" || claims.exp<=now || typeof claims.iat!=="number" ||
+      claims.iat>now+30 || claims.exp-claims.iat>86400) return reply.code(401).send({error:"Invalid local ops token."});
+    const thread=claims.thread_id;
+    const row=ctx.native.prepare("SELECT workspace_id FROM threads WHERE id=?").get(thread) as {workspace_id:string}|undefined;
+    if(!row?.workspace_id) return reply.code(403).send({error:"Ops token has no active workspace."});
+    const workspace=row.workspace_id;
+    if(!Object.hasOwn(opsTools,req.params.tool)) return reply.code(404).send({error:"Unknown operation."});
+    const tool=req.params.tool as OpsTool;
+    const parsed=opsTools[tool].safeParse(req.body ?? {});
+    if(!parsed.success) return reply.code(400).send({error:"Invalid tool arguments."});
+    const args=parsed.data as Record<string,unknown>;
+    if(typeof args.deployment_id==="string") deployer.get(args.deployment_id,workspace);
+    events.append(thread,"ops_requested",{tool,arguments:args});
+    try {
+      if(["app_promote_live","app_rollback","app_deploy_staging","port_allocate"].includes(tool)) {
+        const decision=await manager.requestOpsApproval(thread,tool,args);
+        if(decision!==true) throw fail(403,"Operation was denied.");
+      }
+      let result:unknown;
+      switch(tool) {
+        case "server_inspect":result=getProfile();break;
+        case "port_allocate":result={port:await pool.allocate(workspace),ttl_seconds:60};break;
+        case "app_deploy_staging":result=await deployer.stage(workspace,thread,opsTools.app_deploy_staging.parse(args),getProfile());break;
+        case "app_logs":result={logs:await deployer.logs(String(args.deployment_id),workspace)};break;
+        case "verify_url":result=await deployer.verify(opsTools.verify_url.parse(args),workspace,thread);break;
+        case "app_promote_live":result=await deployer.promote(opsTools.app_promote_live.parse(args),workspace,thread);break;
+        case "app_rollback":result=deployer.rollback(String(args.deployment_id),workspace);break;
+      }
+      events.append(thread,"ops_completed",{tool});return result;
+    } catch(error) {events.append(thread,"ops_failed",{tool});throw error;}
+  });
+  registerPreview(app,ctx,deployer);
+  return {getProfile,probe,pool,deployer};
+}
+export type OpsService = ReturnType<typeof registerOps>;

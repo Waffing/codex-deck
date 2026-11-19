@@ -1,0 +1,5 @@
+# Keep this allowlist limited to one fixed Caddy configuration and reload action.
+# Validate the actual binary paths with: command -v caddy; command -v systemctl
+codexdeck ALL=(root) NOPASSWD: /usr/bin/caddy validate --config /etc/caddy/Caddyfile
+codexdeck ALL=(root) NOPASSWD: /usr/bin/systemctl reload caddy
+

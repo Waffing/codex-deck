@@ -1,0 +1,4 @@
+{$CODEXDECK_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy codexdeck:3000
+}

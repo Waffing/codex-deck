@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
+      - run: pnpm test
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+      - name: Check shell scripts
+        run: shellcheck deploy/install.sh deploy/entrypoint.sh
+      - name: Validate Compose configuration
+        run: |
+          docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet
+          docker compose --profile https --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet
+      - uses: docker/setup-buildx-action@v3
+      - name: Build production image
+        run: docker buildx build --load --file deploy/Dockerfile --tag codexdeck:ci .

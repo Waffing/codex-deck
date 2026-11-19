@@ -1,0 +1,132 @@
+import type Database from "better-sqlite3";
+
+export const migrations = [
+  {
+    version: 1,
+    sql: `
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS providers (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, preset TEXT NOT NULL, base_url TEXT NOT NULL,
+        api_key_ciphertext TEXT, api_key_masked TEXT, headers_json TEXT NOT NULL, quirks_json TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1, last_probe_json TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS models (
+        id TEXT PRIMARY KEY, provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+        alias TEXT NOT NULL UNIQUE, model_id TEXT NOT NULL, protocol TEXT NOT NULL DEFAULT 'auto',
+        fallback_model_ids_json TEXT NOT NULL DEFAULT '[]',
+        cost_input_usd_per_million REAL NOT NULL DEFAULT 0,
+        cost_output_usd_per_million REAL NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS workspaces (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS threads (
+        id TEXT PRIMARY KEY, workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+        title TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS thread_events (
+        id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL, type TEXT NOT NULL, payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL, UNIQUE(thread_id, sequence)
+      );
+      CREATE TABLE IF NOT EXISTS approvals (
+        id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        action TEXT NOT NULL, payload_json TEXT NOT NULL, status TEXT NOT NULL,
+        created_at TEXT NOT NULL, resolved_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS artifacts (
+        id TEXT PRIMARY KEY, thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, path TEXT NOT NULL, mime_type TEXT, created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS deployments (
+        id TEXT PRIMARY KEY, workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+        status TEXT NOT NULL, config_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS api_keys (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE,
+        scopes_json TEXT NOT NULL, created_at TEXT NOT NULL, revoked_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS usage_logs (
+        id TEXT PRIMARY KEY, model_id TEXT, provider_id TEXT, requested_alias TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0, latency_ms INTEGER, status_code INTEGER,
+        failover_from TEXT, error TEXT, created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS notification_channels (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config_json TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_models_provider_id ON models(provider_id);
+      CREATE INDEX IF NOT EXISTS idx_thread_events_thread_sequence ON thread_events(thread_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at);
+    `,
+  },
+  {
+    version: 2,
+    sql: `
+      ALTER TABLE workspaces ADD COLUMN automation_level TEXT NOT NULL DEFAULT 'conservative';
+      ALTER TABLE workspaces ADD COLUMN status TEXT NOT NULL DEFAULT 'ready';
+      ALTER TABLE threads ADD COLUMN active_model_alias TEXT;
+      ALTER TABLE threads ADD COLUMN reasoning_effort TEXT;
+      ALTER TABLE threads ADD COLUMN session_rules_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE threads ADD COLUMN remote_thread_id TEXT;
+      ALTER TABLE threads ADD COLUMN codex_home TEXT;
+      ALTER TABLE approvals ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'high';
+      ALTER TABLE artifacts ADD COLUMN workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE;
+      ALTER TABLE artifacts ADD COLUMN turn_id TEXT;
+      ALTER TABLE artifacts ADD COLUMN change_type TEXT NOT NULL DEFAULT 'modified';
+      UPDATE artifacts SET workspace_id=(SELECT workspace_id FROM threads WHERE threads.id=artifacts.thread_id);
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, prompt TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued', summary TEXT NOT NULL DEFAULT '',
+        api_key_id TEXT REFERENCES api_keys(id), webhook_url TEXT, webhook_state TEXT,
+        webhook_attempts INTEGER NOT NULL DEFAULT 0, webhook_next_at INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE checkpoints (
+        turn_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, ref TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      ALTER TABLE thread_events ADD COLUMN task_id TEXT;
+      CREATE INDEX idx_thread_events_task ON thread_events(task_id,sequence);
+      CREATE INDEX idx_tasks_workspace ON tasks(workspace_id,status);
+      CREATE INDEX idx_artifacts_turn ON artifacts(turn_id,workspace_id);
+      ALTER TABLE api_keys ADD COLUMN prefix TEXT NOT NULL DEFAULT '';
+      ALTER TABLE api_keys ADD COLUMN workspace_ids_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE api_keys ADD COLUMN rate_limit_rpm INTEGER NOT NULL DEFAULT 60;
+      ALTER TABLE api_keys ADD COLUMN webhook_origins_json TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
+  {
+    version: 3,
+    sql: `
+      ALTER TABLE models ADD COLUMN pricing_currency TEXT NOT NULL DEFAULT 'USD';
+      ALTER TABLE models ADD COLUMN cost_input_cny_per_million REAL NOT NULL DEFAULT 0;
+      ALTER TABLE models ADD COLUMN cost_output_cny_per_million REAL NOT NULL DEFAULT 0;
+      ALTER TABLE usage_logs ADD COLUMN cost_cny REAL NOT NULL DEFAULT 0;
+      ALTER TABLE approvals ADD COLUMN expires_at TEXT;
+      ALTER TABLE deployments ADD COLUMN last_verification_json TEXT;
+      CREATE INDEX IF NOT EXISTS idx_tasks_thread_created ON tasks(thread_id,created_at);
+    `,
+  },
+];
+
+export function runMigrations(database: Database.Database): void {
+  database.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+  )`);
+  for (const migration of migrations) {
+    database.transaction(() => {
+      if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=?").get(migration.version)) return;
+      database.exec(migration.sql);
+      database.prepare("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+        .run(migration.version, new Date().toISOString());
+    }).immediate();
+  }
+}

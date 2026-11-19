@@ -1,0 +1,93 @@
+name: Bug report
+description: Report a reproducible CodexDeck defect
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report security vulnerabilities privately through the repository's Security tab.
+        Keep API keys, session cookies, signed URLs, private prompts, and workspace contents out of this form.
+  - type: input
+    id: version
+    attributes:
+      label: CodexDeck version or commit
+      placeholder: vX.Y.Z or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation type
+      options:
+        - Docker Compose (standard)
+        - Docker Compose (Playwright)
+        - Native systemd
+        - npm CLI
+        - Development checkout
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Third-party API provider or relay
+      options:
+        - OpenAI
+        - OneAPI / NewAPI
+        - OpenRouter
+        - DeepSeek
+        - Ollama
+        - Custom OpenAI-compatible gateway
+        - Not applicable
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Workload deployment mode
+      options:
+        - Auto
+        - Local process
+        - Docker
+        - Docker Compose
+        - Not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, CPU architecture, Node.js/Docker versions, and reverse proxy if relevant
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Redact credentials and private project data
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues
+          required: true
+        - label: I removed credentials and sensitive data
+          required: true
+
