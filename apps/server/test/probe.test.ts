@@ -1,3 +1,4 @@
+import { installationCode } from "../src/routes/auth.js";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { createServer as mockServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -9,6 +10,7 @@ import { createServer, parseGatewayConfig } from "../src/app.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { schema } from "../src/db/schema.js";
 import { SecretMasker } from "../src/security/secret-masker.js";
+import { targetPolicy } from "../src/gateway/transport.js";
 
 let native: Database.Database;
 let app: ReturnType<typeof createServer>;
@@ -21,9 +23,10 @@ let paths: string[];
 beforeEach(async () => {
   native = new Database(":memory:");
   runMigrations(native);
-  app = createServer({ native, orm: drizzle(native, { schema }), masker: new SecretMasker(), masterKey: randomBytes(32),
+  const key=randomBytes(32);
+  app = createServer({ native, orm: drizzle(native, { schema }), masker: new SecretMasker(), masterKey: key,
     gatewayConfig: parseGatewayConfig({ port: 3210 }) });
-  const setup = await app.inject({ method: "POST", url: "/api/auth/setup", payload: { password: "test-admin-password" } });
+  const setup = await app.inject({ method: "POST", url: "/api/auth/setup", payload: { setup_code: installationCode(native,key), password: "test-admin-password" } });
   cookie = String(setup.headers["set-cookie"]).split(";")[0];
   paths = [];
   upstream = mockServer(async (req, res) => {
@@ -86,11 +89,22 @@ test("continues with the bound model after discovery fails and rejects features 
     else res.end(JSON.stringify({ choices: [{ message: { content: "unsupported" } }] }));
   };
   const id = await createProvider(url + "/v1/");
-  await app.inject({ method: "POST", url: "/api/models", headers: { cookie },
+  const first=await app.inject({ method: "POST", url: "/api/models", headers: { cookie },
     payload: { alias: "test-alias", model_id: "bound-model", provider_id: id } });
   const result = (await probe(id)).json();
   expect(result).toMatchObject({ ok: true, models: [], capabilities: { responses: false, chat: true, tools: false, vision: false } });
   expect(new Set(seenModels)).toEqual(new Set(["bound-model"]));
+  const second=await app.inject({method:"POST",url:"/api/models",headers:{cookie},payload:{alias:"other",model_id:"other",provider_id:id}});
+  handle=(_req,res)=>res.writeHead(401).end();
+  const other=await app.inject({method:"POST",url:`/api/providers/${id}/probe`,headers:{cookie},payload:{model_id:second.json().id}});
+  expect(other.json()).toMatchObject({ok:false,error:expect.stringContaining("401")});
+  expect((await app.inject({url:`/api/models/${first.json().id}`,headers:{cookie}})).json().last_probe.ok).toBe(true);
+  expect((await app.inject({url:`/api/models/${second.json().id}`,headers:{cookie}})).json().last_probe.ok).toBe(false);
+});
+
+test("accepts public TLS provider presets and protects local and mapped loopback endpoints",()=>{
+  for(const name of ["api.openai.com","openrouter.ai","api.deepseek.com"]) expect(targetPolicy(new URL("https://"+name),true,[3210])).toBeTruthy();
+  for(const host of ["localhost","127.0.0.1","[::1]","[::ffff:7f00:0001]"]) expect(()=>targetPolicy(new URL("https://"+host),true,[3210])).toThrow(/protected/);
 });
 
 test("refuses protected ports and the actual listening port, and never follows upstream redirects", async () => {

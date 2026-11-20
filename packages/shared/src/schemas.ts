@@ -71,23 +71,6 @@ export const modelCreateSchema = modelFields.extend({
 });
 export const modelPatchSchema = modelFields.partial();
 
-export const modelSchema = z.object({
-  pricing_currency: modelFields.shape.pricing_currency.default("USD"),
-  cost_input_cny_per_million: modelFields.shape.cost_input_cny_per_million.default(0),
-  cost_output_cny_per_million: modelFields.shape.cost_output_cny_per_million.default(0),
-  id: z.string(),
-  provider_id: z.string(),
-  alias: z.string(),
-  model_id: z.string(),
-  protocol: z.enum(["auto", "responses", "chat"]),
-  fallback_model_ids: z.array(z.string()),
-  cost_input_usd_per_million: z.number(),
-  cost_output_usd_per_million: z.number(),
-  enabled: z.boolean(),
-  created_at: z.string(),
-  updated_at: z.string(),
-});
-
 export const probeCapabilitiesSchema = z.object({
   responses: z.boolean(),
   chat: z.boolean(),
@@ -105,6 +88,24 @@ export const probeResultSchema = z.object({
   error: z.string().optional(),
 });
 
+export const modelSchema = z.object({
+  last_probe: probeResultSchema.nullable().optional(),
+  pricing_currency: modelFields.shape.pricing_currency.default("USD"),
+  cost_input_cny_per_million: modelFields.shape.cost_input_cny_per_million.default(0),
+  cost_output_cny_per_million: modelFields.shape.cost_output_cny_per_million.default(0),
+  id: z.string(),
+  provider_id: z.string(),
+  alias: z.string(),
+  model_id: z.string(),
+  protocol: z.enum(["auto", "responses", "chat"]),
+  fallback_model_ids: z.array(z.string()),
+  cost_input_usd_per_million: z.number(),
+  cost_output_usd_per_million: z.number(),
+  enabled: z.boolean(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
 export const providerSchema = publicProviderFields.extend({ last_probe: probeResultSchema.nullable() });
 export const providerListSchema = z.array(providerSchema);
 export const modelListSchema = z.array(modelSchema);
@@ -118,7 +119,8 @@ export const gatewayConfigSchema = z.object({
   default_model: z.string().optional(),
 });
 
-export const authSetupRequestSchema = z.object({ password: z.string().min(12).max(256) });
+export const authSetupRequestSchema = z.object({ password: z.string().min(12).max(256), setup_code: z.string().min(1).max(128) });
+export const authPasswordChangeSchema = z.object({ current_password: z.string().min(1).max(256), new_password: z.string().min(12).max(256) });
 export const authLoginRequestSchema = z.object({ password: z.string().min(1).max(256) });
 export const authResponseSchema = z.object({ authenticated: z.boolean(), setup_required: z.boolean() });
 export const authLogoutRequestSchema = z.object({}).optional();

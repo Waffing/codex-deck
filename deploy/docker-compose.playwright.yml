@@ -1,0 +1,10 @@
+# Chromium's Linux sandbox uses user namespaces. Keep no-new-privileges and the
+# standard image's capabilities. This profile comes from Playwright v1.65.1
+# microsoft/playwright@bbd948344ea9a60bf1e6f125c02ca99b2b51593b
+# utils/docker/seccomp_profile.json, Apache-2.0 (licenses/playwright-LICENSE).
+services:
+  codexdeck:
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./chromium-seccomp.json
+    shm_size: 256m

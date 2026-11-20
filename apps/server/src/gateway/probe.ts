@@ -4,6 +4,7 @@ import type { ServerContext } from "../app.js";
 import { readCredentials } from "./credentials.js";
 import { readSse } from "./sse.js";
 import { upstreamHeaders, upstreamUrl } from "./upstream.js";
+import { targetPolicy,upstreamFetch } from "./transport.js";
 
 const redSquare = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC";
 type RequestUpstream = (endpoint: string, body?: object) => Promise<Response>;
@@ -65,15 +66,24 @@ export async function probeProvider(provider: typeof providers.$inferSelect, con
   const result: ProbeResult = { provider_id: provider.id, ok: false, models: [],
     checked_at: new Date().toISOString(), capabilities: { responses: false, chat: false, tools: false, vision: false, latency_ms: null } };
   const base = upstreamUrl(provider.baseUrl, "models");
-  const port = Number(base.port || (base.protocol === "https:" ? 443 : 80));
-  if ([22, 80, 443, context.gatewayConfig.port, boundPort].includes(port)) {
-    return { ...result, error: "Probe target uses a protected port." };
-  }
   const { apiKey, headers } = readCredentials(provider, context);
-  const request: RequestUpstream = (endpoint, body) => fetch(upstreamUrl(provider.baseUrl, endpoint), {
-    method: body ? "POST" : "GET", headers: upstreamHeaders(headers, apiKey), redirect: "error",
+  const credentials=!!apiKey || Object.values(headers).some(Boolean);
+  const ports=[context.gatewayConfig.port,boundPort];
+  try { targetPolicy(base,credentials,ports); } catch(error) {return {...result,error:(error as Error).message};}
+  const failures=new Map<string,string>();
+  const request: RequestUpstream = async (endpoint, body) => {
+    try {
+    const response=await upstreamFetch(upstreamUrl(provider.baseUrl, endpoint), {
+    method: body ? "POST" : "GET", headers: upstreamHeaders(headers, apiKey),
     body: body && JSON.stringify(body), signal: AbortSignal.timeout(Math.min(context.gatewayConfig.upstream_timeout_ms, 8000)),
-  });
+    },credentials,ports);
+    if (!response.ok) failures.set(endpoint,`HTTP ${response.status}`);
+    return response;
+    } catch (error) {
+      failures.set(endpoint,error instanceof Error && /timeout/i.test(error.name)?"timeout":"connection failed");
+      throw error;
+    }
+  };
   const list = await request("models").catch(() => undefined);
   if (list?.ok) {
     const json = await list.json().catch(() => undefined);
@@ -92,6 +102,6 @@ export async function probeProvider(provider: typeof providers.$inferSelect, con
     const protocol = caps.responses ? "responses" : "chat/completions";
     [caps.tools, caps.vision] = await Promise.all((["tools", "vision"] as const)
       .map(feature => capability(request, protocol, model, feature).catch(() => false)));
-  } else result.error = "No supported streaming protocol responded with a text delta.";
+  } else result.error = ["responses","chat/completions"].map(endpoint=>`${endpoint}: ${failures.get(endpoint) ?? "no text delta"}`).join(", ");
   return probeResultSchema.parse(context.masker.maskObject(result));
 }

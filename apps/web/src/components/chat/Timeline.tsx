@@ -13,7 +13,7 @@ export type TaskHistory = {
   updated_at: string;
   checkpoint_ref: string | null;
 };
-export type History = { tasks: TaskHistory[]; artifacts: Artifact[] };
+export type History = { tasks: TaskHistory[]; artifacts: Artifact[]; next_before?:number|null; next_artifact_before?:number|null };
 export function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }

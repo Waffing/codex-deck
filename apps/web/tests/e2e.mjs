@@ -1,3 +1,4 @@
+import { installationCode } from "../../server/dist/routes/auth.js";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
@@ -63,7 +64,8 @@ try {
   await Promise.all([mkdir(dataDirectory),mkdir(output,{recursive:true})]);
   mock.listen(0,"127.0.0.1"); await once(mock,"listening");
   db=await openDatabase(dataDirectory,root);
-  app=createServer({...db,masterKey:randomBytes(32),masker:new SecretMasker(),gatewayConfig:parseGatewayConfig()},
+  const masterKey=randomBytes(32);
+  app=createServer({...db,masterKey,masker:new SecretMasker(),gatewayConfig:parseGatewayConfig()},
     {dataDirectory,workspaceRoot:root,codexBin,portPool:[20100,20199]});
   const origin=await app.listen({port:0,host:"127.0.0.1"});
   browser=await chromium.launch({headless:true});
@@ -75,6 +77,7 @@ try {
   await adminInput.waitFor();await shot(desktop,"01-onboarding-desktop");
   const testPassword=randomBytes(24).toString("hex");
   await adminInput.fill(testPassword);
+  await desktop.getByLabel("安装码").fill(installationCode(db.native,masterKey));
   await desktop.getByLabel("确认密码").fill(testPassword);
   await desktop.getByRole("button",{name:"创建管理员"}).click();
   await desktop.getByLabel("供应商预设").selectOption("custom");

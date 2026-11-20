@@ -5,12 +5,15 @@ import type { CodexDeckDatabase } from "./db/index.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerProviderRoutes } from "./routes/providers.js";
 import { registerGatewayRoutes } from "./gateway/server.js";
+import { rotationProof } from "./security/crypto.js";
 import { SecretMasker } from "./security/secret-masker.js";
 import { registerStoredCredentials } from "./gateway/credentials.js";
 import { mountPhase2, type Phase2Options } from "./phase2.js";
 import { mountWeb } from "./web-static.js";
 import { repositoryRoot } from "./security/paths.js";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { registerAdminAudit } from "./routes/admin-audit.js";
 
 export interface ServerContext {
   native: Database.Database;
@@ -18,10 +21,15 @@ export interface ServerContext {
   masterKey: Buffer;
   masker: SecretMasker;
   gatewayConfig: GatewayConfig;
+  resolveSessionLease?: (credential:string, kind:"model"|"ops")=>string|null;
 }
 
 export function createServer(context: ServerContext, options?: Phase2Options & {webRoot?:string}) {
-  const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024, trustProxy: false });
+  const expectedKey = context.native.prepare("SELECT value FROM settings WHERE key='crypto.key-check'").pluck().get();
+  if (expectedKey != null && expectedKey !== rotationProof(context.masterKey)) throw new Error("The configured master key does not match the rotated database.");
+  const app = Fastify({ logger: false, genReqId:()=>randomUUID(),bodyLimit: 2 * 1024 * 1024, trustProxy: false });
+  app.addHook("onRequest",async(req,reply)=>{reply.header("X-Request-Id",req.id);});
+  registerAdminAudit(app,context);
   const systemPorts = new Set([22, 80, 443]);
   if (systemPorts.has(context.gatewayConfig.port)) throw new Error("CodexDeck cannot listen on a protected system port.");
 
@@ -37,10 +45,12 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
   if (options) mountPhase2(app, context, options);
   if (options?.webRoot) mountWeb(app,options.webRoot,options.workspaceRoot);
   else if (process.env.NODE_ENV === "production") mountWeb(app,path.join(repositoryRoot,"apps/web/dist"));
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     const status = (error as { statusCode?: number }).statusCode;
     const code = status && status >= 400 && status < 500 ? status : 500;
-    if (!reply.sent) void reply.code(code).send({ error: code < 500 ? "Invalid request." : "Internal server error." });
+    const publicMessage=error instanceof Error && code<500 && !("code" in error) ? context.masker.maskString(error.message) : code<500 ? "Invalid request." : "Internal server error.";
+    if (code>=500) console.error(JSON.stringify({request_id:request.id,route:request.routeOptions.url,status:code}));
+    if (!reply.sent) void reply.code(code).send({ error:publicMessage, request_id:request.id });
   });
   return app;
 }

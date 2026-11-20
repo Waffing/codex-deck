@@ -1,6 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { lstat, mkdir, readdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath, rename, unlink, open } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
+import { Transform } from "node:stream";
 import { lookup } from "mime-types";
 import type { ChangeType, Workspace, Artifact } from "@codexdeck/shared";
 import type { ServerContext } from "../app.js";
@@ -116,11 +118,32 @@ export class WorkspaceFiles {
     await saveWorkspaceFile(root, "AGENTS.md", content);
   }
 
+  async instructionRoot(workspaceId:string, scope:"global"|"project") {
+    const workspace = await this.getRoot(workspaceId);
+    return scope === "global" ? ensureDirectory(this.dataDirectory,"instructions") : workspace;
+  }
+
   async registerArtifact(workspaceId: string, threadId: string | null, turnId: string | null, relativePath: string, changeType: ChangeType): Promise<Artifact> {
     const root = await this.getRoot(workspaceId);
     const target = await resolveSafeWorkspacePath(root, relativePath);
     const handle = await openWorkspaceFile(root, relativePath);
-    await handle.close();
+    const directory = await ensureDirectory(this.dataDirectory, "artifact-blobs");
+    const temporary = await resolveSafeWorkspacePath(directory, "capture-" + randomUUID());
+    const hash = createHash("sha256");
+    try {
+      const output = await open(temporary, "wx", 0o600);
+      try {
+        await pipeline(handle.createReadStream(), new Transform({
+          transform(chunk, _encoding, done) { hash.update(chunk); done(null,chunk); },
+        }), output.createWriteStream());
+      } finally { await output.close(); }
+    } catch (error) {
+      await unlink(temporary).catch(e=>{if (!missing(e)) throw e;});
+      throw error;
+    } finally { await handle.close(); }
+    const digest = hash.digest("hex");
+    try { await rename(temporary, await resolveSafeWorkspacePath(directory,digest)); }
+    finally { await unlink(temporary).catch(e=>{if (!missing(e)) throw e;}); }
     if (threadId && !this.context.native.prepare("SELECT 1 FROM threads WHERE id=? AND workspace_id=?").get(threadId, workspaceId)) {
       throw fileError(403, "Thread does not belong to this workspace.");
     }
@@ -128,8 +151,14 @@ export class WorkspaceFiles {
     const row: Artifact = { id: randomUUID(), workspace_id: workspaceId, thread_id: threadId, turn_id: turnId,
       name: path.basename(target), path: rel, mime_type: lookup(target) || "application/octet-stream",
       change_type: changeType, created_at: new Date().toISOString() };
-    this.context.native.prepare("INSERT INTO artifacts(id,workspace_id,thread_id,turn_id,name,path,mime_type,change_type,created_at) VALUES(@id,@workspace_id,@thread_id,@turn_id,@name,@path,@mime_type,@change_type,@created_at)").run(row);
+    this.context.native.prepare("INSERT INTO artifacts(id,workspace_id,thread_id,turn_id,name,path,mime_type,change_type,created_at,content_sha256) VALUES(@id,@workspace_id,@thread_id,@turn_id,@name,@path,@mime_type,@change_type,@created_at,@digest)").run({...row,digest});
     return row;
+  }
+
+  async openArtifact(id:string) {
+    const digest = this.context.native.prepare("SELECT content_sha256 FROM artifacts WHERE id=?").pluck().get(id);
+    if (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)) throw fileError(410,"No archived version of this artifact is available.");
+    return openWorkspaceFile(this.dataDirectory,"artifact-blobs/" + digest);
   }
 
   async beforeTurn(workspaceId: string, threadId: string, turnId: string): Promise<FileSnapshot> {

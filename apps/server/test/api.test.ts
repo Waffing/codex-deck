@@ -1,8 +1,9 @@
+import { installationCode } from "../src/routes/auth.js";
 import { randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer, parseGatewayConfig } from "../src/app.js";
 import { openDatabase, resolveDataDirectory } from "../src/db/index.js";
 import { SecretMasker } from "../src/security/secret-masker.js";
@@ -29,13 +30,14 @@ describe("SQLite migrations and admin APIs", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await app?.close();
     if (db?.native.open) db.native.close();
     await rm(workspace, { force: true, recursive: true });
   });
 
   async function setupAdmin() {
-    const response = await app.inject({ method: "POST", url: "/api/auth/setup", payload: { password } });
+    const response = await app.inject({ method: "POST", url: "/api/auth/setup", payload: { setup_code: installationCode(db.native,key), password } });
     expect(response.statusCode).toBe(200);
     return { cookie: cookieHeader(response.headers["set-cookie"]) };
   }
@@ -69,7 +71,7 @@ describe("SQLite migrations and admin APIs", () => {
     expect((await app.inject("/api/auth/status")).json()).toMatchObject({ setup_required: true, authenticated: false });
     const passwords = [password, "ConcurrentAdminPassword2"];
     const results = await Promise.all(passwords.map(value =>
-      app.inject({ method: "POST", url: "/api/auth/setup", payload: { password: value } })));
+      app.inject({ method: "POST", url: "/api/auth/setup", payload: { setup_code: installationCode(db.native,key), password: value } })));
     expect(results.map(result => result.statusCode).sort()).toEqual([200, 409]);
     const winner = results.findIndex(result => result.statusCode === 200);
     const loser = 1 - winner;
@@ -87,6 +89,47 @@ describe("SQLite migrations and admin APIs", () => {
     expect(logout.statusCode).toBe(200);
     expect(logout.headers["set-cookie"]).toMatch(/Max-Age=0/);
     expect((await app.inject({ url: "/api/models", headers })).statusCode).toBe(401);
+  });
+
+  it("requires the installer code, rate limits password guesses and invalidates all old sessions on rotation",async()=>{
+    const submit=(url:string,payload:object,headers={})=>app.inject({method:"POST",url:"/api/auth/"+url,payload,headers});
+    expect((await submit("setup",{password})).statusCode).toBe(400);
+    expect((await submit("setup",{password,setup_code:"wrong"})).statusCode).toBe(403);
+    vi.stubEnv("CODEXDECK_COOKIE_SECURE","true");
+    const old=await setupAdmin();
+    const login=await submit("login",{password});
+    expect(login.headers["set-cookie"]).toMatch(/; Secure/);
+    const second={cookie:cookieHeader(login.headers["set-cookie"])};
+    const update=await submit("password",{current_password:password,new_password:"AnotherFixturePassword"},old);
+    expect(update.statusCode).toBe(200);
+    for(const headers of [old,second]) expect((await app.inject({url:"/api/models",headers})).statusCode).toBe(401);
+    expect((await app.inject({url:"/api/models",headers:{cookie:cookieHeader(update.headers["set-cookie"])}})).statusCode).toBe(200);
+    for(let n=0;n<12;n++) expect((await submit("login",{password})).statusCode).toBe(401);
+    expect((await submit("login",{password})).statusCode).toBe(429);
+  });
+
+  it("moves default, thread and fallback references before deletion and keeps audit changes secret-free", async()=>{
+    const headers=await setupAdmin();
+    const keyValue=randomBytes(24).toString("hex");
+    const create=(url:string,payload:object)=>app.inject({method:"POST",url,headers,payload});
+    expect((await create("/api/providers",{name:"public",base_url:"http://198.51.100.1/v1",api_key:keyValue,preset:"custom"})).statusCode).toBe(400);
+    const provider=(await create("/api/providers",{name:"local",base_url:"https://example.com/v1",api_key:keyValue,preset:"custom"})).json();
+    expect((await app.inject({method:"PATCH",url:`/api/providers/${provider.id}`,headers,payload:{base_url:"http://198.51.100.1/v1"}})).statusCode).toBe(400);
+    const model=async(alias:string,ids:string[]=[]) => (await create("/api/models",{alias,model_id:alias,provider_id:provider.id,fallback_model_ids:ids})).json();
+    const a=await model("alpha"), b=await model("beta",[a.id]);
+    const base=`/api/models/${a.id}`;
+    expect((await app.inject({method:"PUT",url:"/api/models/default",headers,payload:{alias:a.alias}})).statusCode).toBe(200);
+    db.native.prepare("INSERT INTO threads(id,title,status,created_at,updated_at,active_model_alias) VALUES('t','t','idle','now','now',?)").run(a.alias);
+    expect((await app.inject({url:base+"/references",headers})).json()).toEqual({threads:1,isDefault:true,fallback:["beta"]});
+    expect((await app.inject({method:"DELETE",url:base,headers})).statusCode).toBe(409);
+    expect((await app.inject({method:"PATCH",url:base,headers,payload:{alias:"renamed"}})).statusCode).toBe(200);
+    expect((await app.inject({url:"/api/models/default",headers})).json().alias).toBe("renamed");
+    expect((await create(base+"/replace",{replacement_id:b.id})).json()).toEqual({threads:0,isDefault:false,fallback:[]});
+    expect(db.native.prepare("SELECT active_model_alias FROM threads WHERE id='t'").pluck().get()).toBe("beta");
+    expect((await app.inject({method:"DELETE",url:base,headers})).statusCode).toBe(204);
+    const audit=await app.inject({url:"/api/admin/audit",headers});
+    expect(audit.body).not.toContain(keyValue);
+    expect(audit.json()).toContainEqual(expect.objectContaining({target:a.id,status:409,request_id:expect.any(String)}));
   });
 
   it("keeps provider credentials encrypted at rest and retains fields on partial provider and model updates", async () => {

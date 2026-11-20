@@ -38,7 +38,8 @@ function ChatBody({
 }: ChatProps) {
   const [history, setHistory] = useState<History>(empty),
     [draft, setDraft] = useState(""),
-    [paths, setPaths] = useState<string[]>([]);
+    [paths, setPaths] = useState<string[]>([]),
+    [images,setImages] = useState<Record<string,string>>({});
   const [working, setWorking] = useState(false),
     [uploading, setUploading] = useState(false),
     [drag, setDrag] = useState(false),
@@ -106,11 +107,13 @@ function ChatBody({
       for (const f of Array.from(files)) {
         const form = new FormData();
         form.append("file", f);
-        const r = await api<{ path: string }>("/api/workspaces/" + workspace.id + "/files/upload", {
+        const r = await api<{ path:string; artifact:{id:string;mime_type:string|null} }>("/api/workspaces/" + workspace.id + "/files/upload", {
           method: "POST",
           body: form,
         });
         setPaths((prev) => [...prev, r.path]);
+        if (["image/png","image/jpeg","image/webp","image/gif"].includes(r.artifact.mime_type ?? ""))
+          setImages(prev=>({...prev,[r.path]:r.artifact.id}));
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "上传失败");
@@ -120,15 +123,17 @@ function ChatBody({
     }
   }
   async function send(message?: string) {
-    const prompt = [message ?? draft, ...paths.map((p) => "@" + p)].filter((x) => x.trim()).join("\n");
-    if (!prompt || working || uploading) return;
+    const imageIds=paths.filter(p=>images[p]).map(p=>images[p]!);
+    const prompt = [message ?? draft, ...paths.filter(p=>!images[p]).map((p) => "@" + p)].filter((x) => x.trim()).join("\n");
+    if ((!prompt && !imageIds.length) || working || uploading) return;
     setWorking(true);
     setError("");
     try {
       const current = thread ?? (await onCreateThread());
-      await api("/api/threads/" + current.id + (running ? "/inject" : "/messages"), json("POST", { prompt }));
+      await api("/api/threads/" + current.id + (running ? "/inject" : "/messages"), json("POST", { prompt, image_ids:imageIds }));
       setDraft("");
       setPaths([]);
+      setImages({});
       follow.current = true;
       onRefresh();
     } catch (e) {
@@ -160,6 +165,15 @@ function ChatBody({
           follow.current = t.scrollHeight - t.clientHeight - t.scrollTop < 120;
         }}
       >
+        {(history.next_before || history.next_artifact_before) && <button className="ad-button" disabled={working} onClick={async()=>{
+          setWorking(true);
+          try {
+            const older=await api<History>(`/api/threads/${thread?.id}/history?before=${history.next_before??0}&artifact_before=${history.next_artifact_before??0}`);
+            follow.current=false;
+            setHistory(current=>({...older,tasks:[...new Map([...older.tasks,...current.tasks].map(t=>[t.id,t])).values()],
+              artifacts:[...new Map([...older.artifacts,...current.artifacts].map(a=>[a.id,a])).values()]}));
+          } catch(e){setError((e as Error).message);} finally{setWorking(false);}
+        }}>加载更早的记录</button>}
         {hasContent ? (
           <Timeline
             history={history}

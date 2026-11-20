@@ -31,15 +31,25 @@ export class ThreadEvents {
     return () => { this.changes.off("event", listener); };
   }
 
-  // Synchronous SQLite replay and listener registration form a single event-loop operation.
-  follow(thread: string, after: number, send: (event: ThreadEvent) => void, task?: string) {
+  follow(thread: string, after: number, send: (event: ThreadEvent) => void, task?: string, onCaughtUp?:()=>void) {
+    let cursor=after, replaying=true, stopped=false, next:NodeJS.Immediate|undefined;
     const query = this.ctx.native.prepare(`SELECT thread_id, task_id, sequence AS seq_id, type, payload_json, created_at
-      FROM thread_events WHERE thread_id=? AND sequence>? AND (? IS NULL OR task_id=?) ORDER BY sequence`);
-    for (const row of query.iterate(thread, after, task ?? null, task ?? null) as Iterable<Omit<ThreadEvent, "payload"> & {payload_json:string}>) {
-      const { payload_json, ...base } = row;
-      send({ ...base, payload: JSON.parse(payload_json) });
+      FROM thread_events WHERE thread_id=? AND sequence>? AND (? IS NULL OR task_id=?) ORDER BY sequence LIMIT 64`);
+    function replay() {
+      if(stopped) return;
+      const rows=query.all(thread,cursor,task ?? null,task ?? null) as Array<Omit<ThreadEvent,"payload"> & {payload_json:string}>;
+      for (const {payload_json,...base} of rows) {
+        if (stopped) return;
+        send({...base,payload:JSON.parse(payload_json)}); cursor=base.seq_id;
+      }
+      if (rows.length===64) next=setImmediate(replay);
+      else { replaying=false; onCaughtUp?.(); }
     }
-    return this.subscribe(e => { if (e.thread_id === thread && (!task || e.task_id === task)) send(e); });
+    const off=this.subscribe(e=>{
+      if (!replaying && e.thread_id===thread && (!task || e.task_id===task) && e.seq_id>cursor) { cursor=e.seq_id; send(e); }
+    });
+    next=setImmediate(replay);
+    return ()=>{stopped=true;if(next)clearImmediate(next);off();};
   }
 }
 
@@ -54,9 +64,17 @@ export function registerEventRoutes(app: FastifyInstance, ctx: ServerContext, ev
       if(elapsed>0) cpuPercent=Math.round(100*(1-(current.idle-previous.idle)/elapsed));
       previous=current; sampledAt=Date.now();
     }
-    const routable=ctx.native.prepare("SELECT 1 FROM models m JOIN providers p ON p.id=m.provider_id WHERE m.enabled AND p.enabled LIMIT 1").get();
+    const routable=ctx.native.prepare(`SELECT m.alias,m.last_probe_json FROM models m JOIN providers p ON p.id=m.provider_id
+      WHERE m.enabled AND p.enabled ORDER BY (m.alias=(SELECT value FROM settings WHERE key='default_model')) DESC,m.created_at,m.id LIMIT 1`).get() as {alias:string;last_probe_json:string|null}|undefined;
+    const probe=routable?.last_probe_json ? JSON.parse(routable.last_probe_json) : null;
+    const recent=routable && ctx.native.prepare("SELECT status_code,error,created_at FROM usage_logs WHERE requested_alias=? ORDER BY created_at DESC LIMIT 1").get(routable.alias) as {status_code:number;error:string|null;created_at:string}|undefined;
+    const useRecent=recent && (!probe || recent.created_at>=probe.checked_at);
+    const checked=useRecent ? recent.created_at : probe?.checked_at??null;
+    const healthy=useRecent ? recent.status_code>=200 && recent.status_code<300 : !!probe?.ok;
+    const state=!routable?"unconfigured":!checked?"unverified":Date.now()-Date.parse(checked)>86400000?"stale":healthy?"verified":"failed";
     return { type:"heartbeat",timestamp:new Date().toISOString(),load:loadavg(),free_memory_bytes:freemem(),total_memory_bytes:totalmem(),
-      cpu_percent:cpuPercent,running_services:runningServices(),gateway_healthy:!!routable };
+      cpu_percent:cpuPercent,running_services:runningServices(),gateway_healthy:state==="verified",gateway_state:state,
+      gateway_checked_at:checked,gateway_error:useRecent ? recent.error : probe?.error??null };
   }
   app.get("/ws/events", {
     websocket: true, preValidation: async (req, reply) => {

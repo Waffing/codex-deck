@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Readable } from "node:stream";
-import { lstat, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import type { FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import yazl from "yazl";
@@ -9,12 +9,12 @@ import { lookup } from "mime-types";
 import { artifactSignSchema, filePathQuerySchema, fileSaveSchema, fileTreeQuerySchema } from "@codexdeck/shared";
 import type { ServerContext } from "../app.js";
 import { createRequireAdmin } from "../auth.js";
-import { fileError, ignored, missing, openWorkspaceFile, resolveSafeWorkspacePath, saveWorkspaceFile } from "../files/sandbox.js";
+import { fileError, ignored, missing, resolveSafeWorkspacePath, saveWorkspaceFile } from "../files/sandbox.js";
+import { readEditable, writeEditable } from "../files/editor.js";
 import { signDownload, validateDownload } from "../files/signed-url.js";
 import type { WorkspaceFiles } from "../files/workspace-files.js";
 import { registerWorkspaceRoutes } from "./workspaces.js";
 
-const limit = 1024 * 1024;
 export function registerFileRoutes(app: FastifyInstance, ctx: ServerContext, files: WorkspaceFiles) {
   type ById = { Params: { id: string } };
   const auth = { preHandler: createRequireAdmin(ctx) };
@@ -40,26 +40,14 @@ export function registerFileRoutes(app: FastifyInstance, ctx: ServerContext, fil
   app.get<ById>("/api/workspaces/:id/files/content", auth, async req => {
     const q = filePathQuerySchema.safeParse(req.query);
     if (!q.success) throw fileError(400, "Invalid path.");
-    const file = await openWorkspaceFile(await files.getRoot(req.params.id), q.data.path);
-    try {
-      const { size } = await file.stat();
-      if (size > limit) throw fileError(413, "File exceeds preview limit.");
-      const chunks: Buffer[] = [];
-      let length = 0;
-      for await (const chunk of file.createReadStream({ autoClose: false })) {
-        length += chunk.length;
-        if (length > limit) throw fileError(413, "File exceeds preview limit.");
-        chunks.push(chunk);
-      }
-      return { path: q.data.path, size: length, mime_type: lookup(q.data.path) || "application/octet-stream",
-        content: Buffer.concat(chunks).toString("utf8") };
-    } finally { await file.close(); }
+    return {path:q.data.path,mime_type:lookup(q.data.path) || "application/octet-stream",
+      ...await readEditable(await files.getRoot(req.params.id),q.data.path,ctx.masker)};
   });
   app.put<ById & { Body: { path?: string; content: string }; Querystring: { path?: string } }>("/api/workspaces/:id/files/content", auth, async req => {
     const p = fileSaveSchema.safeParse({ path: req.query.path ?? req.body?.path, content: req.body?.content });
     if (!p.success) throw fileError(400, "Expected a path and UTF-8 content.");
-    await saveWorkspaceFile(await files.getRoot(req.params.id), p.data.path, p.data.content);
-    return { path: p.data.path };
+    const revision = await writeEditable(await files.getRoot(req.params.id),p.data.path,p.data.content,req.headers["if-match"],ctx.masker);
+    return { path:p.data.path, revision };
   });
   app.post<ById>("/api/workspaces/:id/files/upload", auth, async (req, reply) => {
     const root = await files.getRoot(req.params.id);
@@ -87,7 +75,7 @@ export function registerFileRoutes(app: FastifyInstance, ctx: ServerContext, fil
     reply.header("Cache-Control", "private, no-store").header("X-Content-Type-Options", "nosniff");
     if (subject.kind === "artifact") {
       const item = artifacts[0];
-      const handle = await openWorkspaceFile(await files.getRoot(item.workspace_id), item.path);
+      const handle = await files.openArtifact(item.id);
       return reply.type(item.mime_type ?? "application/octet-stream")
         .header("Content-Disposition", "attachment; filename*=UTF-8''" + encodeURIComponent(item.name))
         .send(handle.createReadStream());
@@ -97,12 +85,10 @@ export function registerFileRoutes(app: FastifyInstance, ctx: ServerContext, fil
     for (const item of artifacts) {
       if (seen.has(item.path)) continue;
       seen.add(item.path);
-      const root = await files.getRoot(item.workspace_id);
-      const safe = await resolveSafeWorkspacePath(root, item.path);
-      const metadata = await lstat(safe).catch(error => { if (missing(error)) throw fileError(404,"Artifact missing."); throw error; });
-      if (!metadata.isFile() || metadata.nlink !== 1) throw fileError(403, "Invalid artifact path.");
+      const handle = await files.openArtifact(item.id);
+      await handle.close();
       zip.addReadStreamLazy(item.path, {}, callback => {
-        void openWorkspaceFile(root, item.path).then(handle => { callback(null, handle.createReadStream()); }, error => { zip.emit("error", error); });
+        void files.openArtifact(item.id).then(handle => { callback(null, handle.createReadStream()); }, error => { zip.emit("error", error); });
       });
     }
     zip.on("error", error => (zip.outputStream as Readable).destroy(error));

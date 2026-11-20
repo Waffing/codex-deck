@@ -1,3 +1,4 @@
+import { installationCode } from "../src/routes/auth.js";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtemp, mkdir, lstat, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -46,7 +47,7 @@ beforeEach(async () => {
   app = Fastify();
   registerAuthRoutes(app,ctx);
   registerFileRoutes(app,ctx,files);
-  const admin = await app.inject({ method: "POST", url: "/api/auth/setup", payload: { password: "test-admin-password" } });
+  const admin = await app.inject({ method: "POST", url: "/api/auth/setup", payload: { setup_code: installationCode(ctx.native,ctx.masterKey), password: "test-admin-password" } });
   cookie = String(admin.headers["set-cookie"]).split(";")[0];
   const created = await app.inject({ method: "POST", url: "/api/workspaces", headers: { cookie }, payload: { name: "fixture" } });
   expect(created.statusCode).toBe(201);
@@ -88,7 +89,7 @@ it("keeps global instructions isolated and unregisters without erasing project f
   for (const scope of ["project","global"]) {
     const url = pathBase+"/agents-md?scope="+scope;
     expect((await app.inject({method:"PUT",url,headers:{cookie},payload:{content:scope}})).statusCode).toBe(200);
-    expect((await app.inject({url,headers:{cookie}})).json()).toEqual({content:scope,scope});
+    expect((await app.inject({url,headers:{cookie}})).json()).toMatchObject({content:scope,scope,read_only:false});
   }
   expect(await readFile(path.join(root,"AGENTS.md"),"utf8")).toBe("project");
   expect((await app.inject("/api/workspaces")).statusCode).toBe(401);
@@ -126,6 +127,10 @@ it("accepts multipart upload, registers its relative path and enforces signed do
   const signed = await app.inject({method:"POST",url:"/api/artifacts/sign",headers:{cookie},payload:{artifact_id:id}});
   const url = signed.json().download_url as string;
   expect((await app.inject(url)).body).toBe("file contents!");
+  await writeFile(path.join(root,relative),"new revision");
+  const second = await files.registerArtifact(workspace,null,null,relative,"modified");
+  expect((await app.inject(files.signArtifact(second.id))).body).toBe("new revision");
+  expect((await app.inject(url)).body).toBe("file contents!");
   const sigStart = url.lastIndexOf(".")+1;
   const tampered = url.slice(0,sigStart)+(url[sigStart] === "A" ? "B" : "A")+url.slice(sigStart+1);
   expect((await app.inject(tampered)).statusCode).toBe(403);
@@ -134,7 +139,25 @@ it("accepts multipart upload, registers its relative path and enforces signed do
   expect((await app.inject({method:"POST",url:"/api/artifacts/sign",headers:{cookie},payload:{path:"../private"}})).statusCode).toBe(400);
   await rm(path.dirname(path.join(root,relative)),{recursive:true});
   await symlink(fixture,path.join(root,".codex-uploads"),"junction");
-  expect((await app.inject(url)).statusCode).toBe(403);
+  expect((await app.inject(url)).body).toBe("file contents!");
+});
+
+it("refuses masked or stale whole-file saves, preserving both secrets and newer edits",async()=>{
+  const name="settings.txt", file=path.join(root,name), url=pathBase+"/files/content?path="+name;
+  const secret="sk-fixture-private-value";
+  await writeFile(file,"mode=dev\n"+secret);
+  const preview=(await app.inject({url,headers:{cookie}})).json();
+  expect(preview.read_only).toBe(true);
+  expect(preview.content).not.toContain(secret);
+  const save=(revision:string)=>app.inject({method:"PUT",url,headers:{cookie,"if-match":revision},payload:{content:"mine"}});
+  expect((await save(preview.revision)).statusCode).toBe(403);
+  expect(await readFile(file,"utf8")).toContain(secret);
+  await writeFile(file,"before");
+  const original=(await app.inject({url,headers:{cookie}})).json();
+  await writeFile(file,"newer");
+  expect((await save(original.revision)).statusCode).toBe(409);
+  expect(await readFile(file,"utf8")).toBe("newer");
+  expect((await save((await app.inject({url,headers:{cookie}})).json().revision)).statusCode).toBe(200);
 });
 
 // Inspect actual ZIP central directory offsets and inflate the corresponding local records.

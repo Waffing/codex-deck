@@ -199,6 +199,8 @@ function DrawerBody({
     [saving, setSaving] = useState(false);
   const [compare, setCompare] = useState(false);
   const [binary, setBinary] = useState(false);
+  const [revision,setRevision] = useState("missing"), [readOnly,setReadOnly] = useState(false);
+  const [conflict,setConflict] = useState<string|null>(null);
   const base = "/api/workspaces/" + workspace.id;
   const fileUrl = base + "/files/content?path=" + encodeURIComponent(tab.path ?? "");
   useEffect(() => {
@@ -208,14 +210,18 @@ function DrawerBody({
       try {
         let data = "";
         if (tab.kind === "file") {
-          const file = await api<{ content: string; mime_type: string }>(fileUrl);
+          const file = await api<{ content:string; mime_type:string; revision:string; read_only:boolean }>(fileUrl);
           const previewable =
             /^text\/|json|javascript|typescript|xml|yaml|toml/i.test(file.mime_type) ||
             (file.mime_type === "application/octet-stream" && !/[\u0000\uFFFD]/.test(file.content));
           if (active) setBinary(!previewable);
+          if (active) { setRevision(file.revision); setReadOnly(file.read_only); }
           if (previewable) data = file.content;
-        } else if (tab.kind === "agents")
-          data = (await api<{ content: string }>(base + "/agents-md")).content;
+        } else if (tab.kind === "agents") {
+          const doc = await api<{content:string;revision:string;read_only:boolean}>(base + "/agents-md");
+          data = doc.content;
+          if (active) { setRevision(doc.revision); setReadOnly(doc.read_only); }
+        }
         else if (tab.kind === "diff") data = (await api<{ diff: string }>(base + "/git/diff")).diff;
         else if (tab.kind === "logs")
           data = (
@@ -248,12 +254,22 @@ function DrawerBody({
     setSaving(true);
     setError("");
     try {
-      await api(tab.kind === "agents" ? base + "/agents-md" : fileUrl, json("PUT", { content: value }));
+      const res = await api<{revision:string}>(tab.kind === "agents" ? base + "/agents-md" : fileUrl, {
+        method:"PUT", headers:{"Content-Type":"application/json","If-Match":revision}, body:JSON.stringify({content:value})
+      });
+      setRevision(res.revision);
+      setConflict(null);
       setInitial(value);
       setEdit(false);
       setSaved(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "保存失败");
+      if ((e as {status?:number}).status===409) {
+        setError("文件已被修改。以下是当前磁盘版本，请对照草稿合并后再保存。");
+        try {
+          const current=await api<{content:string;revision:string;read_only:boolean}>(tab.kind==="agents"? base+"/agents-md":fileUrl);
+          setConflict(current.content); setRevision(current.revision); setReadOnly(current.read_only);
+        } catch { setError("无法读取冲突版本。请重新打开文件。"); }
+      } else setError(e instanceof Error ? e.message : "保存失败");
     } finally {
       setSaving(false);
     }
@@ -327,14 +343,14 @@ function DrawerBody({
               >
                 取消
               </button>
-              <button disabled={saving} onClick={() => void save()}>
+              <button disabled={saving || readOnly} onClick={() => void save()}>
                 <Save size={13} />
                 保存
               </button>
             </>
           ) : (
             <button
-              disabled={loading}
+              disabled={loading || readOnly}
               onClick={() => {
                 setEdit(true);
                 setSaved(false);
@@ -357,6 +373,8 @@ function DrawerBody({
         )}
       </div>
       {error && <p role="alert">{error}</p>}
+      {readOnly && !binary && <p>含脱敏内容，此预览为只读。</p>}
+      {conflict !== null && <details open><summary>当前磁盘版本</summary><pre>{conflict}</pre></details>}
       {loading ? (
         <span>正在读取…</span>
       ) : edit ? (

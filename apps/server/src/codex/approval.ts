@@ -51,15 +51,16 @@ export class ApprovalEngine {
       Array<{ payload_json: string }>).map(({payload_json, ...row}) => ({ ...row, payload: JSON.parse(payload_json) }));
   }
 
-  request(threadId: string, action: string, payload: Record<string,unknown>, taskId?: string): Promise<ApprovalResult> {
+  request(threadId: string, action: string, payload: Record<string,unknown>, taskId?: string, scriptRevision?:string): Promise<ApprovalResult> {
     const state = this.context.native.prepare(`SELECT t.session_rules_json,w.automation_level FROM threads t
       JOIN workspaces w ON w.id=t.workspace_id WHERE t.id=?`).get(threadId) as { session_rules_json: string; automation_level: string } | undefined;
     if (!state) throw new Error("Thread unavailable.");
     const risk = riskOf(action, payload);
-    const rule = signature(action, payload);
+    const script = /^(?:npm|pnpm|yarn) (?:test|build|install)\b/.test(String(payload.command ?? ""));
+    const rule = signature(action, script ? {...payload,scriptRevision} : payload);
     const rules: string[] = JSON.parse(state.session_rules_json);
-    const auto = risk !== "high" && (rules.includes(rule) || (risk === "low" && state.automation_level !== "conservative")
-      || state.automation_level === "full");
+    const auto = risk !== "high" && ((!script || Boolean(scriptRevision)) && rules.includes(rule) ||
+      (!script && ((risk === "low" && state.automation_level !== "conservative") || state.automation_level === "full")));
     const id = randomUUID();
     const timestamp = new Date().toISOString();
     const expiresAt = new Date(Date.now() + this.timeoutMs).toISOString();

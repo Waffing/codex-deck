@@ -282,6 +282,7 @@ export function OpenApi() {
             ["day", "按天"],
             ["provider", "按渠道"],
             ["model", "按模型"],
+            ["workspace","按工作区"],["task","按任务"],
           ].map(([v, t]) => (
             <button key={v} data-on={v === group} onClick={() => setGroup(v)}>
               {t}
@@ -310,8 +311,9 @@ export function OpenApi() {
                 <thead>
                   <tr>
                     {[
-                      group === "day" ? "日期" : group === "model" ? "模型" : "渠道",
+                      ({day:"日期",model:"模型",provider:"渠道",workspace:"工作区",task:"任务"} as Record<string,string>)[group],
                       "请求",
+                      "未上报用量",
                       "输入 Token",
                       "输出 Token",
                       "估算费用",
@@ -325,6 +327,7 @@ export function OpenApi() {
                     <tr key={r.label}>
                       <td>{r.label}</td>
                       <td className="num">{r.requests}</td>
+                      <td className="num">{r.unknown_usage??0}</td>
                       <td className="num">{r.input_tokens}</td>
                       <td className="num">{r.output_tokens}</td>
                       <td className="num">{costs(r)}</td>

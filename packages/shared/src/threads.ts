@@ -4,7 +4,8 @@ export const reasoningEffortSchema = z.enum(["none", "minimal", "low", "medium",
 export const threadCreateSchema = z.object({
   workspace_id: z.string().min(1), model_alias: z.string().min(1).optional(), title: z.string().trim().min(1).max(240).optional(),
 });
-export const threadMessageSchema = z.object({ prompt: z.string().trim().min(1).max(200_000) });
+export const threadMessageSchema = z.object({ prompt:z.string().trim().max(200_000), image_ids:z.array(z.uuid()).max(4).optional() })
+  .refine(input => Boolean(input.prompt || input.image_ids?.length));
 export const threadModelPatchSchema = z.object({
   model_alias: z.string().min(1).optional(), reasoning_effort: reasoningEffortSchema.nullable().optional(),
 }).refine(v => v.model_alias !== undefined || v.reasoning_effort !== undefined);

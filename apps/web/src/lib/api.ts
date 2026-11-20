@@ -2,7 +2,9 @@ export async function api<T>(url:string,init?:RequestInit):Promise<T>{
   const res=await fetch(url,{...init,credentials:"same-origin"});
   if(!res.ok){
     const body=await res.json().catch(()=>({}));
-    throw Object.assign(new Error(typeof body.error==="string"?body.error:"请求失败（"+res.status+"）"),{status:res.status});
+    const id=res.headers.get("x-request-id");
+    const detail=typeof body.error==="string"?body.error:"请求失败（"+res.status+"）";
+    throw Object.assign(new Error(detail+(id?" · "+id:"")),{status:res.status});
   }
   return res.status===204?undefined as T:await res.json() as T;
 }

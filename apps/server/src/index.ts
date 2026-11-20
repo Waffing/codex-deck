@@ -3,13 +3,24 @@ import { pathToFileURL } from "node:url";
 import { openDatabase, resolveDataDirectory } from "./db/index.js";
 import { loadMasterKey } from "./security/crypto.js";
 import { SecretMasker } from "./security/secret-masker.js";
-import { repositoryRoot } from "./security/paths.js";
+import { repositoryRoot, workspaceFile } from "./security/paths.js";
+import path from "node:path";
+import { writeFile, rename, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { installationCode } from "./routes/auth.js";
 
 export async function startServer(): Promise<void> {
   const workspaceRoot = process.env.CODEXDECK_WORKSPACES ?? repositoryRoot;
   const dataDirectory = await resolveDataDirectory(undefined, workspaceRoot);
   const masterKey = await loadMasterKey(dataDirectory, undefined, workspaceRoot);
   const database = await openDatabase(dataDirectory, workspaceRoot);
+  const setupFile = await workspaceFile(dataDirectory,path.join(dataDirectory,"setup-code"));
+  if (!database.native.prepare("SELECT 1 FROM settings WHERE key='admin_password_hash'").get()) {
+    const temp = await workspaceFile(dataDirectory,path.join(dataDirectory,randomUUID()+".tmp"));
+    await writeFile(temp,installationCode(database.native,masterKey)+"\n",{mode:0o600,flag:"wx"});
+    await rename(temp,setupFile);
+    console.info("First administrator setup requires the private setup-code file in the data directory.");
+  } else await rm(setupFile,{force:true});
   const config = parseGatewayConfig();
   const server = createServer({
     ...database,

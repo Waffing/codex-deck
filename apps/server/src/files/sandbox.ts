@@ -57,7 +57,7 @@ export async function openWorkspaceFile(root: string, relative: string) {
   } catch (error) { await file.close(); throw error; }
 }
 
-export async function saveWorkspaceFile(root: string, relative: string, data: string | Buffer) {
+export async function saveWorkspaceFile(root: string, relative: string, data: string | Buffer, beforeCommit?:()=>Promise<void>) {
   const target = await resolveSafeWorkspacePath(root, relative);
   if (target === await realpath(root)) throw fileError(403, "Expected a file.");
   const dir = await ensureDirectory(root, path.relative(root, path.dirname(target)));
@@ -71,6 +71,7 @@ export async function saveWorkspaceFile(root: string, relative: string, data: st
   } catch (error) { if (!missing(error)) throw error; }
   await writeFile(temp, data, { flag: "wx", mode });
   try {
+    await beforeCommit?.();
     await rename(await resolveSafeWorkspacePath(root, tempRel), await resolveSafeWorkspacePath(root, relative));
   } finally {
     await unlink(await resolveSafeWorkspacePath(root, tempRel)).catch(error => { if (!missing(error)) throw error; });

@@ -35,8 +35,9 @@ export async function verifyUrl(input: VerifyInput, port: number, logs: string, 
     const body=await boundedText(res);
     contentMatch=input.expected_content === undefined || body.includes(input.expected_content);
   } catch { error="Could not reach deployment."; }
-  const issues=masker.maskString(logs).split(/\r?\n/).filter(line=>/\b(?:crash(?:ed)?|traceback|unhandled(?:promise)?rejection|uncaught(?:exception)?)\b/i.test(line)).slice(-30);
+  const issues=masker.maskString(logs).split(/\r?\n/).filter(line=>/\b(?:crash(?:ed)?|traceback|unhandled(?:promise)?rejection|uncaught(?:exception)?)\b/i.test(line)).slice(-30).map(line=>line.slice(0,1024));
   const report = {ok:status>=200 && status<300 && contentMatch && issues.length===0,
+    path:masker.maskString(url.pathname), checked_at:new Date().toISOString(),
     http:{status,latency_ms:Math.round(performance.now()-started),content_match:contentMatch,error},logs:{issues},
     browser:{status:"disabled",message:"",issues:[] as string[],artifacts:[] as string[]} };
   if(!input.check_browser) return report;
@@ -45,6 +46,7 @@ export async function verifyUrl(input: VerifyInput, port: number, logs: string, 
     const {chromium}=await import("playwright-core");
     browser=await chromium.launch({headless:true,chromiumSandbox:true});
   } catch {
+    report.ok=false;
     report.browser.status="unavailable";report.browser.message="Chromium is unavailable. Install a compatible Playwright Chromium to enable screenshots.";
     return report;
   }
@@ -66,6 +68,7 @@ export async function verifyUrl(input: VerifyInput, port: number, logs: string, 
         page.on("console",msg=>{if(msg.type()==="error") issue(msg.text());});
         page.on("pageerror",err=>issue(err.message));
         page.on("response",res=>{if(res.status()>=400) issue(res.status()+" "+new URL(res.url()).pathname);});
+        page.on("requestfailed",req=>issue("Resource failed: "+new URL(req.url()).pathname));
         await page.goto(url.href,{waitUntil:"load",timeout:8000});
         const relative=".codex-artifacts/verify-"+viewport.width+"-"+randomUUID()+".png";
         const png=await page.screenshot({timeout:5000});

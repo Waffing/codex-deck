@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ResponseRequest } from "@codexdeck/shared";
 import { readSse } from "./sse.js";
 
@@ -37,6 +37,35 @@ function inputTool(tool: JsonObject): JsonObject {
   return { type, function: definition };
 }
 
+// Chat accepts flat function names of at most 64 characters. Keep the binding
+// deterministic across turns, even if the model's tool list changes order.
+function chatToolName(name:string, namespace:unknown) {
+  if (typeof namespace !== "string" || !namespace) return name;
+  const hash=createHash("sha256").update(JSON.stringify([namespace,name])).digest("hex").slice(0,20);
+  return `ns_${hash}_${name.replace(/[^a-zA-Z0-9_-]/g,"_").slice(0,40)}`;
+}
+function chatTools(tools: JsonObject[] = []) {
+  const names = new Map<string,{name:string;namespace?:string}>();
+  const declarations:JsonObject[]=[];
+  function add(tool:JsonObject,namespace?:string) {
+    if(typeof tool.name!=="string") return invalidInput("A named tool is required.");
+    const name=chatToolName(tool.name,namespace);
+    if(names.has(name)) return invalidInput("Duplicate Chat tool name.");
+    names.set(name,namespace?{name:tool.name,namespace}:{name:tool.name});
+    const {namespace: _namespace, ...definition}=tool;
+    declarations.push(inputTool({...definition,name}));
+  }
+  for(const tool of tools) {
+    if(tool.type==="function") add(tool,typeof tool.namespace==="string"?tool.namespace:undefined);
+    else if(tool.type!=="namespace") add(tool);
+    else {
+      if(typeof tool.name!=="string" || !tool.name || !Array.isArray(tool.tools)) return invalidInput("Invalid tool namespace.");
+      for(const child of tool.tools) add(record(child),tool.name);
+    }
+  }
+  return {names,declarations};
+}
+
 export function toChatRequest(request: ResponseRequest, modelId: string): JsonObject {
   if (request.previous_response_id || request.conversation) {
     return invalidInput("Chat translation requires the full input history.");
@@ -58,7 +87,7 @@ export function toChatRequest(request: ResponseRequest, modelId: string): JsonOb
           messages.push(assistant);
         }
         const calls: JsonObject[] = (assistant.tool_calls ??= []) as JsonObject[];
-        calls.push({ type: "function", id: item.call_id, function: { name: item.name, arguments: item.arguments } });
+        calls.push({ type: "function", id: item.call_id, function: { name: chatToolName(item.name,item.namespace), arguments: item.arguments } });
       } else if (item.type === "function_call_output") {
         if (typeof item.call_id !== "string") return invalidInput("Tool output requires a call_id.");
         const content = inputContent(item.output);
@@ -87,9 +116,12 @@ export function toChatRequest(request: ResponseRequest, modelId: string): JsonOb
     const { type, ...json_schema } = format;
     result.response_format = { type, json_schema };
   } else if (format.type) result.response_format = format;
-  if (request.tools) result.tools = request.tools.map(inputTool);
+  if (request.tools) result.tools = chatTools(request.tools).declarations;
   if (typeof request.tool_choice === "string") result.tool_choice = request.tool_choice;
-  else if (request.tool_choice) result.tool_choice = inputTool(request.tool_choice);
+  else if (request.tool_choice) {
+    const {namespace,name,...choice}=request.tool_choice;
+    result.tool_choice = inputTool({...choice,name:typeof name==="string"?chatToolName(name,namespace):name});
+  }
   if (request.stream) result.stream_options = { include_usage: true };
   return result;
 }
@@ -97,8 +129,8 @@ export function toChatRequest(request: ResponseRequest, modelId: string): JsonOb
 function chatUsage(source: unknown): JsonObject | null {
   if (!source) return null;
   const usage = record(source);
-  const input = Number(usage.prompt_tokens ?? 0);
-  const output = Number(usage.completion_tokens ?? 0);
+  const input = usage.prompt_tokens, output = usage.completion_tokens;
+  if (typeof input!=="number" || typeof output!=="number" || !Number.isSafeInteger(input) || !Number.isSafeInteger(output) || input<0 || output<0) return null;
   return {
     input_tokens: input,
     input_tokens_details: { cached_tokens: record(usage.prompt_tokens_details).cached_tokens ?? 0 },
@@ -135,6 +167,7 @@ export function fromChatResponse(chat: unknown, alias: string, request?: Respons
   const response = envelope(alias, request);
   const content: JsonObject[] = [];
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  const {names}=chatTools(request?.tools);
   if (typeof message.content === "string" && (message.content || (!toolCalls.length && !message.refusal))) {
     content.push({ type: "output_text", text: message.content, annotations: [] });
   }
@@ -149,7 +182,7 @@ export function fromChatResponse(chat: unknown, alias: string, request?: Respons
       throw new Error("Upstream returned an invalid function call.");
     }
     response.output.push({
-      id: "fc_" + randomUUID(), type: "function_call", call_id: call.id, name: fn.name, arguments: fn.arguments, status,
+      id: "fc_" + randomUUID(), type: "function_call", call_id: call.id, ...(names.get(fn.name) ?? {name:fn.name}), arguments: fn.arguments, status,
     });
   }
   return {
@@ -159,7 +192,7 @@ export function fromChatResponse(chat: unknown, alias: string, request?: Respons
 }
 
 interface StreamCall {
-  item: { id: string; type: "function_call"; status: Status; call_id: string; name: string; arguments: string };
+  item: { id: string; type: "function_call"; status: Status; call_id: string; name: string; namespace?:string; arguments: string };
   outputIndex: number;
   announced: boolean;
 }
@@ -173,6 +206,7 @@ export async function* translateChatStream(
     "event: " + type + "\ndata: " + JSON.stringify({ type, sequence_number: sequence++, ...payload }) + "\n\n";
 
   const calls = new Map<number, StreamCall>();
+  const {names}=chatTools(request?.tools);
   const parts = new Map<string, { index: number; value: string }>();
   let message: { id: string; role: string; type: string; content: JsonObject[]; status: Status } | undefined;
   let messageIndex = -1;
@@ -246,7 +280,8 @@ export async function* translateChatStream(
       if (typeof fn.name === "string") call.item.name += fn.name;
       const fragment = typeof fn.arguments === "string" ? fn.arguments : "";
       // SDK accumulators append output items in announcement order.
-      if (!call.announced && call.item.call_id && call.item.name) {
+      if (!call.announced && call.item.call_id && call.item.name && (names.size===0 || names.has(call.item.name))) {
+        Object.assign(call.item,names.get(call.item.name));
         call.announced = true;
         call.outputIndex = response.output.length;
         response.output.push(call.item);

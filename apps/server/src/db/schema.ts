@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, real, sqliteTable, text, primaryKey } from "drizzle-orm/sqlite-core";
 
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
@@ -22,6 +22,7 @@ export const providers = sqliteTable("providers", {
 });
 
 export const models = sqliteTable("models", {
+  lastProbeJson: text("last_probe_json"),
   pricingCurrency: text("pricing_currency").notNull().default("USD"),
   costInputCnyPerMillion: real("cost_input_cny_per_million").notNull().default(0),
   costOutputCnyPerMillion: real("cost_output_cny_per_million").notNull().default(0),
@@ -85,6 +86,7 @@ export const approvals = sqliteTable("approvals", {
 });
 
 export const artifacts = sqliteTable("artifacts", {
+  contentSha256: text("content_sha256"),
   workspaceId: text("workspace_id").references(() => workspaces.id, { onDelete: "cascade" }),
   turnId: text("turn_id"),
   changeType: text("change_type").notNull().default("modified"),
@@ -120,6 +122,8 @@ export const apiKeys = sqliteTable("api_keys", {
 });
 
 export const usageLogs = sqliteTable("usage_logs", {
+  threadId:text("thread_id"), taskId:text("task_id"), workspaceId:text("workspace_id"),
+  usageKnown:integer("usage_known",{mode:"boolean"}).notNull().default(false),
   costCny: real("cost_cny").notNull().default(0),
   id: text("id").primaryKey(),
   modelId: text("model_id"),
@@ -146,6 +150,7 @@ export const notificationChannels = sqliteTable("notification_channels", {
 });
 
 export const tasks = sqliteTable("tasks", {
+  imageIdsJson:text("image_ids_json").notNull().default("[]"),
   id: text("id").primaryKey(),
   workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
   threadId: text("thread_id").notNull().references(() => threads.id, { onDelete: "cascade" }),
@@ -169,7 +174,18 @@ export const checkpoints = sqliteTable("checkpoints", {
   createdAt: text("created_at").notNull(),
 });
 
+export const taskSubmissions = sqliteTable("task_submissions", {
+  apiKeyId:text("api_key_id").notNull().references(()=>apiKeys.id,{onDelete:"cascade"}),
+  workspaceId:text("workspace_id").notNull().references(()=>workspaces.id,{onDelete:"cascade"}),
+  requestKey:text("request_key").notNull(), fingerprint:text("fingerprint").notNull(),
+  taskId:text("task_id").notNull().references(()=>tasks.id,{onDelete:"cascade"}),
+}, table=>[primaryKey({columns:[table.apiKeyId,table.workspaceId,table.requestKey]})]);
+export const adminAudit = sqliteTable("admin_audit",{
+  id:integer("id").primaryKey(),requestId:text("request_id").notNull(), action:text("action").notNull(),
+  target:text("target"),details:text("details").notNull(),status:integer("status").notNull(),createdAt:text("created_at").notNull(),
+});
 export const schema = {
+  taskSubmissions,adminAudit,
   tasks,
   checkpoints,
   settings,

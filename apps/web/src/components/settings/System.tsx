@@ -3,6 +3,7 @@ import { Bell, BellRing, Plus, Radio, Send, Trash2, X } from "lucide-react";
 import type { NotificationChannel, ServerProfile } from "@codexdeck/shared";
 import { api, json } from "../../lib/api";
 import { Empty, Feedback, SectionHead, sizeLabel, timeLabel, useAction } from "./common";
+import type { AdminAuditEntry } from "@codexdeck/shared";
 
 const typeNames = { webhook: "Webhook", feishu: "飞书", telegram: "Telegram", bark: "Bark" };
 export function System() {
@@ -19,6 +20,13 @@ export function System() {
     typeof Notification === "undefined" ? "unavailable" : Notification.permission,
   );
   const a = useAction();
+  const [audit, setAudit] = useState<AdminAuditEntry[]>([]);
+  const [moreAudit, setMoreAudit] = useState(false);
+  async function loadAudit(before?:number) {
+    const rows = await api<AdminAuditEntry[]>("/api/admin/audit" + (before ? "?before="+before : ""));
+    setAudit(previous => before ? [...previous,...rows] : rows);
+    setMoreAudit(rows.length === 100);
+  }
   async function load() {
     const [cs, pr] = await Promise.all([
       api<NotificationChannel[]>("/api/notification-channels"),
@@ -54,6 +62,32 @@ export function System() {
           </button>
         }
       />
+      <details className="ad-card">
+        <summary>更改管理员密码</summary>
+        <form className="ad-form" onSubmit={event=>{
+          event.preventDefault();
+          const form=event.currentTarget;
+          const fields=new FormData(form);
+          void a.run(async()=>{
+            await api("/api/auth/password",json("POST",Object.fromEntries(fields)));
+            form.reset();
+          },"密码已更新，其他会话已退出");
+        }}>
+          <label>当前密码<input required type="password" name="current_password" autoComplete="current-password" /></label>
+          <label>新密码（至少 12 位）<input required type="password" name="new_password" minLength={12} maxLength={256} autoComplete="new-password" /></label>
+          <button className="ad-button" disabled={a.busy}>保存新密码</button>
+        </form>
+      </details>
+      <details className="ad-card" onToggle={event=>{if(event.currentTarget.open) void a.run(()=>loadAudit());}}>
+        <summary>管理员操作记录</summary>
+        {!audit.length && <p>暂无操作记录</p>}
+        {audit.map(row=><details key={row.id}>
+          <summary>{timeLabel(row.created_at)} · {row.action} · HTTP {row.status}</summary>
+          <dl className="ad-kv"><dt>对象</dt><dd>{row.target ?? "—"}</dd><dt>请求 ID</dt><dd>{row.request_id}</dd></dl>
+          <pre>{JSON.stringify(JSON.parse(row.details),null,2)}</pre>
+        </details>)}
+        {moreAudit && <button className="ad-button" disabled={a.busy} onClick={()=>void a.run(()=>loadAudit(audit.at(-1)?.id))}>更早的操作</button>}
+      </details>
       {profile && (
         <>
           <div className="ad-metrics">

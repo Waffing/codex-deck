@@ -5,6 +5,7 @@ on:
     branches: ["**"]
     tags-ignore: ["v*"]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -19,9 +20,20 @@ jobs:
           node-version: 22
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test
+      - name: Run the real Codex bridge and approval flow
+        run: |
+          version=$(sed -n 's/^ARG CODEX_VERSION=//p' deploy/Dockerfile)
+          npm install --prefix "$RUNNER_TEMP/codex-fixture" "@openai/codex@$version"
+          CODEX_BIN="$RUNNER_TEMP/codex-fixture/node_modules/.bin/codex" CODEXDECK_REAL_CODEX=1 pnpm --filter @codexdeck/server exec vitest run test/real-bridge.test.ts
+      - name: Browser console journeys
+        run: |
+          pnpm --filter @codexdeck/web exec playwright-core install --with-deps chromium
+          pnpm e2e
+      - run: python3 deploy/tests/test_backup.py
       - name: Install shellcheck
         run: |
           sudo apt-get update
@@ -32,6 +44,35 @@ jobs:
         run: |
           docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet
           docker compose --profile https --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet
+      - name: Verify non-root native build and upgrade recovery
+        run: sudo bash deploy/tests/installer.sh
+
+  image-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        playwright: [false, true]
+    env:
+      CODEXDECK_IMAGE: codexdeck:ci
+      CODEXDECK_BIND_PORT: 3150
+    steps:
+      - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Build production image
-        run: docker buildx build --load --file deploy/Dockerfile --tag codexdeck:ci .
+      - name: Build candidate image
+        run: docker buildx build --load --file deploy/Dockerfile --build-arg INSTALL_PLAYWRIGHT=${{ matrix.playwright }} --tag codexdeck:ci .
+      - name: Boot production stack and verify managed deployment
+        env:
+          CODEXDECK_REQUIRE_BROWSER: ${{ matrix.playwright && '1' || '0' }}
+        run: |
+          export CODEXDECK_MASTER_KEY=$(openssl rand -hex 32)
+          export CODEXDECK_DATA_PATH="$RUNNER_TEMP/smoke/data" CODEXDECK_WORKSPACES_HOST="$RUNNER_TEMP/smoke/workspaces"
+          files=(-f deploy/docker-compose.yml)
+          if [[ "$CODEXDECK_REQUIRE_BROWSER" == 1 ]]; then files+=(-f deploy/docker-compose.playwright.yml); fi
+          trap 'docker compose "${files[@]}" down --volumes --remove-orphans' EXIT
+          docker compose "${files[@]}" up -d --wait --wait-timeout 150
+          curl --fail --silent http://127.0.0.1:3150/api/health | jq -e '.status == "ok"'
+          curl --fail --silent http://127.0.0.1:3150/ | grep -qi '<!doctype html>'
+          export CODEXDECK_SMOKE_CONTAINER=$(docker compose "${files[@]}" ps -q codexdeck)
+          docker exec "$CODEXDECK_SMOKE_CONTAINER" sh -c 'test "$(sed -n "s/^Uid:[[:space:]]*\([0-9]*\).*/\1/p" /proc/1/status)" = "$PUID"'
+          node apps/server/tests/docker-deployment-smoke.mjs

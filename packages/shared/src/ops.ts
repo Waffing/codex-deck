@@ -7,9 +7,18 @@ export const serverProfileSchema = z.object({
   docker_available: z.boolean(), port_inventory_available: z.boolean(), safe_pool: z.tuple([z.number(), z.number()]), available_ports: z.array(z.number().int()),
 });
 export type ServerProfile = z.infer<typeof serverProfileSchema>;
+// Older database rows only recorded ok and checked_at.
+export const deploymentCheckSchema = z.object({
+  ok: z.boolean(), checked_at: z.string(), path: z.string().optional(),
+  http: z.object({status:z.number(),latency_ms:z.number(),content_match:z.boolean(),error:z.string().nullable()}).optional(),
+  logs: z.object({issues:z.array(z.string())}).optional(),
+  browser: z.object({status:z.enum(["disabled","completed","unavailable","failed"]),message:z.string(),
+    issues:z.array(z.string()),artifacts:z.array(z.string())}).optional(),
+});
 export const deploymentSchema = z.object({
+  archived:z.boolean().optional(),
   preview_url:z.string().optional(),live_url:z.string().nullable().optional(),
-  last_verification:z.object({ok:z.boolean(),checked_at:z.string()}).nullable().optional(),
+  last_verification:deploymentCheckSchema.nullable().optional(),
   id: z.string(), workspace_id: z.string(), status: z.enum(["starting","staging","live","rolled_back","stopped","failed"]),
   mode: z.enum(["local","docker","compose"]), port: z.number().int(), created_at: z.string(), updated_at: z.string(),
   previous_id: z.string().nullable(),

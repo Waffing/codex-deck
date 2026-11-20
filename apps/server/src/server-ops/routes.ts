@@ -31,7 +31,7 @@ export function registerOps(app:FastifyInstance,ctx:ServerContext,files:Workspac
     if(!profile) throw fail(503,"Server profile is not ready.");
     return profile;
   }
-  app.addHook("onReady",async()=>{await probe();});
+  app.addHook("onReady",async()=>{await probe();await deployer.recover();});
   app.addHook("onClose",async()=>deployer.close());
   app.get("/api/server/profile",admin,async()=>getProfile());
   app.post("/api/server/probe",admin,probe);
@@ -53,12 +53,18 @@ export function registerOps(app:FastifyInstance,ctx:ServerContext,files:Workspac
   app.post<{Params:{tool:string}}>("/internal/ops/:tool",async(req,reply)=>{
     const remote=req.raw.socket.remoteAddress ?? "";
     const bearer=/^Bearer (\S+)$/i.exec(req.headers.authorization ?? "")?.[1];
-    const claims=bearer && verifySignedPayload(bearer,ctx.masterKey);
+    const credential=bearer?.startsWith("cdlease_") ? ctx.resolveSessionLease?.(bearer,"ops") : bearer;
+    const claims=credential && verifySignedPayload(credential,ctx.masterKey);
     const now=Math.floor(Date.now()/1000);
     if(!["::1","127.0.0.1","::ffff:127.0.0.1"].includes(remote) || !claims || claims.aud!=="codexdeck-ops" ||
       typeof claims.thread_id!=="string" || typeof claims.exp!=="number" || claims.exp<=now || typeof claims.iat!=="number" ||
       claims.iat>now+30 || claims.exp-claims.iat>86400) return reply.code(401).send({error:"Invalid local ops token."});
     const thread=claims.thread_id;
+    const authorizedTask=()=>claims.task_id===undefined || (typeof claims.task_id==="string" &&
+      !!ctx.native.prepare("SELECT 1 FROM tasks WHERE id=? AND thread_id=? AND status='running'").get(claims.task_id,thread));
+    if(!authorizedTask()) {
+      return reply.code(401).send({error:"Task authorization expired."});
+    }
     const row=ctx.native.prepare("SELECT workspace_id FROM threads WHERE id=?").get(thread) as {workspace_id:string}|undefined;
     if(!row?.workspace_id) return reply.code(403).send({error:"Ops token has no active workspace."});
     const workspace=row.workspace_id;
@@ -73,6 +79,8 @@ export function registerOps(app:FastifyInstance,ctx:ServerContext,files:Workspac
       if(["app_promote_live","app_rollback","app_deploy_staging","port_allocate"].includes(tool)) {
         const decision=await manager.requestOpsApproval(thread,tool,args);
         if(decision!==true) throw fail(403,"Operation was denied.");
+        if(!authorizedTask() || (bearer?.startsWith("cdlease_") && !ctx.resolveSessionLease?.(bearer,"ops")))
+          throw fail(401,"Task authorization expired.");
       }
       let result:unknown;
       switch(tool) {
@@ -82,7 +90,7 @@ export function registerOps(app:FastifyInstance,ctx:ServerContext,files:Workspac
         case "app_logs":result={logs:await deployer.logs(String(args.deployment_id),workspace)};break;
         case "verify_url":result=await deployer.verify(opsTools.verify_url.parse(args),workspace,thread);break;
         case "app_promote_live":result=await deployer.promote(opsTools.app_promote_live.parse(args),workspace,thread);break;
-        case "app_rollback":result=deployer.rollback(String(args.deployment_id),workspace);break;
+        case "app_rollback":result=await deployer.rollback(String(args.deployment_id),workspace);break;
       }
       events.append(thread,"ops_completed",{tool});return result;
     } catch(error) {events.append(thread,"ops_failed",{tool});throw error;}

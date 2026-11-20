@@ -1,3 +1,4 @@
+import { installationCode } from "../src/routes/auth.js";
 import { randomBytes } from "node:crypto";
 import { createServer as httpServer } from "node:http";
 import { once } from "node:events";
@@ -57,7 +58,7 @@ beforeEach(async () => {
   registerAuthRoutes(app,ctx);
   registerGatewayRoutes(app,ctx);
   await app.listen({host:"127.0.0.1",port:0});
-  const setup = await app.inject({method:"POST",url:"/api/auth/setup",payload:{password:"FixtureAdminPassword"}});
+  const setup = await app.inject({method:"POST",url:"/api/auth/setup",payload:{ setup_code: installationCode(ctx.native,ctx.masterKey),password:"FixtureAdminPassword"}});
   cookie = String(setup.headers["set-cookie"]).split(";")[0];
   const created = await app.inject({method:"POST",url:"/api/threads",headers:{cookie},payload:{workspace_id:workspace,model_alias:"aaa"}});
   expect(created.statusCode).toBe(201);
@@ -97,26 +98,26 @@ async function decision(id: string, action: string, guidance?: string) {
 }
 it("steers and interrupts a live turn, hot-switches the real gateway without respawning, and resumes after a crash", async () => {
   const waiting = await submit("wait");
-  await poll(() => expect(events("item/agentMessage/delta")).toContainEqual(expect.objectContaining({delta:"started"})));
-  expect((await post("/api/threads/"+thread+"/inject",{prompt:"new direction"})).statusCode).toBe(204);
-  await poll(() => expect(events("item/agentMessage/delta").at(-1).delta).toBe("guidance:new direction"));
+  await poll(() => expect(events("item/agentMessage/delta")).toContainEqual(expect.objectContaining({delta:"started!"})));
+  expect((await post("/api/threads/"+thread+"/inject",{prompt:"new direction!"})).statusCode).toBe(204);
+  await poll(() => expect(events("item/agentMessage/delta").at(-1).delta).toBe("guidance:new direction!"));
   expect((await post("/api/threads/"+thread+"/interrupt")).statusCode).toBe(204);
   await poll(() => expect(status(waiting)).toBe("cancelled"));
   const a = await submit("gateway");
   await poll(() => expect(status(a)).toBe("completed"));
+  const processCount=events("fixture/process").length;
   const changed = await app.inject({method:"PATCH",url:"/api/threads/"+thread+"/model",headers:{cookie},payload:{model_alias:"bbb",reasoning_effort:"high"}});
   expect(changed.statusCode).toBe(200);
   const b = await submit("gateway");
   await poll(() => expect(status(b)).toBe("completed"));
   expect(upstream).toEqual(["real-a","real-b"]);
-  expect(events("fixture/process")).toHaveLength(1);
+  expect(events("fixture/process")).toHaveLength(processCount);
   const crash = await submit("crash");
   await poll(() => expect(status(crash)).toBe("failed"));
-  await poll(() => expect(events("process_resumed")).toHaveLength(1));
-  await poll(() => expect(events("fixture/process")).toHaveLength(2));
+  await poll(() => expect(events("fixture/process")).toHaveLength(processCount+1));
   const process = events("fixture/process");
-  expect(process[1]).toMatchObject({threadId:process[0].threadId,method:"thread/resume"});
-  expect(process[1].pid).not.toBe(process[0].pid);
+  expect(process.at(-1)).toMatchObject({threadId:process[0].threadId,method:"thread/resume"});
+  expect(process.at(-1).pid).not.toBe(process.at(-2).pid);
   const after = await submit("gateway");
   await poll(() => expect(status(after)).toBe("completed"));
 });

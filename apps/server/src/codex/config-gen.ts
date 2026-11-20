@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import type Database from "better-sqlite3";
-import { gatewayConfigSchema } from "@codexdeck/shared";
+import { gatewayConfigSchema, probeResultSchema } from "@codexdeck/shared";
 import { signPayload, createInternalToken } from "../security/crypto.js";
 import { repositoryRoot, workspaceDirectory, workspaceFile } from "../security/paths.js";
 import { SecretMasker } from "../security/secret-masker.js";
@@ -16,7 +16,7 @@ interface ConfigOptions {
   port: number;
   defaultModel?: string;
   tokenTtlSeconds?: number;
-  thread?: { id: string; home?: string | null; opsEntry: string; globalInstructions: string };
+  thread?: { id: string; workspaceId?:string; home?: string | null; opsEntry: string; globalInstructions: string };
 }
 
 /** The returned env is a complete child environment. Do not merge process.env into it. */
@@ -28,15 +28,17 @@ export async function generateCodexConfig(options: ConfigOptions) {
   const configured = options.native.prepare("SELECT value FROM settings WHERE key = 'default_model'")
     .get() as { value: string } | undefined;
   const preferred = options.defaultModel ?? configured?.value ?? null;
-  const model = options.native.prepare(`SELECT m.alias FROM models m JOIN providers p ON p.id = m.provider_id
+  const model = options.native.prepare(`SELECT m.alias,m.last_probe_json FROM models m JOIN providers p ON p.id = m.provider_id
     WHERE m.enabled = 1 AND p.enabled = 1 AND (? IS NULL OR m.alias = ?)
-    ORDER BY m.created_at, m.id LIMIT 1`).get(preferred, preferred) as { alias: string } | undefined;
+    ORDER BY m.created_at, m.id LIMIT 1`).get(preferred, preferred) as { alias:string; last_probe_json:string|null } | undefined;
   if (!model) throw new Error("Configure an enabled default model and provider before generating Codex configuration.");
 
   const root = options.workspaceRoot ?? repositoryRoot;
   const dataRoot = path.isAbsolute(options.dataDirectory) ? path.dirname(options.dataDirectory) : root;
   const base = await workspaceDirectory(dataRoot, options.dataDirectory);
   const alias = model.alias;
+  const probe=probeResultSchema.safeParse(JSON.parse(model.last_probe_json ?? "null"));
+  const caps=probe.success?probe.data.capabilities:null;
   const masker = new SecretMasker();
   const context = { masker, masterKey: Buffer.from(options.masterKey) };
   const stored = options.native.prepare("SELECT api_key_ciphertext AS apiKeyCiphertext, headers_json AS headersJson FROM providers")
@@ -67,11 +69,20 @@ export async function generateCodexConfig(options: ConfigOptions) {
     supports_reasoning_summaries: false,
     support_verbosity: false,
     truncation_policy: { mode: "tokens", limit: 10000 },
-    supports_parallel_tool_calls: true,
+    supports_parallel_tool_calls: false,
     experimental_supported_tools: [],
-    input_modalities: ["text"],
+    input_modalities: caps?.vision === true ? ["text","image"] : ["text"],
   }] };
   // JSON-quoted strings escape Windows paths, quotes and newlines in TOML basic strings.
+  const caches:Record<string,string> = {};
+  let cacheRoot:string|undefined;
+  if (options.thread && process.platform !== "win32") {
+    const scope = options.thread.workspaceId ?? options.thread.id;
+    if (!/^[A-Za-z0-9_-]+$/.test(scope)) throw new Error("Invalid workspace cache identifier.");
+    cacheRoot=await workspaceDirectory(base,path.join("caches",scope),true);
+    for (const [variable,folder] of [["NPM_CONFIG_CACHE","npm"],["PIP_CACHE_DIR","pip"],["UV_CACHE_DIR","uv"]] as const)
+      caches[variable]=await workspaceDirectory(cacheRoot,folder,true);
+  }
   const toml = [
     `model = ${JSON.stringify(alias)}`,
     'model_provider = "codexdeck"',
@@ -81,6 +92,8 @@ export async function generateCodexConfig(options: ConfigOptions) {
       'sandbox_mode = "workspace-write"', 'approval_policy = "on-request"',
       '[shell_environment_policy]', 'inherit = "core"',
       'exclude = ["*TOKEN*", "*KEY*", "CODEX_HOME", "CODEXDECK_*"]',
+      ...(cacheRoot ? ["[shell_environment_policy.set]",...Object.entries(caches).map(([k,v])=>`${k} = ${JSON.stringify(v)}`),
+        "[sandbox_workspace_write]",`writable_roots = [${JSON.stringify(cacheRoot)}]`] : []),
       '[mcp_servers.codexdeck_ops]', "command = " + JSON.stringify(process.execPath),
       "args = [" + JSON.stringify(options.thread.opsEntry) + "]",
       'env_vars = ["CODEXDECK_OPS_TOKEN", "CODEXDECK_OPS_URL"]',
@@ -104,7 +117,7 @@ export async function generateCodexConfig(options: ConfigOptions) {
     const runtimeEnv: Record<string,string> = process.platform === "win32"
       ? { SystemRoot:systemRoot, PATH:[path.dirname(process.execPath),path.join(systemRoot,"System32"),
         path.join(process.env.ProgramFiles ?? "C:\\Program Files","Git","cmd")].join(path.delimiter), TEMP:os.tmpdir(), TMP:os.tmpdir() }
-      : { PATH:[path.dirname(process.execPath),"/usr/local/bin","/usr/bin","/bin"].join(path.delimiter), TMPDIR:os.tmpdir() };
+      : { PATH:[path.dirname(process.execPath),"/usr/local/bin","/usr/bin","/bin"].join(path.delimiter), TMPDIR:os.tmpdir(),...caches };
     for (const [name,value] of Object.entries(runtimeEnv)) {
       if (masker.maskString(value) !== value) throw new Error("Credential detected in system path.");
       env[name] = value;

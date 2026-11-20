@@ -1,3 +1,4 @@
+import { installationCode } from "../src/routes/auth.js";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
@@ -11,6 +12,7 @@ import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import WebSocket from "ws";
 import { beforeAll,afterAll,expect,test } from "vitest";
+import { deploymentCheckSchema } from "@codexdeck/shared";
 import { openDatabase } from "../src/db/index.js";
 import { SecretMasker } from "../src/security/secret-masker.js";
 import { signPayload } from "../src/security/crypto.js";
@@ -18,7 +20,7 @@ import { registerAuthRoutes } from "../src/routes/auth.js";
 import { parseGatewayConfig } from "../src/app.js";
 import { WorkspaceFiles } from "../src/files/workspace-files.js";
 import { registerOps, type OpsService } from "../src/server-ops/routes.js";
-import { PortPool } from "../src/server-ops/probe.js";
+import { command, PortPool } from "../src/server-ops/probe.js";
 
 const app=Fastify();
 const secret="sk-"+randomBytes(16).toString("hex");
@@ -27,11 +29,13 @@ let db:Awaited<ReturnType<typeof openDatabase>>;
 let approve=true;
 const requested:string[]=[];
 let approvalCount=0;
+let scoped="",clearScope=false;
 beforeAll(async()=>{
   dir=await mkdtemp(path.join(tmpdir(),"codexdeck-ops-"));
   const data=path.join(dir,"data");await mkdir(data);
   db=await openDatabase(data,dir);
-  const ctx={...db,masterKey:randomBytes(32),masker:new SecretMasker(),gatewayConfig:parseGatewayConfig()};
+  const ctx={...db,masterKey:randomBytes(32),masker:new SecretMasker(),gatewayConfig:parseGatewayConfig(),
+    resolveSessionLease:(value:string,kind:"model"|"ops")=>kind==="ops" && value==="cdlease_ops_fixture" ? scoped || null : null};
   ctx.masker.register(secret);
   const events={append:(_t:string,type:string)=>requested.push(type)};
   const files=new WorkspaceFiles(ctx,data,events.append);
@@ -39,20 +43,38 @@ beforeAll(async()=>{
   const now=new Date().toISOString();
   db.native.prepare("INSERT INTO threads(id,workspace_id,title,status,created_at,updated_at) VALUES('ops-thread',?,'test','idle',?,?)").run(workspace,now,now);
   token=signPayload({aud:"codexdeck-ops",thread_id:"ops-thread",iat:Math.floor(Date.now()/1000),exp:Math.floor(Date.now()/1000)+600},ctx.masterKey);
+  scoped=signPayload({aud:"codexdeck-ops",thread_id:"ops-thread",task_id:"scoped-turn",iat:Math.floor(Date.now()/1000),exp:Math.floor(Date.now()/1000)+600},ctx.masterKey);
   await app.register(websocket);
   registerAuthRoutes(app,ctx);
-  service=registerOps(app,ctx,files,events,{async requestOpsApproval(){approvalCount++;return approve;}},{dataDirectory:data,workspaceRoot:dir});
+  service=registerOps(app,ctx,files,events,{async requestOpsApproval(){approvalCount++;if(clearScope) scoped="";return approve;}},{dataDirectory:data,workspaceRoot:dir});
   origin=await app.listen({host:"127.0.0.1",port:0});
-  const setup=await fetch(origin+"/api/auth/setup",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({password:"fixture-admin-1234"})});
+  const setup=await fetch(origin+"/api/auth/setup",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ setup_code: installationCode(ctx.native,ctx.masterKey),password:"fixture-admin-1234"})});
   cookie=setup.headers.get("set-cookie")!.split(";")[0];
 },30000);
 afterAll(async()=>{
   await app.close();db?.native.close();
   if(dir) await rm(dir,{recursive:true,force:true});
 });
-function op(name:string,body:unknown={}) {
-  return fetch(origin+"/internal/ops/"+name,{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json"},body:JSON.stringify(body)});
+function op(name:string,body:unknown={},credential=token) {
+  return fetch(origin+"/internal/ops/"+name,{method:"POST",headers:{authorization:"Bearer "+credential,"content-type":"application/json"},body:JSON.stringify(body)});
 }
+
+test("expires revoked and inactive ops leases, including revocation while awaiting approval",async()=>{
+  const credential="cdlease_ops_fixture";
+  expect((await op("server_inspect",{},credential)).status).toBe(401);
+  db.native.prepare("INSERT INTO tasks(id,workspace_id,thread_id,prompt,status,created_at,updated_at) VALUES('scoped-turn',?,'ops-thread','inspect','running','','')").run(workspace);
+  expect((await op("server_inspect",{},credential)).status).toBe(200);
+  clearScope=true;
+  try {expect((await op("port_allocate",{},credential)).status).toBe(401);}
+  finally {clearScope=false;db.native.prepare("DELETE FROM tasks WHERE id='scoped-turn'").run();}
+  expect((await op("server_inspect",{},credential)).status).toBe(401);
+});
+
+test("preserves separate stdout and stderr when a deployment emits both streams",async()=>{
+  const output=await command(process.execPath,["-e","console.log('ready');console.error('Traceback fixture')"],{logs:true});
+  expect(output).toContain("[stdout] ready");expect(output).toContain("[stderr] Traceback fixture");
+  expect(deploymentCheckSchema.parse({ok:true,checked_at:"2026-01-01"})).toEqual({ok:true,checked_at:"2026-01-01"});
+});
 
 test("records live runtime and port inventory; leases exclude protected, control and occupied ports",async()=>{
   const inspect=await (await op("server_inspect")).json();
@@ -67,6 +89,21 @@ test("records live runtime and port inventory; leases exclude protected, control
   expect((await result)[0]).toMatchObject({code:"EADDRINUSE"});
   expect((await fetch(origin+"/preview/"+lease.port+"/",{headers:{cookie}})).status).toBe(403);
   expect((await fetch(origin+"/internal/ops/server_inspect",{method:"POST"})).status).toBe(401);
+});
+
+test("rejects host-process deployments in production by default",async()=>{
+  const previousNodeEnv=process.env.NODE_ENV;
+  const previousLocalDeployments=process.env.CODEXDECK_ALLOW_LOCAL_DEPLOYMENTS;
+  process.env.NODE_ENV="production";
+  delete process.env.CODEXDECK_ALLOW_LOCAL_DEPLOYMENTS;
+  try {
+    expect((await op("app_deploy_staging",{mode:"local"})).status).toBe(403);
+  } finally {
+    if(previousNodeEnv===undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV=previousNodeEnv;
+    if(previousLocalDeployments===undefined) delete process.env.CODEXDECK_ALLOW_LOCAL_DEPLOYMENTS;
+    else process.env.CODEXDECK_ALLOW_LOCAL_DEPLOYMENTS=previousLocalDeployments;
+  }
 });
 
 test("stages immutable releases, previews managed ports, runs HTTP/log/browser checks, and restores previous live traffic on failed promotion",async()=>{
@@ -88,7 +125,10 @@ test("stages immutable releases, previews managed ports, runs HTTP/log/browser c
       expect(db.native.prepare("SELECT turn_id FROM artifacts WHERE id=?").pluck().get(id)).toBe("ops-turn");
       expect((await readFile(path.join(root,name))).subarray(1,4).toString()).toBe("PNG");
     }
-  } else expect(report.browser).toMatchObject({status:"unavailable",message:expect.stringContaining("Chromium")});
+  } else {
+    expect(report.browser).toMatchObject({status:"unavailable",message:expect.stringContaining("Chromium")});
+    expect(report.ok).toBe(false);
+  }
   expect((await (await op("app_promote_live",{deployment_id:a.id})).json()).deployment.status).toBe("live");
   await writeFile(path.join(pub,"index.html"),"release-B");
   const restarted=await app.inject({method:"POST",url:"/api/deployments/"+a.id+"/action",headers:{cookie},payload:{action:"restart"}});
@@ -100,7 +140,20 @@ test("stages immutable releases, previews managed ports, runs HTTP/log/browser c
   finally {approve=true;}
   const promotion=await (await op("app_promote_live",{deployment_id:b.id,path:"/missing.html"})).json();
   expect(promotion.verification.http.status).toBe(404);expect(promotion.deployment.status).toBe("rolled_back");
+  expect(promotion.deployment.last_verification).toMatchObject({ok:false, http:{status:404},path:"/missing.html"});
   expect(await (await fetch(origin+"/live/"+workspace+"/")).text()).toBe("release-A");
+  const html='<!doctype html><link rel="icon" href="data:,"><script>throw new Error("fixture page error")</script>release-C';
+  await writeFile(path.join(pub,"index.html"),html);
+  const c=await create();
+  let done=false;
+  const pending=op("app_promote_live",{deployment_id:c.id,expected_content:"release-C",check_browser:true}).then(r=>r.json()).finally(()=>{done=true;});
+  do {
+    expect(await (await fetch(origin+"/live/"+workspace+"/")).text()).toBe("release-A");
+    await new Promise(r=>setTimeout(r,15));
+  } while(!done);
+  const blocked=await pending;
+  expect(blocked.verification).toMatchObject({ok:false,http:{status:200,content_match:true}});
+  if(blocked.verification.browser.status==="completed") expect(blocked.verification.browser.issues).toContain("fixture page error");
   expect(approvalCount).toBeGreaterThanOrEqual(4);
   expect(requested).toContain("ops_failed");
 },30000);
@@ -111,7 +164,7 @@ test("starts a workspace Node HTTP entry and forwards GET, POST and WebSocket wi
     "const http=require('node:http'), crypto=require('node:crypto');",
     "const s=http.createServer((req,res)=>{res.setHeader('Set-Cookie','upstream=bad');if(req.headers.cookie || req.headers.authorization)res.end('bad');else if(req.method==='POST')req.pipe(res);else res.end('node-service');});",
     "s.on('upgrade',(req,socket)=>{const accept=crypto.createHash('sha1').update(req.headers['sec-websocket-key']+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');socket.write('HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: '+accept+'\\r\\n\\r\\n');socket.write(Buffer.from([129,2,79,75]));});",
-    "s.listen(+process.env.PORT,process.env.HOST,()=>console.log("+JSON.stringify(secret)+"));",
+    "s.listen(+process.env.PORT,process.env.HOST,()=>{console.log("+JSON.stringify(secret)+");console.error('UncaughtException fixture');});",
   ].join("\n");
   await writeFile(path.join(root,"node-app","app.cjs"),source);
   const result=await op("app_deploy_staging",{mode:"local",public_dir:"node-app",entry:"app.cjs"});
@@ -120,6 +173,8 @@ test("starts a workspace Node HTTP entry and forwards GET, POST and WebSocket wi
   const res=await fetch(preview,{method:"POST",headers:{cookie,authorization:"Bearer private","content-type":"text/plain"},body:"streamed body"});
   expect(await res.text()).toBe("streamed body");expect(res.headers.get("set-cookie")).toBeNull();
   const log=await op("app_logs",{deployment_id:appInfo.id});expect(await log.text()).not.toContain(secret);
+  const blocked=await (await op("app_promote_live",{deployment_id:appInfo.id})).json();
+  expect(blocked.verification).toMatchObject({ok:false,http:{status:200},logs:{issues:["[stderr] UncaughtException fixture"]}});
   const socket=new WebSocket(preview.replace("http:","ws:"),{headers:{cookie}});
   try {expect((await once(socket,"message"))[0].toString()).toBe("OK");} finally {socket.terminate();}
 },30000);

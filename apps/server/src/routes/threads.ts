@@ -17,7 +17,7 @@ export function registerThreadRoutes(app: FastifyInstance, context: ServerContex
   app.post<ById>("/api/threads/:id/messages",auth,async (request,reply) => {
     const parsed = threadMessageSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({error:"Invalid message."});
-    return reply.code(202).send(manager.submit(request.params.id,parsed.data.prompt));
+    return reply.code(202).send(manager.submit(request.params.id,parsed.data.prompt,undefined,parsed.data.image_ids));
   });
   app.post<ById>("/api/threads/:id/interrupt",auth,async (request,reply) => {
     await manager.interrupt(request.params.id);
@@ -26,7 +26,7 @@ export function registerThreadRoutes(app: FastifyInstance, context: ServerContex
   app.post<ById>("/api/threads/:id/inject",auth,async (request,reply) => {
     const parsed = threadMessageSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({error:"Invalid message."});
-    await manager.inject(request.params.id,parsed.data.prompt);
+    await manager.inject(request.params.id,parsed.data.prompt,parsed.data.image_ids);
     return reply.code(204).send();
   });
   app.patch<ById>("/api/threads/:id/model",auth,async (request,reply) => {

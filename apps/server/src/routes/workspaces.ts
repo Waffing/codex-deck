@@ -5,6 +5,7 @@ import { createRequireAdmin } from "../auth.js";
 import type { WorkspaceFiles } from "../files/workspace-files.js";
 import { fileError } from "../files/sandbox.js";
 import { gitDiff, gitStatus } from "../files/git.js";
+import { readEditable, writeEditable } from "../files/editor.js";
 
 export function registerWorkspaceRoutes(app: FastifyInstance, ctx: ServerContext, files: WorkspaceFiles) {
   const auth = { preHandler: createRequireAdmin(ctx) };
@@ -29,13 +30,17 @@ export function registerWorkspaceRoutes(app: FastifyInstance, ctx: ServerContext
   app.get<ById & { Querystring: { scope?: string } }>("/api/workspaces/:id/agents-md", auth, async req => {
     const p = agentsScopeSchema.safeParse(req.query.scope);
     if (!p.success) throw fileError(400, "Invalid scope.");
-    return { scope: p.data, content: await files.agentsText(req.params.id, p.data) };
+    const root = await files.instructionRoot(req.params.id,p.data);
+    try { return {scope:p.data,...await readEditable(root,"AGENTS.md",ctx.masker)}; }
+    catch (e) { if ((e as {statusCode?:number}).statusCode !== 404) throw e; }
+    return {scope:p.data,content:"",revision:"missing",read_only:false};
   });
   app.put<ById & { Querystring: { scope?: string }; Body: { scope?: string; content: string } }>("/api/workspaces/:id/agents-md", auth, async req => {
     const p = agentsDocumentSchema.safeParse({ scope: req.query.scope ?? req.body?.scope, content: req.body?.content });
     if (!p.success) throw fileError(400, "Invalid instructions.");
-    await files.saveAgents(req.params.id, p.data.scope, p.data.content);
-    return p.data;
+    const root = await files.instructionRoot(req.params.id,p.data.scope);
+    const revision = await writeEditable(root,"AGENTS.md",p.data.content,req.headers["if-match"],ctx.masker);
+    return {...p.data,revision};
   });
   app.get<ById>("/api/workspaces/:id/git/status", auth, async req => gitStatus(await files.getRoot(req.params.id)));
   app.get<ById & { Querystring: { format?: string } }>("/api/workspaces/:id/git/diff", auth, async (req, reply) => {

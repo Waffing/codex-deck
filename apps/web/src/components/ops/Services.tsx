@@ -13,6 +13,7 @@ import {
   Terminal,
 } from "lucide-react";
 import { api, json } from "../../lib/api";
+import { download } from "../files/Artifacts";
 import {
   Empty,
   Feedback,
@@ -27,6 +28,7 @@ export function Services({ onDrawer }: { onDrawer: (d: AdminDrawer) => void }) {
   const [list, setList] = useState<Deployment[]>([]),
     [profile, setProfile] = useState<ServerProfile | null>(null);
   const [pending, setPending] = useState<{ id: string; action: string } | null>(null);
+  const [check, setCheck] = useState({ path: "/", expected_content: "", check_browser: false });
   const a = useAction();
   async function load() {
     const [p, d] = await Promise.all([
@@ -40,9 +42,14 @@ export function Services({ onDrawer }: { onDrawer: (d: AdminDrawer) => void }) {
     void a.run(load);
   }, []);
   async function act(id: string, action: string) {
-    await api("/api/deployments/" + id + "/action", json("POST", { action }));
+    const verify = action === "verify" || action === "promote";
+    await api("/api/deployments/" + id + "/action", json("POST", verify ? { action, ...check } : { action }));
     setPending(null);
     await load();
+  }
+  function prepare(id: string, action: string) {
+    setCheck({ path: "/", expected_content: "", check_browser: false });
+    setPending({ id, action });
   }
   return (
     <>
@@ -106,6 +113,7 @@ export function Services({ onDrawer }: { onDrawer: (d: AdminDrawer) => void }) {
         <div className="ad-grid">
           {list.map((d) => {
             const running = ["staging", "live", "rolled_back"].includes(d.status);
+            const report = d.last_verification;
             return (
               <article key={d.id} className="ad-card">
                 <div className="ad-labelrow">
@@ -136,6 +144,27 @@ export function Services({ onDrawer }: { onDrawer: (d: AdminDrawer) => void }) {
                       : "尚无报告"}
                   </dd>
                 </dl>
+                {report?.http && (
+                  <details>
+                    <summary>查看验收报告</summary>
+                    <p>{report.path} · HTTP {report.http.status || "无法连接"} · {report.http.latency_ms} ms · {report.http.content_match ? "内容匹配" : "内容不匹配"}</p>
+                    {report.http.error && <p>{report.http.error}</p>}
+                    <p>服务日志 · {report.logs?.issues.length ?? 0} 条异常</p>
+                    {report.logs?.issues.map((line, i) => <pre key={i}>{line}</pre>)}
+                    {report.browser && <>
+                      <p>浏览器验收 · {({disabled:"未启用",completed:"已执行",failed:"失败",unavailable:"不可用"})[report.browser.status]}</p>
+                      {report.browser.message && <p>{report.browser.message}</p>}
+                      {report.browser.issues.map((line, i) => <pre key={i}>{line}</pre>)}
+                      {report.browser.artifacts.map((id, i) => (
+                        <button key={id} className="ad-button" disabled={a.busy}
+                          onClick={() => void a.run(() => download({artifact_id:id}))}>
+                          下载{i === 0 ? "桌面" : "移动端"}截图
+                        </button>
+                      ))}
+                    </>}
+                  </details>
+                )}
+                {d.archived && <small>快照已过期，可从工作区重新预发布。</small>}
                 <div className="ad-actions">
                   <button
                     className="ad-button"
@@ -157,11 +186,16 @@ export function Services({ onDrawer }: { onDrawer: (d: AdminDrawer) => void }) {
                   <button
                     className="ad-button"
                     disabled={!running || a.busy}
-                    onClick={() => void a.run(() => act(d.id, "verify"), "验收报告已更新")}
+                    onClick={() => prepare(d.id, "verify")}
                   >
                     <Activity size={14} />
                     验收
                   </button>
+                  {running && d.status !== "live" && (
+                    <button className="ad-button" disabled={a.busy} onClick={() => prepare(d.id, "promote")}>
+                      发布上线
+                    </button>
+                  )}
                   {[
                     ["restart", "重启", RefreshCw],
                     ["rollback", "回滚", History],
@@ -174,10 +208,11 @@ export function Services({ onDrawer }: { onDrawer: (d: AdminDrawer) => void }) {
                         className="ad-button"
                         disabled={
                           a.busy ||
+                          (v === "restart" && (d.archived || d.status === "starting")) ||
                           (v === "rollback" && (d.status !== "live" || !d.previous_id)) ||
                           (v === "stop" && !running)
                         }
-                        onClick={() => setPending({ id: d.id, action: String(v) })}
+                        onClick={() => prepare(d.id, String(v))}
                       >
                         <Icon size={13} />
                         {String(t)}
@@ -187,21 +222,24 @@ export function Services({ onDrawer }: { onDrawer: (d: AdminDrawer) => void }) {
                 </div>
                 {pending?.id === d.id && (
                   <div className="ad-actions">
+                    {(pending.action === "verify" || pending.action === "promote") && (
+                      <fieldset className="ad-form">
+                        <legend>验收条件</legend>
+                        <label>请求路径<input value={check.path} onChange={e => setCheck({...check, path:e.target.value})} /></label>
+                        <label>响应应包含<input value={check.expected_content} placeholder="可选" onChange={e => setCheck({...check, expected_content:e.target.value})} /></label>
+                        <label><input type="checkbox" checked={check.check_browser} onChange={e => setCheck({...check, check_browser:e.target.checked})} />要求桌面及移动浏览器验收</label>
+                      </fieldset>
+                    )}
                     <span>
-                      确认
-                      {
-                        ({ restart: "重启", rollback: "回滚", stop: "停止" } as Record<string, string>)[
-                          pending.action
-                        ]
-                      }
-                      该服务？
+                      {pending.action === "promote" ? "验收通过后，将线上流量切换到该版本。"
+                        : ({restart:"确认重启该服务？",rollback:"确认恢复上一线上版本？",stop:"确认停止该服务？",verify:""} as Record<string,string>)[pending.action]}
                     </span>
                     <button
                       className="ad-button ad-danger"
-                      disabled={a.busy}
+                      disabled={a.busy || (["verify","promote"].includes(pending.action) && !/^\/(?!\/)[^\s\\]*$/.test(check.path))}
                       onClick={() => void a.run(() => act(d.id, pending.action), "服务状态已更新")}
                     >
-                      确认执行
+                      {pending.action === "verify" ? "开始验收" : pending.action === "promote" ? "确认发布" : "确认执行"}
                     </button>
                     <button className="ad-button" onClick={() => setPending(null)}>
                       取消

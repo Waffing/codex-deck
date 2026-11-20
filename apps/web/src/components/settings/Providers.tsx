@@ -57,6 +57,7 @@ const blankModel: ModelDraft = {
   fallback: [],
   enabled: true,
 };
+type References = {threads:number; fallback:string[]; isDefault:boolean};
 
 export function Providers({ onChanged }: { onChanged?: () => void }) {
   const [providers, setProviders] = useState<Provider[]>([]),
@@ -67,17 +68,23 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
     [m, setM] = useState<ModelDraft>(blankModel);
   const [deleting, setDeleting] = useState<{ kind: "providers" | "models"; id: string } | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [defaultAlias,setDefaultAlias]=useState<string|null>(null);
+  const [refs,setRefs]=useState<References|null>(null);
+  const [replacement,setReplacement]=useState("");
+  const inspectId=useRef<string|undefined>(undefined);
   const file = useRef<HTMLInputElement | null>(null);
   const a = useAction();
   async function load() {
-    const [ps, ms, ts] = await Promise.all([
+    const [ps, ms, ts, current] = await Promise.all([
       api<Provider[]>("/api/providers"),
       api<Model[]>("/api/models"),
       api<Preset[]>("/api/providers/presets"),
+      api<{alias:string|null}>("/api/models/default"),
     ]);
     setProviders(ps);
     setModels(ms);
     setPresets(ts);
+    setDefaultAlias(current.alias);
   }
   useEffect(() => {
     void a.run(load);
@@ -106,6 +113,13 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
     a.setError("");
   }
   function editModel(row?: Model) {
+    setRefs(null);
+    setReplacement("");
+    inspectId.current=row?.id;
+    if(row) void a.run(async()=>{
+      const current=await api<References>(`/api/models/${row.id}/references`);
+      if(inspectId.current===row.id) setRefs(current);
+    });
     const c = row?.pricing_currency ?? "USD";
     setM(
       row
@@ -601,6 +615,22 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                 ))}
             </select>
           </fieldset>
+          {editor.id && refs && <fieldset>
+            <legend>模型引用</legend>
+            <p>{refs.threads} 个会话 · {refs.fallback.length} 条备用路由{refs.isDefault && " · 当前默认模型"}</p>
+            {(refs.threads>0 || refs.fallback.length>0 || refs.isDefault) && <>
+              <label>迁移到<select value={replacement} onChange={e=>setReplacement(e.target.value)}>
+                <option value="">选择可用模型…</option>
+                {models.filter(row=>row.id!==editor.id && row.enabled && providers.some(p=>p.id===row.provider_id && p.enabled))
+                  .map(row=><option key={row.id} value={row.id}>{row.alias}</option>)}
+              </select></label>
+              <button type="button" className="ad-button" disabled={!replacement || a.busy} onClick={()=>void a.run(async()=>{
+                const remaining=await api<References>(`/api/models/${editor.id}/replace`,json("POST",{replacement_id:replacement}));
+                setRefs(remaining);
+                await changed();
+              },"模型引用已迁移")}>确认迁移全部引用</button>
+            </>}
+          </fieldset>}
           <div className="ad-actions">
             <button className="ad-primary" disabled={a.busy}>
               <Save size={14} />
@@ -635,14 +665,24 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                   <tr key={row.id}>
                     <td>
                       <b className="ad-mono">{row.alias}</b>
+                      {row.alias===defaultAlias && <small> 默认</small>}
                     </td>
                     <td>{providers.find((v) => v.id === row.provider_id)?.name}</td>
-                    <td>{row.protocol}</td>
+                    <td>{row.protocol}<Abilities probe={row.last_probe ?? null}/></td>
                     <td className="num">
                       {c} {c === "CNY" ? row.cost_input_cny_per_million : row.cost_input_usd_per_million} /{" "}
                       {c === "CNY" ? row.cost_output_cny_per_million : row.cost_output_usd_per_million}
                     </td>
                     <td>
+                      <button className="ad-button" disabled={a.busy || !row.enabled || !providers.some(p=>p.id===row.provider_id && p.enabled)} onClick={()=>void a.run(async()=>{
+                        const result=await api<ProbeResult>(`/api/providers/${row.provider_id}/probe`,json("POST",{model_id:row.id}));
+                        await changed();
+                        if(!result.ok) throw new Error(result.error ?? "模型探测失败");
+                      },"模型探测完成")}>探测此模型</button>
+                      {row.alias!==defaultAlias && <button className="ad-button" disabled={a.busy || !row.enabled || !providers.some(p=>p.id===row.provider_id && p.enabled)} onClick={()=>void a.run(async()=>{
+                        await api("/api/models/default",json("PUT",{alias:row.alias}));
+                        await changed();
+                      },"默认模型已更新")}>设为默认</button>}
                       {row.fallback_model_ids.map((id) => models.find((v) => v.id === id)?.alias).join(" → ") ||
                         "—"}
                     </td>

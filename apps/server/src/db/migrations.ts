@@ -115,6 +115,31 @@ export const migrations = [
       CREATE INDEX IF NOT EXISTS idx_tasks_thread_created ON tasks(thread_id,created_at);
     `,
   },
+  {
+    version: 4,
+    sql: `
+      ALTER TABLE models ADD COLUMN last_probe_json TEXT;
+      ALTER TABLE artifacts ADD COLUMN content_sha256 TEXT;
+      ALTER TABLE tasks ADD COLUMN image_ids_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE usage_logs ADD COLUMN task_id TEXT;
+      ALTER TABLE usage_logs ADD COLUMN thread_id TEXT;
+      ALTER TABLE usage_logs ADD COLUMN workspace_id TEXT;
+      ALTER TABLE usage_logs ADD COLUMN usage_known INTEGER NOT NULL DEFAULT 0;
+      UPDATE usage_logs SET usage_known=1 WHERE input_tokens>0 OR output_tokens>0;
+      CREATE INDEX usage_logs_tasks ON usage_logs(workspace_id,task_id);
+      CREATE TABLE task_submissions (
+        api_key_id TEXT NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        request_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        PRIMARY KEY(api_key_id,workspace_id,request_key)
+      );
+      CREATE TABLE admin_audit (
+        id INTEGER PRIMARY KEY, request_id TEXT NOT NULL, action TEXT NOT NULL, target TEXT,
+        details TEXT NOT NULL, status INTEGER NOT NULL, created_at TEXT NOT NULL
+      );
+    `,
+  },
 ];
 
 export function runMigrations(database: Database.Database): void {

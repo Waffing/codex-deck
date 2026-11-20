@@ -102,17 +102,34 @@ export function registerOpenApi(app:FastifyInstance,ctx:ServerContext,files:Work
       try { callbackUrl(input.webhook_url,key.webhook_origins); }
       catch { return fail(400,"Webhook origin not permitted."); }
     }
-    let threadId = input.thread_id;
-    if (threadId) {
-      const found = db.prepare("SELECT workspace_id,active_model_alias FROM threads WHERE id=?").get(threadId) as {workspace_id:string;active_model_alias:string} | undefined;
-      if (!found || found.workspace_id !== input.workspace_id) return fail(403,"Thread outside workspace.");
-      if (input.model_alias && found.active_model_alias !== input.model_alias) {
-        manager.setModel(threadId,input.model_alias);
+    const idempotency=req.headers["idempotency-key"];
+    if (idempotency !== undefined && (typeof idempotency !== "string" || !/^[!-~]{1,128}$/.test(idempotency)))
+      return fail(400,"Invalid Idempotency-Key.");
+    const fingerprint=createHash("sha256").update(JSON.stringify(input)).digest("hex");
+    const result = db.transaction(() => {
+      if (idempotency) {
+        const prior=db.prepare(`SELECT s.fingerprint,t.id task_id,t.thread_id FROM task_submissions s
+          JOIN tasks t ON t.id=s.task_id WHERE s.api_key_id=? AND s.workspace_id=? AND s.request_key=?`)
+          .get(key.id,input.workspace_id,idempotency) as {fingerprint:string;task_id:string;thread_id:string}|undefined;
+        if (prior) {
+          if (prior.fingerprint!==fingerprint) return fail(409,"Idempotency-Key already used for a different request.");
+          return {task_id:prior.task_id,thread_id:prior.thread_id,status:"queued"};
+        }
       }
-    } else threadId = (await manager.createThread(input.workspace_id,input.model_alias)).id;
-    const result = manager.submit(threadId,input.prompt);
-    db.prepare("UPDATE tasks SET api_key_id=?,webhook_url=?,webhook_state=? WHERE id=?").run(key.id,
-      input.webhook_url?encryptSecret(input.webhook_url,ctx.masterKey):null,input.webhook_url?"pending":null,result.task_id);
+      let threadId = input.thread_id;
+      if (threadId) {
+        const found = db.prepare("SELECT workspace_id,active_model_alias FROM threads WHERE id=?").get(threadId) as {workspace_id:string;active_model_alias:string} | undefined;
+        if (!found || found.workspace_id !== input.workspace_id) return fail(403,"Thread outside workspace.");
+        if (input.model_alias && found.active_model_alias !== input.model_alias) {
+          manager.setModel(threadId,input.model_alias);
+        }
+      } else threadId = manager.createThread(input.workspace_id,input.model_alias).id;
+      const result = manager.submit(threadId,input.prompt);
+      db.prepare("UPDATE tasks SET api_key_id=?,webhook_url=?,webhook_state=? WHERE id=?").run(key.id,
+        input.webhook_url?encryptSecret(input.webhook_url,ctx.masterKey):null,input.webhook_url?"pending":null,result.task_id);
+      if (idempotency) db.prepare("INSERT INTO task_submissions VALUES(?,?,?,?,?)").run(key.id,input.workspace_id,idempotency,fingerprint,result.task_id);
+      return result;
+    }).immediate();
     return reply.code(202).send(result);
   });
   app.get<{Params:{id:string}}>("/api/v1/tasks/:id",async req => {
@@ -153,8 +170,7 @@ export function registerOpenApi(app:FastifyInstance,ctx:ServerContext,files:Work
       out.write("id: "+event.seq_id+"\nevent: "+event.type.replace(/[\r\n]/g,"")+"\ndata: "+JSON.stringify(event)+"\n\n");
       if (["task_completed","task_failed","task_cancelled"].includes(event.type)) out.end();
     };
-    const off = events.follow(task.thread_id,after,send,task.id);
-    if (terminal(task.status) && !out.writableEnded) out.end();
+    const off = events.follow(task.thread_id,after,send,task.id,()=>{ if (terminal(task.status) && !out.writableEnded) out.end(); });
     const heartbeat = setInterval(() => {
       if (!permitted()) {out.end(); return;}
       out.write(": heartbeat\n\n");

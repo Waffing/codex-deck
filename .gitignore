@@ -20,3 +20,4 @@ test-results/
 playwright-report/
 *.tmp
 *.tgz
+__pycache__/

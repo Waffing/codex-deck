@@ -32,7 +32,12 @@ services:
     read_only: true
     tmpfs:
       - /run
-      - /var/cache/nginx
+      - /tmp:size=4m
+    healthcheck:
+      test: [CMD-SHELL, "wget -qO- http://127.0.0.1:2375/_ping | grep -qx OK"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     cap_drop:
       - ALL
     security_opt:
@@ -47,7 +52,11 @@ services:
       CODEXDECK_DATA_DIR: /data
       CODEXDECK_WORKSPACES: /workspaces
       CODEXDECK_MASTER_KEY: ${CODEXDECK_MASTER_KEY:-}
+      CODEXDECK_DOMAIN: ${CODEXDECK_DOMAIN:-}
+      CODEXDECK_COOKIE_SECURE: ${CODEXDECK_COOKIE_SECURE:-}
+      CODEXDECK_TRUSTED_HTTP_ORIGINS: ${CODEXDECK_TRUSTED_HTTP_ORIGINS:-}
       CODEXDECK_DEPLOYMENT_NETWORK: codexdeck-net
+      CODEXDECK_RELEASE_KEEP: ${CODEXDECK_RELEASE_KEEP:-5}
       DOCKER_HOST: tcp://docker-socket-proxy:2375
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
@@ -56,11 +65,14 @@ services:
       - ${CODEXDECK_WORKSPACES_HOST:-./workspaces}:/workspaces
     ports:
       - 127.0.0.1:${CODEXDECK_BIND_PORT:-3000}:3000
+    extra_hosts:
+      - host.docker.internal:host-gateway
     networks:
       - codexdeck-net
       - control
     depends_on:
-      - docker-socket-proxy
+      docker-socket-proxy:
+        condition: service_healthy
     read_only: true
     tmpfs:
       - /tmp

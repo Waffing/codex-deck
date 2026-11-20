@@ -8,6 +8,11 @@ import path from "node:path";
 const cliDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(cliDirectory, "../../..");
 
+function supportedNode() {
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  return major > 22 || (major === 22 && minor >= 13);
+}
+
 function help() {
   process.stdout.write(`CodexDeck CLI
 
@@ -58,6 +63,7 @@ function runCheck(command, args) {
 }
 
 async function start(options) {
+  if (!supportedNode()) throw new Error("Node.js 22.13 or newer is required.");
   const port = Number(options.get("port") ?? 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535 || [22, 80, 443].includes(port)) {
     throw new Error("Port must be between 1 and 65535 and cannot be 22, 80 or 443.");
@@ -125,7 +131,7 @@ async function status(options) {
 
 function doctor() {
   const checks = [
-    ["Node.js 22+", Number(process.versions.node.split(".")[0]) >= 22 ? process.version : null],
+    ["Node.js 22.13+", supportedNode() ? process.version : null],
     ["Codex CLI", runCheck("codex", ["--version"])],
     ["Git", runCheck("git", ["--version"])],
   ];

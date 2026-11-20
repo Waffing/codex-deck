@@ -1,3 +1,4 @@
+import { installationCode } from "../src/routes/auth.js";
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import WebSocket from "ws";
@@ -27,7 +28,7 @@ test("WebSocket replays precisely 4–8, masks stored and live events, then deli
   const connected:WebSocket[]=[];
   try {
     const url=(await app.listen({port:0,host:"127.0.0.1"})).replace(/^http:/,"ws:");
-    const setup=await app.inject({method:"POST",url:"/api/auth/setup",payload:{password:"websocket-test-password"}});
+    const setup=await app.inject({method:"POST",url:"/api/auth/setup",payload:{ setup_code: installationCode(ctx.native,ctx.masterKey),password:"websocket-test-password"}});
     const cookie=String(setup.headers["set-cookie"]).split(";")[0];
     const open=(after:number)=>{
       const socket=new WebSocket(url+"/ws/events?thread_id=thread&last_seq_id="+after,{headers:{cookie}});

@@ -11,9 +11,11 @@ import { fromChatResponse, toChatRequest, translateChatStream } from "./transfor
 import { readSse, type SseFrame } from "./sse.js";
 import { redactSse } from "./redact-sse.js";
 import { upstreamHeaders, upstreamUrl } from "./upstream.js";
+import { upstreamFetch } from "./transport.js";
+import type { AddressInfo } from "node:net";
 
 type Channel = { model: typeof models.$inferSelect; provider: typeof providers.$inferSelect };
-type Meter = { channel: Channel | null; attempted: string[]; input: number; output: number; status: number; error: string | null };
+type Meter = { channel: Channel | null; attempted: string[]; input: number; output: number; known:boolean; status: number; error: string | null };
 
 class GatewayError extends Error {
   constructor(readonly status: number, message: string, readonly retryable = false) { super(message); }
@@ -25,8 +27,9 @@ function findChannel(context: ServerContext, field: "id" | "alias", value: strin
     .where(and(eq(models[field], value), eq(models.enabled, true), eq(providers.enabled, true))).get();
 }
 
-function registerUsage(reply: FastifyReply, alias: string, context: ServerContext): Meter {
-  const meter: Meter = { channel: null, attempted: [], input: 0, output: 0, status: 200, error: null };
+function registerUsage(reply: FastifyReply, alias: string, context: ServerContext, threadId?:string, taskId?:string) {
+  const owner=threadId && context.native.prepare("SELECT workspace_id FROM threads WHERE id=?").pluck().get(threadId);
+  const meter: Meter = { channel: null, attempted: [], input: 0, output: 0, status: 200, error: null, known:false };
   const start = performance.now();
   const persist = () => {
     const model = meter.channel?.model;
@@ -37,6 +40,7 @@ function registerUsage(reply: FastifyReply, alias: string, context: ServerContex
     context.orm.insert(usageLogs).values({
       id: randomUUID(), modelId: model?.id, providerId: model?.providerId, requestedAlias: context.masker.maskString(alias),
       inputTokens: meter.input, outputTokens: meter.output, costUsd: cny ? 0 : cost, costCny: cny ? cost : 0,
+      usageKnown:meter.known,threadId,taskId,workspaceId:typeof owner==="string"?owner:null,
       latencyMs: Math.round(performance.now() - start), statusCode: reply.raw.writableFinished ? meter.status : 499,
       failoverFrom: meter.attempted.length > 1 ? meter.attempted.slice(0, -1).join(",") : null,
       error: meter.error, createdAt: new Date().toISOString(),
@@ -61,6 +65,7 @@ function registerUsage(reply: FastifyReply, alias: string, context: ServerContex
 function readUsage(response: Record<string, unknown>, meter: Meter) {
   const usage = response.usage as { input_tokens?: number; output_tokens?: number } | null;
   if (!usage) return;
+  meter.known=Number.isSafeInteger(usage.input_tokens) && usage.input_tokens!>=0 && Number.isSafeInteger(usage.output_tokens) && usage.output_tokens!>=0;
   if (Number.isSafeInteger(usage.input_tokens) && usage.input_tokens! >= 0) meter.input = usage.input_tokens!;
   if (Number.isSafeInteger(usage.output_tokens) && usage.output_tokens! >= 0) meter.output = usage.output_tokens!;
 }
@@ -83,7 +88,7 @@ function setFailoverHeader(reply: FastifyReply, meter: Meter) {
 async function forward(context: ServerContext, reply: FastifyReply, channel: Channel, request: ResponseRequest, meter: Meter) {
   const { model, provider } = channel;
   const { headers, apiKey } = readCredentials(provider, context);
-  const caps = provider.lastProbeJson ? JSON.parse(provider.lastProbeJson).capabilities : null;
+  const caps = model.lastProbeJson ? JSON.parse(model.lastProbeJson).capabilities : null;
   const quirks = JSON.parse(provider.quirksJson);
   let chat = quirks.force_chat === true || model.protocol === "chat" || (model.protocol === "auto" && !caps?.responses && !!caps?.chat);
   const stripReasoning = quirks.strip_reasoning === true;
@@ -98,9 +103,9 @@ async function forward(context: ServerContext, reply: FastifyReply, channel: Cha
         delete body.reasoning;
         delete body.reasoning_effort;
       }
-      return fetch(upstreamUrl(provider.baseUrl, useChat ? "chat/completions" : "responses"), {
-        method: "POST", redirect: "error", headers: upstreamHeaders(headers, apiKey), body: JSON.stringify(body), signal: abort.signal,
-      });
+      return upstreamFetch(upstreamUrl(provider.baseUrl, useChat ? "chat/completions" : "responses"), {
+        method: "POST", headers: upstreamHeaders(headers, apiKey), body: JSON.stringify(body), signal: abort.signal,
+      },!!apiKey || Object.values(headers).some(Boolean),[context.gatewayConfig.port,(reply.server.server.address() as AddressInfo|null)?.port]);
     };
     let response = await call(chat);
     if (!chat && model.protocol === "auto" && [404, 405].includes(response.status)) {
@@ -161,21 +166,24 @@ async function forward(context: ServerContext, reply: FastifyReply, channel: Cha
 }
 
 export function registerGatewayRoutes(app: FastifyInstance, context: ServerContext): void {
+  const claimsByRequest=new WeakMap<object,Record<string,unknown>>();
   app.post("/internal/v1/responses", {
     onRequest: async (request, reply) => {
       const ip = request.raw.socket.remoteAddress ?? "";
       const loopback = ip === "::1" || /^(::ffff:)?127\./i.test(ip);
-      const token = /^Bearer (\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
-      if (!loopback || !token || !verifyInternalToken(token, context.masterKey)) {
+      const credential = /^Bearer (\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
+      const token=credential?.startsWith("cdlease_") ? context.resolveSessionLease?.(credential,"model") : credential;
+      const claims=token && verifyInternalToken(token,context.masterKey) ? verifySignedPayload(token,context.masterKey):null;
+      if (!loopback || !claims || (claims.task_id!==undefined && (typeof claims.task_id!=="string" || typeof claims.thread_id!=="string" ||
+          !context.native.prepare("SELECT 1 FROM tasks WHERE id=? AND thread_id=? AND status='running'").get(claims.task_id,claims.thread_id)))) {
         await reply.code(401).send({ error: "A valid local gateway token is required." });
-      }
+      } else claimsByRequest.set(request,claims);
     },
   }, async (request, reply) => {
     const parsed = responseRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid Responses request." });
     const input = parsed.data;
-    const token = request.headers.authorization!.slice(7);
-    const claims = verifySignedPayload(token, context.masterKey);
+    const claims = claimsByRequest.get(request);
     if (typeof claims?.thread_id === "string") {
       const thread = context.native.prepare("SELECT active_model_alias,reasoning_effort FROM threads WHERE id=?")
         .get(claims.thread_id) as {active_model_alias: string | null; reasoning_effort: string | null} | undefined;
@@ -183,7 +191,7 @@ export function registerGatewayRoutes(app: FastifyInstance, context: ServerConte
       input.model = thread.active_model_alias;
       if (thread.reasoning_effort) input.reasoning = { ...input.reasoning as object, effort: thread.reasoning_effort };
     }
-    const meter = registerUsage(reply, input.model, context);
+    const meter = registerUsage(reply, input.model, context,typeof claims?.thread_id==="string"?claims.thread_id:undefined,typeof claims?.task_id==="string"?claims.task_id:undefined);
     const primary = findChannel(context, "alias", input.model);
     if (!primary) {
       meter.status = 404;

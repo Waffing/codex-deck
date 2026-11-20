@@ -1,3 +1,4 @@
+import { installationCode } from "../src/routes/auth.js";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
@@ -28,7 +29,7 @@ beforeAll(async()=>{
   app=createServer(ctx,{workspaceRoot:root,dataDirectory:data,webRoot:web});
   await app.ready();
   expect((await app.inject("/api/onboarding/status")).json()).toMatchObject({setup_required:true,authenticated:false});
-  const setup=await app.inject({method:"POST",url:"/api/auth/setup",payload:{password:"FixtureConsolePassword"}});
+  const setup=await app.inject({method:"POST",url:"/api/auth/setup",payload:{ setup_code: installationCode(ctx.native,ctx.masterKey),password:"FixtureConsolePassword"}});
   cookie=String(setup.headers["set-cookie"]).split(";")[0];
 });
 afterAll(async()=>{await app?.close(); db?.native.close(); if(root) await rm(root,{recursive:true,force:true});});
@@ -41,6 +42,9 @@ test("serves real assets and SPA navigation while preserving control-plane route
     expect(res.body).toContain("<title>CodexDeck</title>");
   }
   expect((await get("/assets/app.js")).body).toBe("export const ready=true");
+  const head=await app.inject({method:"HEAD",url:"/assets/app.js"});
+  expect(head.body).toBe(""); expect(head.headers["content-type"]).toMatch(/javascript/);
+  expect(Number(head.headers["content-length"])).toBe(Buffer.byteLength("export const ready=true"));
   for(const url of ["/api/unknown","/ws/unknown","/preview/unknown","/internal/unknown","/assets/missing.js","/.env"]) {
     const res=await get(url);
     expect(res.statusCode).toBeGreaterThanOrEqual(400);
@@ -81,7 +85,7 @@ test("requires an enabled model and ready workspace, imports registered local di
   const insert=db.native.prepare("INSERT INTO usage_logs(id,provider_id,model_id,requested_alias,input_tokens,output_tokens,cost_usd,cost_cny,created_at) VALUES(?,?,?,'local-model',10,5,?,?,?)");
   insert.run("usd",provider.id,model.id,0.75,0,"2026-01-02T00:00:00Z");
   insert.run("cny",provider.id,model.id,0,1.5,"2026-01-01T23:00:00Z");
-  const totals={requests:2,input_tokens:20,output_tokens:10,cost_usd:.75,cost_cny:1.5};
+  const totals={requests:2,unknown_usage:2,input_tokens:20,output_tokens:10,cost_usd:.75,cost_cny:1.5};
   for(const [group,label] of [["provider","Vendor"],["model","local-model"]])
     expect((await get("/api/usage?group_by="+group)).json()).toEqual({rows:[{label,...totals}],totals});
   expect((await get("/api/usage?group_by=day")).json().rows.map((row:{label:string})=>row.label)).toEqual(["2026-01-02","2026-01-01"]);

@@ -24,6 +24,7 @@ RUN pnpm install --frozen-lockfile \
 FROM node:22-bookworm-slim AS runtime
 
 ARG INSTALL_PLAYWRIGHT=false
+ARG CODEX_VERSION=0.157.1
 ENV NODE_ENV=production \
     CODEXDECK_HOST=0.0.0.0 \
     CODEXDECK_PORT=3000 \
@@ -48,7 +49,7 @@ RUN apt-get update \
       > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
-    && npm install --global @openai/codex \
+    && npm install --global "@openai/codex@$CODEX_VERSION" \
     && if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \
       node /app/apps/server/node_modules/playwright-core/cli.js install --with-deps chromium; \
     fi \

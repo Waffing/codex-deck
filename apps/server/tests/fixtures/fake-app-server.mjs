@@ -58,7 +58,7 @@ async function receive(msg) {
       }});
       return;
     }
-    if (prompt === "wait") { delta("started"); return; }
+    if (prompt === "wait") { delta("started!"); return; }
     if (prompt === "gateway") {
       const response = await fetch(base + "/responses", {method:"POST",headers:{"content-type":"application/json",
         authorization:"Bearer " + process.env.CODEXDECK_INTERNAL_TOKEN},body:JSON.stringify({model:alias,input:"test"})});

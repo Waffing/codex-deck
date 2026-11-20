@@ -21,6 +21,10 @@ export async function loadMasterKey(dataDirectory: string, configured = process.
   return decoded;
 }
 
+export function rotationProof(key: Uint8Array): string {
+  return createHmac("sha256",key).update("codexdeck:key-rotation:v1").digest("hex");
+}
+
 export function encryptSecret(secret: string, masterKey: Uint8Array): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", masterKey, iv);

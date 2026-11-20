@@ -40,7 +40,8 @@ export async function workspaceDirectory(workspaceRoot: string, target: string, 
 
 /** SQLite resolves auxiliary names itself, so reject links at all file leaves. */
 export async function workspaceFile(workspaceRoot: string, target: string): Promise<string> {
-  const parent = await workspaceDirectory(workspaceRoot, path.dirname(target));
+  const parentPath = path.dirname(path.resolve(workspaceRoot,target));
+  const parent = parentPath===path.resolve(workspaceRoot) ? await realpath(workspaceRoot) : await workspaceDirectory(workspaceRoot,parentPath);
   const file = path.join(parent, path.basename(target));
   let metadata;
   try {

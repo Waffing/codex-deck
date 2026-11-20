@@ -79,6 +79,7 @@ function Topology({ step }: { step: number }) {
 export function Onboarding({ onComplete }: { onComplete: (showProfile: boolean) => void }) {
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
   const [step, setStep] = useState(0);
+  const [setupCode, setSetupCode] = useState("");
   const [password, setPassword] = useState(""),
     [confirm, setConfirm] = useState(""),
     [visible, setVisible] = useState(false);
@@ -139,7 +140,8 @@ export function Onboarding({ onComplete }: { onComplete: (showProfile: boolean) 
   }, []);
   async function account() {
     if (!login && password !== confirm) throw new Error("两次输入的密码不一致。");
-    await api(login ? "/api/auth/login" : "/api/auth/setup", json("POST", { password }));
+    await api(login ? "/api/auth/login" : "/api/auth/setup", json("POST", login ? { password } : { password, setup_code:setupCode.trim() }));
+    setSetupCode("");
     setPassword("");
     setConfirm("");
     setVisible(false);
@@ -271,6 +273,7 @@ export function Onboarding({ onComplete }: { onComplete: (showProfile: boolean) 
                   void a.run(account);
                 }}
               >
+                {!login && <label>安装码<input type="password" autoComplete="off" value={setupCode} onChange={e=>setSetupCode(e.target.value)} placeholder="安装机数据目录中的 setup-code" required /></label>}
                 <label>
                   管理员密码
                   <div className="ob-password">

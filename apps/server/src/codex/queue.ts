@@ -4,6 +4,7 @@ export class WorkspaceQueue {
   private waiting = new Map<string, QueuedTurn[]>();
   private active = new Map<string, Promise<void>>();
   private stopped = false;
+  constructor(private readonly concurrency = 2) {}
 
   enqueue(workspace: string, item: QueuedTurn) {
     if (this.stopped) throw new Error("Queue is closed.");
@@ -22,14 +23,14 @@ export class WorkspaceQueue {
   }
 
   private next(workspace: string) {
-    if (this.stopped || this.active.has(workspace)) return;
+    if (this.stopped || this.active.has(workspace) || this.active.size >= this.concurrency) return;
     const queue = this.waiting.get(workspace);
     const item = queue?.shift();
     if (!queue?.length) this.waiting.delete(workspace);
     if (!item) return;
     const running = Promise.resolve().then(item.run).finally(() => {
       this.active.delete(workspace);
-      this.next(workspace);
+      for (const key of this.waiting.keys()) this.next(key);
     });
     this.active.set(workspace, running);
   }

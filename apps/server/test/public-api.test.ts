@@ -1,3 +1,4 @@
+import { installationCode } from "../src/routes/auth.js";
 import { createHmac, randomBytes } from "node:crypto";
 import { createServer as httpServer } from "node:http";
 import { once } from "node:events";
@@ -32,7 +33,7 @@ test("public tasks enforce scope and workspace, resume SSE, sign retried callbac
     await once(webhook,"listening");
     const destination = "http://127.0.0.1:"+(webhook.address() as AddressInfo).port;
     const url = await app.listen({host:"127.0.0.1",port:0});
-    const setup = await app.inject({method:"POST",url:"/api/auth/setup",payload:{password:"testing-public-api-pass"}});
+    const setup = await app.inject({method:"POST",url:"/api/auth/setup",payload:{ setup_code: installationCode(ctx.native,ctx.masterKey),password:"testing-public-api-pass"}});
     const cookie = String(setup.headers["set-cookie"]).split(";")[0];
     const admin = (route:string,payload:object) => app.inject({method:"POST",url:route,payload,headers:{cookie}});
     const project = (await admin("/api/workspaces",{name:"target"})).json().id;
@@ -46,12 +47,16 @@ test("public tasks enforce scope and workspace, resume SSE, sign retried callbac
     }
     const key = await issue(["tasks:read","tasks:write","files:download"]);
     const bearer = {authorization:"Bearer "+key.api_key};
-    const post = (workspace_id:string) => fetch(url+"/api/v1/tasks",{method:"POST",headers:{...bearer,"content-type":"application/json"},
-      body:JSON.stringify({workspace_id,prompt:"create the test file",model_alias:"test",webhook_url:destination+"/callback"})});
+    const post = (workspace_id:string,prompt="create the test file") => fetch(url+"/api/v1/tasks",{method:"POST",headers:{...bearer,"content-type":"application/json","Idempotency-Key":"delivery-1"},
+      body:JSON.stringify({workspace_id,prompt,model_alias:"test",webhook_url:destination+"/callback"})});
     expect((await post(other)).status).toBe(403);
-    const created = await post(project);
+    const [created,retry] = await Promise.all([post(project),post(project)]);
     expect(created.status).toBe(202);
     const {task_id} = await created.json();
+    expect(retry.status).toBe(202);
+    expect((await retry.json()).task_id).toBe(task_id);
+    expect((await post(project,"different")).status).toBe(409);
+    expect(db.native.prepare("SELECT count(*) FROM tasks").pluck().get()).toBe(1);
     const resource = url+"/api/v1/tasks/"+task_id;
     const stream = await fetch(resource+"/stream",{headers:bearer});
     expect(stream.headers.get("content-type")).toContain("text/event-stream");

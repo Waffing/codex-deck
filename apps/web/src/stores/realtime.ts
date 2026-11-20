@@ -1,7 +1,8 @@
 import {create} from "zustand";
 import {threadEventSchema,type ThreadEvent} from "@codexdeck/shared";
 
-export type Heartbeat = {timestamp:string;cpu_percent:number|null;total_memory_bytes:number;free_memory_bytes:number;running_services:number;gateway_healthy:boolean};
+export type Heartbeat = {timestamp:string;cpu_percent:number|null;total_memory_bytes:number;free_memory_bytes:number;running_services:number;gateway_healthy:boolean;
+  gateway_state:"unconfigured"|"unverified"|"stale"|"verified"|"failed";gateway_checked_at:string|null;gateway_error:string|null};
 type Realtime = {thread:string;events:ThreadEvent[];state:"connecting"|"online"|"offline";heartbeat:Heartbeat|null; approvals:number|null};
 export const useRealtime=create<Realtime>(()=>({thread:"",events:[],state:"offline",heartbeat:null,approvals:null}));
 const prefix="codexdeck.events.v1.";
@@ -10,16 +11,21 @@ export function mergeEvents(prev:ThreadEvent[],batch:ThreadEvent[],thread:string
   for(const e of batch) if(e.thread_id===thread && !records.has(e.seq_id)) records.set(e.seq_id,e);
   return [...records.values()].sort((a,b)=>a.seq_id-b.seq_id);
 }
-export function lastContiguous(events:ThreadEvent[]){
-  let seq=0;
-  for(const e of events) {if(e.seq_id!==seq+1) break;seq=e.seq_id;}
+export function lastContiguous(events:ThreadEvent[],from=0){
+  let seq=from;
+  for(const e of events) {if(e.seq_id<=seq) continue;if(e.seq_id!==seq+1) break;seq=e.seq_id;}
   return seq;
 }
-function restore(id:string):ThreadEvent[] {
+function restore(id:string):{events:ThreadEvent[];cursor:number} {
   try {
-    const parsed=threadEventSchema.array().safeParse(JSON.parse(sessionStorage.getItem(prefix+id)??"[]"));
-    return parsed.success?mergeEvents([],parsed.data,id):[];
-  }catch{return [];}
+    const data=JSON.parse(sessionStorage.getItem(prefix+id)??"[]");
+    const parsed=threadEventSchema.array().safeParse(Array.isArray(data)?data:data.events);
+    if (parsed.success) {
+      const events=mergeEvents([],parsed.data,id).slice(-512);
+      return {events,cursor:Array.isArray(data)?lastContiguous(parsed.data):Math.max(0,Number(data.cursor)||0)};
+    }
+  }catch{/* A fresh client can replay from the beginning. */}
+  return {events:[],cursor:0};
 }
 export function clearRealtime(){
   for(const key of Object.keys(sessionStorage)) if(key.startsWith(prefix)) sessionStorage.removeItem(key);
@@ -30,20 +36,28 @@ export function connectEvents(thread:string,onChange:()=>void,onUnauthorized:()=
   let retry:ReturnType<typeof setTimeout>|undefined, flush:ReturnType<typeof setTimeout>|undefined;
   let refresh:ReturnType<typeof setTimeout>|undefined;
   let pending:ThreadEvent[]=[];
-  useRealtime.setState({thread,events:restore(thread),state:"connecting"});
+  const saved=restore(thread);
+  let cursor=saved.cursor;
+  useRealtime.setState({thread,events:saved.events,state:"connecting"});
   function apply(){
     clearTimeout(flush);flush=undefined;
     if(!pending.length)return;
-    const events=mergeEvents(useRealtime.getState().events,pending,thread);
+    const combined=mergeEvents(useRealtime.getState().events,pending,thread);
+    cursor=lastContiguous(combined,cursor);
+    const events=combined.slice(-512);
     pending=[];useRealtime.setState({events});
-    try{sessionStorage.setItem(prefix+thread,JSON.stringify(events));}catch{/* On reload the server replays from the last complete saved snapshot. */}
+    try{
+      let keep=events, snapshot=JSON.stringify({cursor,events:keep});
+      while(snapshot.length>256*1024 && keep.length){keep=keep.slice(Math.ceil(keep.length/2));snapshot=JSON.stringify({cursor,events:keep});}
+      sessionStorage.setItem(prefix+thread,snapshot);
+    }catch{/* On reload the server replays from the last complete saved snapshot. */}
   }
   function changed(){if(!refresh)refresh=setTimeout(()=>{refresh=undefined;onChange();},35);}
   function open(){
     useRealtime.setState({state:"connecting"});
     const url=new URL("/ws/events",location.href);
     url.protocol=location.protocol==="https:"?"wss:":"ws:";
-    if(thread){url.searchParams.set("thread_id",thread);url.searchParams.set("last_seq_id",String(lastContiguous(useRealtime.getState().events)));}
+    if(thread){url.searchParams.set("thread_id",thread);url.searchParams.set("last_seq_id",String(cursor));}
     const ws=new WebSocket(url);socket=ws;
     ws.onopen=()=>{attempt=0;useRealtime.setState({state:"online"});changed();};
     ws.onmessage=({data})=>{

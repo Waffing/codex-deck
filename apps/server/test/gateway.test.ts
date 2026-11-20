@@ -138,6 +138,26 @@ test("honors forced Chat mode and accounts CNY prices in their configured curren
   expect(context.orm.select().from(usageLogs).get()).toMatchObject({costCny:0.00015,costUsd:0});
 });
 
+test("bills the active task and distinguishes actual zeroes from missing or partial Chat usage", async()=>{
+  addModel("chat","chat");
+  context.native.exec(`INSERT INTO workspaces(id,name,path,created_at,updated_at) VALUES('w','w','w','','');
+    INSERT INTO threads(id,workspace_id,title,status,created_at,updated_at,active_model_alias) VALUES('t','w','t','running','','','chat');
+    INSERT INTO tasks(id,workspace_id,thread_id,prompt,status,created_at,updated_at) VALUES('job','w','t','p','running','','')`);
+  const now=Math.floor(Date.now()/1000);
+  const claims={aud:"codexdeck-internal",thread_id:"t",task_id:"job",iat:now,exp:now+60,nonce:"fixture"};
+  const credential=signPayload(claims,context.masterKey);
+  for(const usage of [undefined,{prompt_tokens:0},{prompt_tokens:0,completion_tokens:0}]) {
+    serve=(_req,res)=>res.end(JSON.stringify({choices:[{message:{content:"ok"},finish_reason:"stop"}],usage}));
+    const result=await post("chat",{},credential);
+    expect(result.status).toBe(200); await result.text();
+  }
+  const rows=context.orm.select().from(usageLogs).all();
+  expect(rows.map(row=>row.usageKnown)).toEqual([false,false,true]);
+  expect(rows.every(row=>row.taskId==="job" && row.workspaceId==="w" && row.threadId==="t")).toBe(true);
+  context.native.exec("UPDATE tasks SET status='cancelled' WHERE id='job'");
+  expect((await post("chat",{},credential)).status).toBe(401);
+});
+
 test("streams Chat deltas before upstream completion and accounts for a separate final usage chunk", async () => {
   addModel("chat", "chat");
   let finish: () => void = () => {};
@@ -207,6 +227,31 @@ test("translates two interleaved function calls and carries both outputs into th
     { role: "assistant", tool_calls: [{ id: "call-L" }, { id: "call-R" }] },
     { role: "tool", content: "ok", tool_call_id: "call-L" }, { role: "tool", content: "ok", tool_call_id: "call-R" },
   ]);
+});
+
+test("flattens Responses namespace tools and restores namespace in streamed calls",async()=>{
+  addModel("namespaced","chat");
+  serve=(body,res)=>{
+    expect(body.tools).toEqual([{type:"function",function:expect.objectContaining({name:expect.stringMatching(/^ns_[a-f0-9]{20}_port_allocate$/)})}]);
+    res.writeHead(200,{"content-type":"text/event-stream"}).end(
+      chatData({tool_calls:[{index:0,id:"call-n",function:{name:body.tools[0].function.name,arguments:"{}"}}]}, "tool_calls")+"data: [DONE]\n\n");
+  };
+  const response=await post("namespaced",{stream:true,tools:[{type:"namespace",name:"codexdeck_ops",tools:[{type:"function",name:"port_allocate",parameters:{type:"object"}}]}]});
+  const events=await jsonEvents(response);
+  const call=events.find(event=>event.type==="response.output_item.added");
+  expect(call.item).toMatchObject({type:"function_call",name:"port_allocate",namespace:"codexdeck_ops"});
+});
+
+test("flattens function tools carrying the Codex MCP namespace field",async()=>{
+  addModel("mcp","chat");
+  serve=(body,res)=>{
+    expect(body.tools[0].function.name).toMatch(/^ns_[a-f0-9]{20}_port_allocate$/);
+    res.writeHead(200,{"content-type":"application/json"}).end(JSON.stringify({choices:[{message:{
+      tool_calls:[{id:"call-mcp",function:{name:body.tools[0].function.name,arguments:"{}"}}],
+    },finish_reason:"tool_calls"}],usage:{prompt_tokens:1,completion_tokens:1}}));
+  };
+  const result=await (await post("mcp",{tools:[{type:"function",name:"port_allocate",namespace:"mcp__codexdeck_ops",parameters:{type:"object"}}]})).json();
+  expect(result.output[0]).toMatchObject({type:"function_call",name:"port_allocate",namespace:"mcp__codexdeck_ops"});
 });
 
 test.each([429, 503, "first-event-timeout"] as const)("switches before the first byte after %s and bills the successful channel once", async (status) => {

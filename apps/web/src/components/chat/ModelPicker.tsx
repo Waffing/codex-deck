@@ -79,7 +79,7 @@ export function ModelPicker({
             <section key={p.id}>
               <h4>{p.name}</h4>
               {group.map((m) => {
-                const caps = p.last_probe?.capabilities;
+                const caps = m.last_probe?.capabilities;
                 const mode =
                   m.protocol === "auto"
                     ? caps?.responses

@@ -1,15 +1,14 @@
 import path from "node:path";
 import { lstat } from "node:fs/promises";
 import type { FastifyInstance, FastifyReply } from "fastify";
-import fastifyStatic from "@fastify/static";
-import { resolveSafeWorkspacePath } from "./files/sandbox.js";
+import { contentType } from "mime-types";
+import { resolveSafeWorkspacePath, openWorkspaceFile } from "./files/sandbox.js";
 import { repositoryRoot, workspaceDirectory } from "./security/paths.js";
 
 export function mountWeb(app:FastifyInstance, directory:string, workspaceRoot=repositoryRoot) {
   app.register(async scope => {
     const dist=await workspaceDirectory(workspaceRoot,directory);
     if (path.relative(dist,path.resolve(workspaceRoot,directory))) throw new Error("Unexpected web distribution link.");
-    await scope.register(fastifyStatic,{root:dist,serve:false,dotfiles:"deny"});
     const miss=(reply:FastifyReply)=>reply.code(404).send({error:"Not found."});
     scope.get("/*",async(req,reply)=>{
       const raw=req.raw.url?.split("?")[0] ?? "/";
@@ -32,7 +31,12 @@ export function mountWeb(app:FastifyInstance, directory:string, workspaceRoot=re
       } else if(info.nlink!==1) return miss(reply);
       reply.header("x-content-type-options","nosniff");
       if(filename==="index.html") reply.header("cache-control","no-cache");
-      return reply.sendFile(filename);
+      const handle=await openWorkspaceFile(dist,filename);
+      try {
+        reply.type(contentType(path.extname(filename)) || "application/octet-stream").header("content-length",(await handle.stat()).size);
+
+        return reply.send(handle.createReadStream());
+      } catch(error) { await handle.close(); throw error; }
     });
   });
 }

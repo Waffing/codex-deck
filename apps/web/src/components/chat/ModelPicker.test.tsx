@@ -32,6 +32,7 @@ function setup() {
     provider_id: "p",
     alias: "local-chat",
     model_id: "upstream",
+    last_probe: provider.last_probe,
     protocol: "auto",
     fallback_model_ids: [],
     enabled: true,
@@ -65,7 +66,7 @@ function setup() {
   render(
     <ModelPicker
       {...{ workspace, thread, onRefresh, onCreateThread }}
-      models={[model]}
+      models={[model,{...model,id:"m2",alias:"no-probe",last_probe:null}]}
       providers={[provider]}
     />,
   );
@@ -75,6 +76,7 @@ it("按渠道和实测能力选模型，在原会话发 PATCH", async () => {
   const { fetcher, onRefresh, onCreateThread, user } = setup();
   await user.click(screen.getByRole("button", { name: "模型与策略" }));
   ["本地中转", "Tools", "Vision", "Chat转译"].forEach((s) => expect(screen.getByText(s)).toBeInTheDocument());
+  expect(screen.getByRole("button",{name:/no-probe/})).not.toHaveTextContent("Vision");
   await user.click(screen.getByRole("button", { name: /local-chat/ }));
   expect(fetcher).toHaveBeenCalledWith(
     "/api/threads/t/model",

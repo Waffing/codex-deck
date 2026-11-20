@@ -8,6 +8,8 @@ else
 fi
 REPOSITORY="${CODEXDECK_REPOSITORY:-}"
 IMAGE="${CODEXDECK_IMAGE:-}"
+RELEASE="${CODEXDECK_VERSION:-}"
+EXPLICIT_IMAGE="$IMAGE"
 INSTALL_DIR=""
 WORKSPACES=""
 DOMAIN=""
@@ -35,11 +37,11 @@ CodexDeck installer
 Usage:
   install.sh [--native] [--upgrade] [--uninstall] [--yes]
              [--port PORT] [--workspaces PATH] [--domain DOMAIN]
-             [--with-playwright] [--dir PATH]
+             [--with-playwright] [--dir PATH] [--version vX.Y.Z]
 
 Environment overrides:
   CODEXDECK_REPOSITORY=Waffing/codex-deck
-  CODEXDECK_IMAGE=ghcr.io/waffing/codex-deck:latest
+  CODEXDECK_VERSION=v0.1.0
 
 Install directory defaults to /opt/codexdeck for root and $HOME/codexdeck otherwise.
 Use --native for a systemd installation on the host. --yes keeps data on uninstall.
@@ -107,14 +109,14 @@ discover_local_source() {
 
 fetch_deploy_file() {
   local name="$1" destination="$2" downloaded
-  if [ -n "$SOURCE_DIR" ] && [ -f "$SOURCE_DIR/deploy/$name" ]; then
+  if [ -n "$SOURCE_DIR" ] && [ "$(git -C "$SOURCE_DIR" describe --tags --exact-match 2>/dev/null || true)" = "$RELEASE" ] && git -C "$SOURCE_DIR" diff --quiet HEAD -- "deploy/$name" && [ -f "$SOURCE_DIR/deploy/$name" ]; then
     install -m 0644 "$SOURCE_DIR/deploy/$name" "$destination"
     return
   fi
   local repo
   repo="$(script_repository)"
   downloaded="$(mktemp "$destination.XXXXXX")"
-  if ! curl -fsSL "https://raw.githubusercontent.com/$repo/main/deploy/$name" -o "$downloaded"; then
+  if ! curl -fsSL "https://raw.githubusercontent.com/$repo/$RELEASE/deploy/$name" -o "$downloaded"; then
     rm -f -- "$downloaded"
     fail "Could not download deploy/$name from $repo. Verify CODEXDECK_REPOSITORY."
   fi
@@ -179,6 +181,7 @@ parse_args() {
       --uninstall) ACTION="uninstall"; UNINSTALL_SET=1; shift ;;
       --yes|-y) YES=1; shift ;;
       --with-playwright) WITH_PLAYWRIGHT=1; PLAYWRIGHT_SET=1; shift ;;
+      --version) [ "$#" -ge 2 ] || fail "--version needs a release tag"; RELEASE="$2"; shift 2 ;;
       --port)
         [ "$#" -ge 2 ] || fail "--port requires a value."
         PORT="$2"; PORT_SET=1; shift 2 ;;
@@ -223,28 +226,34 @@ load_existing_config() {
   if [ "$DOMAIN_SET" -eq 0 ]; then
     DOMAIN="$(sed -n 's/^CODEXDECK_DOMAIN=//p' "$file" | head -n 1 | tr -d '"' | tr -d "'")"
   fi
-  if [ "$PLAYWRIGHT_SET" -eq 0 ] && grep -q 'latest-playwright' "$file"; then
-    WITH_PLAYWRIGHT=1
-  fi
-  if [ -z "$IMAGE" ]; then
-    IMAGE="$(sed -n 's/^CODEXDECK_IMAGE=//p' "$file" | head -n 1 | tr -d '"' | tr -d "'")"
-  fi
-  if [ "$PLAYWRIGHT_SET" -eq 1 ] && [ "$WITH_PLAYWRIGHT" -eq 1 ] &&
-      [[ "$IMAGE" == *:latest || "$IMAGE" == *:latest-playwright ]]; then
-    IMAGE="${IMAGE%:*}:latest-playwright"
+  if [ "$PLAYWRIGHT_SET" -eq 0 ] && grep -q -- '-playwright' "$file"; then WITH_PLAYWRIGHT=1; fi
+  # Existing explicit third-party images survive a regular reinstall.
+  if [ -z "$IMAGE" ] && [ "$ACTION" != "upgrade" ]; then
+    IMAGE="$(sed -n 's/^CODEXDECK_IMAGE=//p' "$file" | head -n 1 | tr -d "\"'")"
   fi
 }
 
 load_native_config() {
   local file="/etc/codexdeck/codexdeck.env"
-  [ -f "$file" ] || return 0
-  STORED_PORT="$(sed -n 's/^CODEXDECK_PORT=//p' "$file" | head -n 1)"
+  as_root test -f "$file" || return 0
+  STORED_PORT="$(native_setting "$file" CODEXDECK_PORT)"
   if [ "$PORT_SET" -eq 0 ]; then
     PORT="${STORED_PORT:-3000}"
   fi
   if [ "$WORKSPACES_SET" -eq 0 ]; then
-    WORKSPACES="$(sed -n 's/^CODEXDECK_WORKSPACES=//p' "$file" | head -n 1)"
+    WORKSPACES="$(native_setting "$file" CODEXDECK_WORKSPACES)"
   fi
+}
+
+native_setting() {
+  local value
+  value="$(as_root sed -n "s/^$2=//p" "$1" | head -n 1)"
+  if [[ "$value" == \"*\" ]]; then
+    value="${value:1:${#value}-2}"
+    value="${value//\\\"/\"}"
+    value="${value//\\\\/\\}"
+  fi
+  printf '%s' "$value"
 }
 
 install_environment_file() {
@@ -293,10 +302,12 @@ update_env_key() {
 }
 
 compose() {
+  local files=(-f docker-compose.yml)
+  if [ "$WITH_PLAYWRIGHT" -eq 1 ] && [ -f "$INSTALL_DIR/docker-compose.playwright.yml" ]; then files+=(-f docker-compose.playwright.yml); fi
   if [ "$DOCKER_SUDO" -eq 1 ]; then
-    (cd -- "$INSTALL_DIR" && sudo docker compose --env-file .env -f docker-compose.yml "$@")
+    (cd -- "$INSTALL_DIR" && sudo docker compose --env-file .env "${files[@]}" "$@")
   else
-    (cd -- "$INSTALL_DIR" && docker compose --env-file .env -f docker-compose.yml "$@")
+    (cd -- "$INSTALL_DIR" && docker compose --env-file .env "${files[@]}" "$@")
   fi
 }
 
@@ -407,30 +418,63 @@ choose_install_options() {
   fi
 }
 
+resolve_release() {
+  if [ -z "$RELEASE" ]; then
+    local repo
+    repo="$(script_repository)"
+    RELEASE="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest")"
+    RELEASE="${RELEASE##*/}"
+  fi
+  [[ "$RELEASE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Could not resolve a release. Supply --version vX.Y.Z."
+}
+
 select_image() {
   if [ -z "$IMAGE" ]; then
     local repo
     repo="${CODEXDECK_IMAGE_REPOSITORY:-ghcr.io/waffing/codex-deck}"
     if [ "$WITH_PLAYWRIGHT" -eq 1 ]; then
-      IMAGE="$repo:latest-playwright"
+      IMAGE="$repo:$RELEASE-playwright"
     else
-      IMAGE="$repo:latest"
+      IMAGE="$repo:$RELEASE"
     fi
   fi
 }
 
 docker_install() {
   ensure_docker
+  local previous="" profile=()
+  if [ "$ACTION" = "upgrade" ] && [ -f "$INSTALL_DIR/.env" ]; then
+    previous="$(mktemp -d "$INSTALL_DIR/.previous-release.XXXXXX")"
+    for file in .env docker-compose.yml Caddyfile docker-compose.playwright.yml chromium-seccomp.json; do
+      if [ -f "$INSTALL_DIR/$file" ]; then cp -p -- "$INSTALL_DIR/$file" "$previous/"; fi
+    done
+    # Pin the rollback to the running image even if a mutable tag was installed previously.
+    local running digest
+    running="$(compose ps -q codexdeck)"
+    [ -n "$running" ] || fail "Cannot upgrade without a running rollback candidate."
+    if [ "$DOCKER_SUDO" -eq 1 ]; then digest="$(sudo docker inspect -f '{{.Image}}' "$running")"; else digest="$(docker inspect -f '{{.Image}}' "$running")"; fi
+    local recovery_tag="codexdeck-local:rollback-${digest#sha256:}"
+    if [ "$DOCKER_SUDO" -eq 1 ]; then sudo docker image tag "$digest" "$recovery_tag"; else docker image tag "$digest" "$recovery_tag"; fi
+    update_env_key "$previous/.env" CODEXDECK_IMAGE "$recovery_tag"
+  fi
   fetch_deploy_file docker-compose.yml "$INSTALL_DIR/docker-compose.yml"
   fetch_deploy_file .env.example "$INSTALL_DIR/.env.example"
   fetch_deploy_file Caddyfile.template "$INSTALL_DIR/Caddyfile.template"
+  if [ "$WITH_PLAYWRIGHT" -eq 1 ]; then
+    fetch_deploy_file docker-compose.playwright.yml "$INSTALL_DIR/docker-compose.playwright.yml"
+    fetch_deploy_file chromium-seccomp.json "$INSTALL_DIR/chromium-seccomp.json"
+    mkdir -p "$INSTALL_DIR/licenses"
+    fetch_deploy_file licenses/playwright-LICENSE "$INSTALL_DIR/licenses/playwright-LICENSE"
+  fi
   fetch_deploy_file install.sh "$INSTALL_DIR/install.sh"
+  fetch_deploy_file backup.py "$INSTALL_DIR/backup.py"
   if [ ! -f "$INSTALL_DIR/.env.example" ]; then fail "deploy/.env.example was not installed."; fi
   if [ ! -f "$INSTALL_DIR/docker-compose.yml" ]; then fail "deploy/docker-compose.yml was not installed."; fi
   mkdir -p "$INSTALL_DIR/data"
   chmod 0755 "$INSTALL_DIR/install.sh"
   if [ -z "$WORKSPACES" ]; then WORKSPACES="$INSTALL_DIR/workspaces"; fi
   prepare_workspaces
+  if [ -z "$EXPLICIT_IMAGE" ] && { [ "$ACTION" = "upgrade" ] || [ "$PLAYWRIGHT_SET" -eq 1 ]; }; then IMAGE=""; fi
   if [ -z "$IMAGE" ]; then select_image; fi
   [[ "$IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]*$ ]] ||
     fail "CODEXDECK_IMAGE is not a valid registry image reference."
@@ -451,13 +495,27 @@ docker_install() {
     cp "$INSTALL_DIR/Caddyfile.template" "$INSTALL_DIR/Caddyfile"
   fi
   chmod 0600 "$INSTALL_DIR/.env"
-  if [ "$ACTION" = "upgrade" ]; then compose pull; fi
-  if [ -n "$DOMAIN" ]; then
-    compose --profile https up -d
-  else
-    compose up -d
+  if [ -n "$DOMAIN" ]; then profile=(--profile https); fi
+  if { [ "$ACTION" != "upgrade" ] || compose "${profile[@]}" pull; } && compose "${profile[@]}" up -d && wait_for_health; then
+    if [ -n "$previous" ]; then rm -f -- "$previous/.env"; fi
+    return 0
   fi
-  wait_for_health
+  if [ -n "$previous" ]; then
+    for file in .env docker-compose.yml Caddyfile docker-compose.playwright.yml chromium-seccomp.json; do
+      if [ -f "$previous/$file" ]; then cp -p -- "$previous/$file" "$INSTALL_DIR/$file"; fi
+    done
+    # Use persisted settings, including the original port, profile and local image tag.
+    PORT_SET=0; DOMAIN_SET=0; PLAYWRIGHT_SET=0; WITH_PLAYWRIGHT=0; load_existing_config
+    profile=(); if [ -n "$DOMAIN" ]; then profile=(--profile https); fi
+    if CODEXDECK_IMAGE="$recovery_tag" compose "${profile[@]}" up -d --pull never && wait_for_health; then
+      :
+    else
+      fail "Rollback requires attention. Retained prior configuration at $previous"
+    fi
+    rm -f -- "$previous/.env"
+    fail "Upgrade failed. The previous image is healthy again."
+  fi
+  fail "Installation failed its health check."
 }
 
 wait_for_health() {
@@ -474,6 +532,13 @@ wait_for_health() {
   return 1
 }
 
+native_build() {
+  local user="$1" build_home="$2" source="$3" executable="$4"
+  # shellcheck disable=SC2016
+  as_root runuser -u "$user" -- env -i HOME="$build_home" PATH="$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin" \
+    bash -euc 'cd "$1"; "$2" pnpm install --frozen-lockfile; "$2" pnpm build' bash "$source" "$executable"
+}
+
 native_install() {
   [[ "$(uname -s)" == Linux ]] || fail "Native systemd installation is supported on Linux only."
   command -v systemctl >/dev/null 2>&1 || fail "Native installation requires systemd."
@@ -485,23 +550,29 @@ native_install() {
   command -v git >/dev/null 2>&1 || fail "Native installation requires Git."
   if [ "$ACTION" != "upgrade" ] || [ "$PORT_SET" -eq 1 ]; then check_port; fi
   validate_domain
-  local source="$INSTALL_DIR/source" data_dir="$INSTALL_DIR/source/data" repo service_user node_bin codex_bin service_file env_dir path_value
+  local source data_dir="$INSTALL_DIR/source/data" repo service_user node_bin codex_bin service_file env_dir path_value
   repo="$(script_repository)"
   service_user="codexdeck"
   if ! getent passwd "$service_user" >/dev/null; then
     as_root useradd --system --create-home --home-dir /var/lib/codexdeck --shell /usr/sbin/nologin "$service_user"
   fi
-  if [ "$ACTION" = "upgrade" ]; then
-    [ -d "$source/.git" ] || fail "No native installation was found under $source."
-    as_root git -C "$source" pull --ff-only
-  elif [ ! -d "$source/.git" ]; then
-    as_root git clone --depth 1 "https://github.com/$repo.git" "$source"
+  # Use a fresh build directory so an unsuccessful install cannot modify the running release.
+  local build_user=codexdeck-build build_home=/var/lib/codexdeck-build
+  if ! getent passwd "$build_user" >/dev/null; then
+    as_root useradd --system --create-home --home-dir "$build_home" --shell /usr/sbin/nologin "$build_user"
   fi
-  if [ -z "$WORKSPACES" ]; then WORKSPACES="$source/workspaces"; fi
-  as_root mkdir -p "$source/data" "$WORKSPACES" /etc/codexdeck
+  as_root install -d -m 0755 "$INSTALL_DIR/releases"
+  as_root runuser -u "$build_user" -- test -x "$INSTALL_DIR/releases" ||
+    fail "The build account cannot enter $INSTALL_DIR/releases. Use a shared service directory such as /opt/codexdeck."
+  source="$(as_root mktemp -d "$INSTALL_DIR/releases/$RELEASE.XXXXXX")"
+  as_root chown "$build_user:$build_user" "$source"
+  as_root chmod 0755 "$source"
+  as_root runuser -u "$build_user" -- env HOME="$build_home" git clone --branch "$RELEASE" --depth 1 "https://github.com/$repo.git" "$source"
+  if [ -z "$WORKSPACES" ]; then WORKSPACES="$INSTALL_DIR/source/workspaces"; fi
+  as_root mkdir -p "$data_dir" "$WORKSPACES" /etc/codexdeck
   WORKSPACES="$(as_root realpath -- "$WORKSPACES")"
-  as_root chown -R "$service_user:$service_user" "$source/data"
-  as_root chmod 0750 "$source/data"
+  as_root chown -R "$service_user:$service_user" "$data_dir"
+  as_root chmod 0750 "$data_dir"
   if [ -z "$(find "$WORKSPACES" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
     as_root chown "$service_user:$service_user" "$WORKSPACES"
     as_root chmod 0750 "$WORKSPACES"
@@ -516,7 +587,8 @@ native_install() {
       sudo -u "$service_user" test -x "$WORKSPACES"; } ||
       fail "The existing workspace is not accessible to codexdeck. Grant it read/write/execute access first."
   fi
-  (cd "$source" && as_root corepack pnpm install --frozen-lockfile && as_root corepack pnpm build)
+  native_build "$build_user" "$build_home" "$source" "$(command -v corepack)"
+  as_root install -m 0644 /dev/null "$source/.codexdeck-installed-release"
   node_bin="$(command -v node)"
   codex_bin="$(command -v codex)"
   if [ "$(id -u)" -eq 0 ]; then
@@ -538,7 +610,16 @@ native_install() {
   fi
   service_file="/etc/systemd/system/codexdeck.service"
   env_dir="/etc/codexdeck"
-  if [ ! -f "$env_dir/codexdeck.env" ]; then
+  local old_unit="" old_env=""
+  if as_root test -f "$service_file"; then
+    old_unit="$(as_root mktemp /etc/systemd/system/.codexdeck.XXXXXX)"
+    as_root cp -p -- "$service_file" "$old_unit"
+    if as_root test -f "$env_dir/codexdeck.env"; then
+      old_env="$(as_root mktemp "$env_dir/.codexdeck-env.XXXXXX")"
+      as_root cp -p -- "$env_dir/codexdeck.env" "$old_env"
+    fi
+  fi
+  if ! as_root test -f "$env_dir/codexdeck.env"; then
     local key
     key="$(openssl rand -hex 32)" || fail "Could not generate a master key. Install openssl."
     as_root install -m 0600 /dev/null "$env_dir/codexdeck.env"
@@ -546,9 +627,9 @@ native_install() {
 CODEXDECK_MASTER_KEY=$key
 CODEXDECK_PORT=$PORT
 CODEXDECK_HOST=127.0.0.1
-CODEXDECK_DATA_DIR=$(systemd_quote "$data_dir")
-CODEXDECK_WORKSPACES=$(systemd_quote "$WORKSPACES")
-CODEX_BIN=$(systemd_quote "$codex_bin")
+CODEXDECK_DATA_DIR=$(env_quote "$data_dir")
+CODEXDECK_WORKSPACES=$(env_quote "$WORKSPACES")
+CODEX_BIN=$(env_quote "$codex_bin")
 EOF
   else
     update_systemd_env "$env_dir/codexdeck.env" CODEXDECK_PORT "$PORT"
@@ -569,7 +650,7 @@ User=$service_user
 Group=$service_user
 WorkingDirectory=$(systemd_quote "$source")
 Environment=NODE_ENV=production
-Environment=PATH=$(systemd_quote "$path_value")
+Environment=$(systemd_quote "PATH=$path_value")
 Environment=HOME=/var/lib/codexdeck
 EnvironmentFile=$env_dir/codexdeck.env
 ExecStart=$(systemd_quote "$node_bin") apps/server/dist/index.js
@@ -578,32 +659,53 @@ RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/codexdeck $(systemd_quote "$source/data") $(systemd_quote "$WORKSPACES")
+ReadWritePaths=/var/lib/codexdeck $(systemd_quote "$data_dir") $(systemd_quote "$WORKSPACES")
 
 [Install]
 WantedBy=multi-user.target
 EOF
   as_root systemctl daemon-reload
-  as_root systemctl enable --now codexdeck
-  if [ "$ACTION" = "upgrade" ]; then as_root systemctl restart codexdeck; fi
-  wait_for_native_health
+  as_root systemctl enable codexdeck
+  if as_root systemctl restart codexdeck && wait_for_native_health; then
+    if [ -n "$old_unit" ]; then as_root rm -f -- "$old_unit"; fi
+    if [ -n "$old_env" ]; then as_root rm -f -- "$old_env"; fi
+    as_root install -m 0755 "$source/deploy/install.sh" "$INSTALL_DIR/install.sh"
+    as_root install -m 0644 "$source/deploy/backup.py" "$INSTALL_DIR/backup.py"
+  elif [ -n "$old_unit" ]; then
+    as_root mv -- "$old_unit" "$service_file"
+    if [ -n "$old_env" ]; then
+      as_root mv -- "$old_env" "$env_dir/codexdeck.env"
+      PORT="$(native_setting "$env_dir/codexdeck.env" CODEXDECK_PORT)"
+    fi
+    as_root systemctl daemon-reload
+    if as_root systemctl restart codexdeck && wait_for_native_health; then
+      :
+    else
+      fail "Previous native release failed its health check."
+    fi
+    fail "Upgrade failed. The previous native release is healthy again."
+  else fail "Native service failed its health check."; fi
 }
 
 update_systemd_env() {
   local file="$1" key="$2" value="$3" temporary
   temporary="$(mktemp)"
   as_root sed "/^$key=/d" "$file" >"$temporary"
-  printf "%s=%s\n" "$key" "$(systemd_quote "$value")" >>"$temporary"
+  printf "%s=%s\n" "$key" "$(env_quote "$value")" >>"$temporary"
   as_root install -m 0600 "$temporary" "$file"
   rm -f -- "$temporary"
 }
 
-systemd_quote() {
+env_quote() {
   local value="$1"
   value="${value//\\/\\\\}"
   value="${value//\"/\\\"}"
-  value="${value//%/%%}"
   printf '"%s"' "$value"
+}
+
+systemd_quote() {
+  local value="$1"
+  env_quote "${value//%/%%}"
 }
 
 wait_for_native_health() {
@@ -655,11 +757,17 @@ uninstall() {
     elif [ -d "$INSTALL_DIR/workspaces" ] && [ ! -L "$INSTALL_DIR/workspaces" ]; then
       as_root rm -rf -- "$INSTALL_DIR/workspaces"
     fi
-    if [ "$MODE" = "native" ] && [ -d "$INSTALL_DIR/source" ] && [ ! -L "$INSTALL_DIR/source" ]; then
-      as_root rm -rf -- "$INSTALL_DIR/source"
+    if [ "$MODE" = "native" ]; then
+      local release
+      for release in "$INSTALL_DIR"/releases/v*; do
+        if [ -d "$release" ] && [ ! -L "$release" ] && [[ "$release" =~ /v[0-9]+\.[0-9]+\.[0-9]+\.[A-Za-z0-9]{6}$ ]] &&
+            [ -f "$release/.codexdeck-installed-release" ] && [ ! -L "$INSTALL_DIR/releases" ]; then
+          as_root rm -rf -- "$release"
+        fi
+      done
       as_root rm -f /etc/codexdeck/codexdeck.env
-      as_root userdel codexdeck 2>/dev/null || true
-      as_root rm -rf /etc/codexdeck
+      as_root rmdir /etc/codexdeck "$INSTALL_DIR/releases" "$INSTALL_DIR/source" 2>/dev/null || true
+      as_root rm -f -- "$INSTALL_DIR/install.sh" "$INSTALL_DIR/backup.py"
     else
       as_root rm -f -- "$INSTALL_DIR/.env" "$INSTALL_DIR/.env.example" "$INSTALL_DIR/docker-compose.yml" \
         "$INSTALL_DIR/Caddyfile" "$INSTALL_DIR/Caddyfile.template" "$INSTALL_DIR/install.sh"
@@ -680,8 +788,8 @@ print_success() {
   local uninstall_command="bash \"$INSTALL_DIR/install.sh\" --uninstall --dir \"$INSTALL_DIR\""
   if [ "$MODE" = "native" ]; then
     logs="sudo journalctl -u codexdeck -f"
-    upgrade="sudo bash \"$INSTALL_DIR/source/deploy/install.sh\" --native --upgrade --dir \"$INSTALL_DIR\" --yes"
-    uninstall_command="sudo bash \"$INSTALL_DIR/source/deploy/install.sh\" --native --uninstall --dir \"$INSTALL_DIR\""
+    upgrade="sudo bash \"$INSTALL_DIR/install.sh\" --native --upgrade --dir \"$INSTALL_DIR\" --yes"
+    uninstall_command="sudo bash \"$INSTALL_DIR/install.sh\" --native --uninstall --dir \"$INSTALL_DIR\""
   fi
   cat <<EOF
 
@@ -697,13 +805,19 @@ print_success() {
 
   Configure the first administrator, provider, model and workspace in the setup wizard.
 EOF
+  if [ "$MODE" = "docker" ]; then
+    note "Setup code (first start): cd '$INSTALL_DIR' && $docker_command compose exec codexdeck cat /data/setup-code"
+    note "Host Ollama: configure a container-reachable URL, e.g. http://host.docker.internal:11434/v1 with Docker host-gateway mapping."
+  else note "Setup code (first start): sudo cat '$INSTALL_DIR/source/data/setup-code'"; fi
   if [ -n "$public" ]; then
+    note "Forward public TCP 80/443 to this host's 8080/8443. Verify DNS and HTTPS from an external network."
     printf '  Public endpoint: %s\n' "$host"
   fi
 }
 
 main() {
   parse_args "$@"
+  if [ "$MODE" = "native" ]; then DEFAULT_DIR=/opt/codexdeck; fi
   discover_local_source
   if [ "$DIR_SET" -eq 0 ]; then
     if [ "$ACTION" = "upgrade" ] || [ "$ACTION" = "uninstall" ]; then
@@ -719,6 +833,7 @@ main() {
       { [ "$MODE" = "docker" ] && [ -f "$INSTALL_DIR/.env" ]; }; then
     EXISTING_INSTALL=1
   fi
+  resolve_release
   choose_install_options
   if [ "$MODE" = "native" ]; then
     native_install
@@ -728,5 +843,5 @@ main() {
   print_success
 }
 
-main "$@"
+if [[ ${BASH_SOURCE[0]:-} == "$0" || -z ${BASH_SOURCE[0]:-} ]]; then main "$@"; fi
 

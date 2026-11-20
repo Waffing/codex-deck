@@ -25,21 +25,23 @@
 **Linux Docker Compose（amd64 或 arm64）**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Waffing/codex-deck/main/deploy/install.sh | bash
+release=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffing/codex-deck/releases/latest) && tag=${release##*/} && curl -fsSL "https://raw.githubusercontent.com/Waffing/codex-deck/$tag/deploy/install.sh" | CODEXDECK_VERSION="$tag" bash
 ```
 
-安装器会在需要时安装 Docker 和 Compose 插件，并创建持久化目录。默认监听 `127.0.0.1:3000`，打开该地址后，按引导创建管理员、配置并探测模型供应商、选择工作区。首次初始化请通过可信连接完成，再开放远程访问。
+安装器会在需要时安装 Docker 和 Compose，创建持久化目录，并将控制台绑定到 `127.0.0.1:3000`。在安装目录执行 `docker compose exec codexdeck cat /data/setup-code` 读取首次启动私密代码。通过本机或 SSH 隧道打开控制台，输入代码创建管理员，再配置供应商和工作区。完成初始化后代码文件会被删除。
 
-Docker 安装依赖首个公开镜像，源码与原生安装可从 `main` 开始。版本标签触发发布后，GHCR 提供 `ghcr.io/waffing/codex-deck:latest` 与 `ghcr.io/waffing/codex-deck:latest-playwright`。需要 Chromium 验收时使用后者。
+`tag` 让安装脚本、Compose 文件和镜像使用同一已发布版本。指定版本时，把 `tag` 改成已发布的 `vX.Y.Z`。需要 Chromium 验收时追加 `--with-playwright`。
+
+每个托管业务容器默认限制为 1 CPU、512 MiB 内存和 128 个进程。`CODEXDECK_RELEASE_KEEP` 默认保留 5 个最近快照，线上版本及其上一版本会额外受保护。服务重启后只恢复带有 CodexDeck 所有权标签的业务容器。
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Waffing/codex-deck/main/deploy/install.sh | bash -s -- --with-playwright
+tag="${CODEXDECK_VERSION:-$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffing/codex-deck/releases/latest)}"; tag="${tag##*/}"; curl -fsSL "https://raw.githubusercontent.com/Waffing/codex-deck/$tag/deploy/install.sh" | CODEXDECK_VERSION="$tag" bash -s -- --with-playwright
 ```
 
-**Linux 原生安装（systemd）**。安装 Node.js 22+、Corepack、Git 和官方 Codex CLI，并确保 `codexdeck` 服务账户可以运行它们。
+**Linux 原生安装（systemd）**。安装 Node.js 22.13+、Corepack、Git 和系统级官方 Codex CLI。独立构建账户负责安装依赖，`codexdeck` 服务账户运行发布版本。默认目录下用 `sudo cat /opt/codexdeck/source/data/setup-code` 读取首次启动代码。
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Waffing/codex-deck/main/deploy/install.sh | bash -s -- --native
+tag="${CODEXDECK_VERSION:-$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffing/codex-deck/releases/latest)}"; tag="${tag##*/}"; curl -fsSL "https://raw.githubusercontent.com/Waffing/codex-deck/$tag/deploy/install.sh" | CODEXDECK_VERSION="$tag" bash -s -- --native
 ```
 
 **使用 npx 运行本地 CLI**。npm 上的 `codex-deck` 已被另一个项目使用。构建源码后，将 npx 指向本仓库的 `packages/cli`，以离线模式启动。
@@ -60,14 +62,25 @@ export CODEXDECK_MASTER_KEY="$(cat ./data/master.key)"
 NODE_ENV=production npx --offline --yes --package=./packages/cli -- codex-deck start --port 3000 --data ./data --workspaces ./workspaces
 ```
 
-在另一个终端进入仓库根目录，运行 `npx --offline --yes --package=./packages/cli -- codex-deck status` 查看服务状态。将 `status` 换成 `doctor` 可检查运行环境。
+在另一个终端进入仓库根目录，读取 `./data/setup-code` 完成首次设置。运行 `npx --offline --yes --package=./packages/cli -- codex-deck status` 查看服务状态，将 `status` 换成 `doctor` 检查运行环境。
 
 <details>
 <summary>HTTPS、升级和备份</summary>
 
-启用 Compose HTTPS profile 时，配置 DNS，并将公网 TCP 80 和 443 分别转发到宿主机 8080 和 8443。为安装器传入 `--domain codex.example.com` 即可启用 Caddy，应用的宿主机监听地址仍为回环地址。
+启用 Compose HTTPS profile 时，配置 DNS，并将公网 TCP 80 和 443 分别转发到宿主机 8080 和 8443。传入 `--domain codex.example.com` 启用 Caddy，域名配置会启用安全会话 Cookie。使用外部 TLS 代理时设置 `CODEXDECK_COOKIE_SECURE=true`，并确保控制台只通过 HTTPS 访问。
 
-给[安装器](deploy/install.sh)传入 `--upgrade --dir /path/to/install` 可原地升级，传入 `--uninstall --dir /path/to/install` 可卸载。systemd 部署需要沿用 `--native`。备份数据目录、工作区和加密主密钥，并单独妥善保管主密钥，恢复时需要它解密供应商凭证。
+运行安装目录的 `install.sh --upgrade --dir /path/to/install --version vX.Y.Z` 升级指定已发布版本，传入 `--uninstall --dir /path/to/install` 卸载，systemd 部署沿用 `--native`。升级会保留正在运行的镜像或服务单元，健康检查失败时回滚。跨数据库架构版本升级前先备份。
+
+```sh
+archive="$PWD/backup-$(date +%Y%m%d-%H%M%S)"
+python3 backup.py backup --data ./data --workspaces ./workspaces --managed-data /data --managed-workspaces /workspaces --to "$archive"
+python3 backup.py verify --from "$archive"
+python3 backup.py restore --from "$archive" --to ./recovery --target-data /data --target-workspaces /workspaces
+```
+
+恢复后将 `CODEXDECK_DATA_PATH` 和 `CODEXDECK_WORKSPACES_HOST` 指向 `recovery/data` 与 `recovery/workspaces`。原生安装备份 `source/data` 和实际工作区路径，并使用服务最终绝对路径作为 `--target-data`、`--target-workspaces`。恢复目录需要归属服务账户。备份包含项目文件和历史记录，必须加密保存并单独保管匹配的主密钥。校验会检查哈希和 SQLite 完整性，包含符号链接的项目需要使用文件系统快照。
+
+密钥轮换前先备份并停止服务。用密钥管理器提供新的随机 32 字节值到 `CODEXDECK_NEXT_MASTER_KEY`，执行 `docker compose stop codexdeck`，再运行 `docker compose run --rm --no-deps -e CODEXDECK_NEXT_MASTER_KEY codexdeck node apps/server/dist/rotate-key.js /data`。原生安装停止 systemd 后，在安装版本目录执行同名命令。事务成功后将 `CODEXDECK_MASTER_KEY` 替换为新值并重启。重复使用同一对密钥会识别已提交轮换，旧会话、下载链接和 webhook 签名需要重新建立。
 
 </details>
 
@@ -145,7 +158,7 @@ Docker 模式下，控制平面通过独立内部网络上的 socket proxy 调�
 | DeepSeek | 兼容 OpenAI 的 Chat Completions | `chat`，工具调用能力按模型确认 |
 | Ollama | 可达的 Ollama 实例提供兼容 OpenAI 的端点 | 探测后用 `auto`，仅支持 Chat 的实例用 `chat` |
 
-接入真实端点后请运行供应商探测，按模型确认流式输出、工具调用和图片能力。
+接入真实端点后请运行供应商探测，按模型确认流式输出、工具调用和图片能力。Docker 宿主机上的 Ollama 可使用 `http://host.docker.internal:11434/v1`，并在 `CODEXDECK_TRUSTED_HTTP_ORIGINS` 只加入 `http://host.docker.internal:11434`。公网供应商使用 HTTPS。
 
 ## 安全模型
 
@@ -154,6 +167,7 @@ Docker 模式下，控制平面通过独立内部网络上的 socket proxy 调�
 3. **Docker 接口最小权限。** 控制平面通过内部网络的 `docker-socket-proxy` 使用允许的 Docker 接口。Docker 写权限仍属于宿主机高权限能力。
 4. **预览代理的 SSRF 防护。** 代理只解析受管部署目标，检查预发布权限和端口归属，剥离浏览器凭证。浏览器验收限制请求访问部署本身的来源。
 5. **凭证脱敏。** `SecretMasker` 对日志、持久化线程事件和发送给客户端的事件遮罩可识别的凭证。
+6. **生产部署边界。** 生产环境默认禁用宿主机进程部署，受管业务应使用 Docker 或 Compose。只有明确隔离的开发机才应设置 `CODEXDECK_ALLOW_LOCAL_DEPLOYMENTS=true`。
 
 漏洞请按 [SECURITY.md](SECURITY.md) 私下报告。
 
@@ -163,12 +177,14 @@ Docker 模式下，控制平面通过独立内部网络上的 socket proxy 调�
 
 ```bash
 export CODEXDECK_URL=http://127.0.0.1:3000
+JOB_KEY=$(openssl rand -hex 16)
 : "${CODEXDECK_API_KEY:?请设置 CODEXDECK_API_KEY}"
 : "${WORKSPACE_ID:?请设置 WORKSPACE_ID}"
 
 TASK_ID=$(
   curl -fsS "$CODEXDECK_URL/api/v1/tasks" \
     -H "Authorization: Bearer $CODEXDECK_API_KEY" \
+    -H "Idempotency-Key: $JOB_KEY" \
     -H "Content-Type: application/json" \
     --data "$(jq -nc --arg id "$WORKSPACE_ID" \
       '{workspace_id: $id, prompt: "概述项目并列出测试命令。"}')" \
@@ -180,11 +196,11 @@ curl -fNsS "$CODEXDECK_URL/api/v1/tasks/$TASK_ID/stream" \
   -H "Last-Event-ID: 0"
 ```
 
-创建任务返回 HTTP `202`，响应包含 `task_id` 和 `thread_id`。SSE 重连时传入最后处理的事件 ID。通过 `GET /api/v1/tasks/{task_id}` 查询状态和产物，读取签名下载地址还需 `files:download` 权限。任务可设置白名单中的 `webhook_url` 来接收签名回调。
+创建任务返回 HTTP `202`，响应包含 `task_id` 和 `thread_id`。同一个逻辑任务重试时保留 `JOB_KEY` 与请求体，新任务需生成新 Key。SSE 重连时传入最后处理的事件 ID。通过 `GET /api/v1/tasks/{task_id}` 查询状态和产物，读取签名下载地址还需 `files:download` 权限。任务可设置白名单中的 `webhook_url` 来接收签名回调。
 
 ## 本地开发
 
-使用 Node.js 22+、Corepack 管理的固定 pnpm 版本以及 Git。执行真实代理任务还需要官方 Codex CLI。
+使用 Node.js 22.13+、Corepack 管理的固定 pnpm 版本以及 Git。执行真实代理任务还需要官方 Codex CLI。
 
 ```sh
 corepack enable
@@ -200,7 +216,7 @@ pnpm test
 
 - [x] **V1 基础能力** · 协议网关、凭证隔离、审批、签名产物、Open API 和部署验收。
 - [x] **V1 控制台** · 桌面工作台、移动端审批、供应商探测和可续传事件。
-- [ ] **V1 发布** · 验证两种目标架构上的容器启动、发布镜像并确定可用的 npm 包名。
+- [ ] **发布验证** · 跟踪两个目标架构的发布 CI 和冒烟结果，确定可用的 npm 包名。
 - [ ] **V2 规划** · 加强业务容器隔离、扩充供应商兼容性覆盖并改进部署恢复。
 
 ## 贡献与许可证

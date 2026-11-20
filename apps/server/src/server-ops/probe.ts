@@ -11,12 +11,17 @@ import { workspaceFile } from "../security/paths.js";
 const exec = promisify(execFile);
 export const fail = (code: number, message: string) => Object.assign(new Error(message), { statusCode: code });
 
-export async function command(bin: string, args: string[], options: { cwd?: string; timeout?: number } = {}) {
+export function labelOutput(source:"stdout"|"stderr",text:string) {
+  return text.trimEnd().split(/\r?\n/).map(line=>`[${source}] ${line}`).join("\n");
+}
+
+export async function command(bin: string, args: string[], options: { cwd?: string; timeout?: number; logs?:boolean } = {}) {
   const env: NodeJS.ProcessEnv = {};
   for (const name of ["PATH","SystemRoot","WINDIR","TEMP","TMP","TMPDIR","HOME","USERPROFILE","LOCALAPPDATA","ProgramData","DOCKER_HOST"]) {
     if (process.env[name]) env[name] = process.env[name];
   }
   const { stdout, stderr } = await exec(bin, args, { env, windowsHide: true, timeout: options.timeout ?? 2500, maxBuffer: 1024 * 1024, cwd: options.cwd });
+  if(options.logs) return [stdout && labelOutput("stdout",stdout),stderr && labelOutput("stderr",stderr)].filter(Boolean).join("\n").slice(-64*1024);
   return (stdout || stderr).trim();
 }
 
@@ -74,6 +79,10 @@ export class PortPool {
     await new Promise<void>(resolve => lease.socket.close(()=>resolve()));
   }
   release(port:number) { this.held.delete(port); }
+  adopt(port:number) {
+    if(!this.safe(port) || this.held.has(port) || this.leases.has(port)) throw fail(409,"Deployment port conflicts with another instance.");
+    this.held.add(port);
+  }
   close() {
     for (const lease of this.leases.values()) { clearTimeout(lease.timer); lease.socket.close(); }
     this.leases.clear();
