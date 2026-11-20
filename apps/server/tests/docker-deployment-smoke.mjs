@@ -42,6 +42,14 @@ async function exercise() {
   try {
     await start();
     assert.equal(service.getProfile().docker_available,true,"Control process cannot reach Docker proxy");
+    const proxy=process.env.DOCKER_HOST.replace(/^tcp:/,"http:");
+    const inventory=new URL("/volumes",proxy);
+    inventory.searchParams.set("filters",JSON.stringify({label:{["com.docker.compose.project=codexdeck-"+randomUUID()]:true}}));
+    assert.equal((await fetch(inventory)).status,200);
+    assert.equal((await fetch(new URL("/volumes",proxy))).status,403);
+    inventory.searchParams.set("extra","1");
+    assert.equal((await fetch(inventory)).status,403);
+    assert.equal((await fetch(new URL("/volumes/create",proxy),{method:"OPTIONS"})).status,403);
     const marker = randomUUID();
     await writeFile(root+"/public/index.html",page("live-A-"+marker));
     const a = await stage({mode:"docker"});
@@ -92,8 +100,13 @@ async function exercise() {
     assert.equal(spec.HostConfig.PidsLimit,128);
     assert.equal(spec.HostConfig.Memory,512*1024*1024);
     assert.equal(spec.HostConfig.NanoCpus,1e9);
-    await assert.rejects(stage({mode:"local",entry:"main.mjs",public_dir:"public"}),/isolated container/);
+    await assert.rejects(stage({mode:"local",entry:"main.mjs",public_dir:"public"}),{statusCode:403});
     assert.ok((await live()).includes("live-A-"+marker));
+  } catch(error) {
+    if(service) for(const row of service.deployer.rows().filter(row=>row.status==="failed")) {
+      console.error("Failed deployment",row.id,(await service.deployer.logs(row.id).catch(()=>"Log unavailable.")).slice(-2048));
+    }
+    throw error;
   } finally {
     try {
       if(service) for(const row of service.deployer.rows()) await service.deployer.stop(row.id);

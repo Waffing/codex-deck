@@ -1,6 +1,23 @@
 services:
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:3.4
+    # Compose inventories project volumes even for bind-only services. Extend
+    # the generated upstream ACL only for that read; all other volume APIs stay denied.
+    command:
+      - sh
+      - -ec
+      - |
+        awk '
+          /^    http-request deny$$/ {
+            uuid = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+            filter = "^filters=%7B%22label%22%3A%7B%22com[.]docker[.]compose[.]project%3Dcodexdeck-" uuid "%22%3Atrue%7D%7D$$"
+            print "    http-request allow if { method GET } { path -m reg ^(/v[0-9]+[.][0-9]+)?/volumes$$ } { query -m reg " filter " }"
+            added++
+          }
+          {print}
+          END {if (added != 1) exit 1}
+        ' /tmp/haproxy.cfg > /tmp/codexdeck.cfg
+        exec haproxy -W -db -f /tmp/codexdeck.cfg
     environment:
       CONTAINERS: "1"
       IMAGES: "1"

@@ -5,6 +5,5 @@
 services:
   codexdeck:
     security_opt:
-      - no-new-privileges:true
       - seccomp:./chromium-seccomp.json
     shm_size: 256m

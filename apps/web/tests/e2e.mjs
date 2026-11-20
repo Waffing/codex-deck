@@ -13,6 +13,8 @@ import { openDatabase } from "../../server/dist/db/index.js";
 import { SecretMasker } from "../../server/dist/security/secret-masker.js";
 
 process.env.NODE_ENV = "production";
+// The browser fixture starts an approved local static preview in its temporary workspace.
+process.env.CODEXDECK_ALLOW_LOCAL_DEPLOYMENTS = "true";
 const root = await mkdtemp(path.join(tmpdir(),"codexdeck-console-"));
 const dataDirectory = path.join(root,"data");
 const output = fileURLToPath(new URL("../test-results/",import.meta.url));

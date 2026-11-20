@@ -310,7 +310,11 @@ export class Deployer {
       await this.prune(workspace).catch(()=>this.note("deployment_cleanup_failed",id,workspace));
       return this.dto(this.get(id));
     } catch(error) {
+      const detail=error as {stderr?:unknown;code?:unknown};
+      const diagnostic=typeof detail?.stderr==="string" ? detail.stderr : error instanceof Error ? error.message : "Unknown runtime error";
+      active.log+=`\n[stage] ${this.ctx.masker.maskString(diagnostic).slice(-2048)}\n`;
       await this.stopInstance(id);
+      await this.saveLog(this.get(id),active.log).catch(()=>this.note("deployment_log_write_failed",id,workspace));
       this.save(id,"failed",config);this.note("deployment_exception",id,workspace);
       await this.prune(workspace).catch(()=>this.note("deployment_cleanup_failed",id,workspace));
       if(error instanceof Error && "statusCode" in error) throw error;
