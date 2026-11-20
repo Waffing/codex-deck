@@ -31,12 +31,12 @@ export function clearRealtime(){
   for(const key of Object.keys(sessionStorage)) if(key.startsWith(prefix)) sessionStorage.removeItem(key);
   useRealtime.setState({thread:"",events:[],state:"offline",heartbeat:null,approvals:null});
 }
-export function connectEvents(thread:string,onChange:()=>void,onUnauthorized:()=>void){
+export function connectEvents(thread:string,onChange:()=>void,onUnauthorized:()=>void,debug=false){
   let closed=false, attempt=0, socket:WebSocket|undefined;
   let retry:ReturnType<typeof setTimeout>|undefined, flush:ReturnType<typeof setTimeout>|undefined;
   let refresh:ReturnType<typeof setTimeout>|undefined;
   let pending:ThreadEvent[]=[];
-  const saved=restore(thread);
+  const saved=debug?{events:[],cursor:0}:restore(thread);
   let cursor=saved.cursor;
   useRealtime.setState({thread,events:saved.events,state:"connecting"});
   function apply(){
@@ -46,6 +46,7 @@ export function connectEvents(thread:string,onChange:()=>void,onUnauthorized:()=
     cursor=lastContiguous(combined,cursor);
     const events=combined.slice(-512);
     pending=[];useRealtime.setState({events});
+    if(debug)return;
     try{
       let keep=events, snapshot=JSON.stringify({cursor,events:keep});
       while(snapshot.length>256*1024 && keep.length){keep=keep.slice(Math.ceil(keep.length/2));snapshot=JSON.stringify({cursor,events:keep});}
@@ -58,6 +59,7 @@ export function connectEvents(thread:string,onChange:()=>void,onUnauthorized:()=
     const url=new URL("/ws/events",location.href);
     url.protocol=location.protocol==="https:"?"wss:":"ws:";
     if(thread){url.searchParams.set("thread_id",thread);url.searchParams.set("last_seq_id",String(cursor));}
+    if(debug)url.searchParams.set("debug","true");
     const ws=new WebSocket(url);socket=ws;
     ws.onopen=()=>{attempt=0;useRealtime.setState({state:"online"});changed();};
     ws.onmessage=({data})=>{
@@ -66,6 +68,8 @@ export function connectEvents(thread:string,onChange:()=>void,onUnauthorized:()=
       if(frame.type==="event"){
         const valid=threadEventSchema.safeParse(frame.event);
         if(valid.success && valid.data.thread_id===thread){pending.push(valid.data);flush??=setTimeout(apply,24);}
+      }else if(frame.type==="cursor" && frame.thread_id===thread && Number.isSafeInteger(frame.seq_id)){
+        apply();cursor=Math.max(cursor,frame.seq_id);
       }else if(frame.type==="approvals_count"){useRealtime.setState({approvals:frame.count});changed();}
       else if(frame.type==="heartbeat"){useRealtime.setState({heartbeat:frame});}
       else if(frame.type==="thread_changed"){changed();}

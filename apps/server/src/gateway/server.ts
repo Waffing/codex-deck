@@ -6,7 +6,8 @@ import { responseRequestSchema, type ResponseRequest } from "@codexdeck/shared";
 import type { ServerContext } from "../app.js";
 import { models, providers, usageLogs } from "../db/schema.js";
 import { verifyInternalToken, verifySignedPayload } from "../security/crypto.js";
-import { readCredentials } from "./credentials.js";
+import { withProviderKey } from "./credentials.js";
+import { estimateUsageCost, OutputTiming } from "./metrics.js";
 import { fromChatResponse, toChatRequest, translateChatStream } from "./transforms.js";
 import { readSse, type SseFrame } from "./sse.js";
 import { redactSse } from "./redact-sse.js";
@@ -15,7 +16,7 @@ import { upstreamFetch } from "./transport.js";
 import type { AddressInfo } from "node:net";
 
 type Channel = { model: typeof models.$inferSelect; provider: typeof providers.$inferSelect };
-type Meter = { channel: Channel | null; attempted: string[]; input: number; output: number; known:boolean; status: number; error: string | null };
+type Meter = { channel: Channel | null; attempted: string[]; input: number; cached:number|null; timing:OutputTiming; output: number; known:boolean; status: number; error: string | null };
 
 class GatewayError extends Error {
   constructor(readonly status: number, message: string, readonly retryable = false) { super(message); }
@@ -29,22 +30,20 @@ function findChannel(context: ServerContext, field: "id" | "alias", value: strin
 
 function registerUsage(reply: FastifyReply, alias: string, context: ServerContext, threadId?:string, taskId?:string) {
   const owner=threadId && context.native.prepare("SELECT workspace_id FROM threads WHERE id=?").pluck().get(threadId);
-  const meter: Meter = { channel: null, attempted: [], input: 0, output: 0, status: 200, error: null, known:false };
+  const meter: Meter = { channel: null, attempted: [], input: 0, cached:null, timing:new OutputTiming(), output: 0, status: 200, error: null, known:false };
   const start = performance.now();
   const persist = () => {
     const model = meter.channel?.model;
-    const cny = model?.pricingCurrency === "CNY";
-    const inputRate = cny ? model.costInputCnyPerMillion : model?.costInputUsdPerMillion ?? 0;
-    const outputRate = cny ? model.costOutputCnyPerMillion : model?.costOutputUsdPerMillion ?? 0;
-    const cost = (meter.input * inputRate + meter.output * outputRate) / 1_000_000;
     context.orm.insert(usageLogs).values({
       id: randomUUID(), modelId: model?.id, providerId: model?.providerId, requestedAlias: context.masker.maskString(alias),
-      inputTokens: meter.input, outputTokens: meter.output, costUsd: cny ? 0 : cost, costCny: cny ? cost : 0,
+      inputTokens: meter.input, outputTokens: meter.output,...estimateUsageCost(model,meter.input,meter.output,meter.cached),
       usageKnown:meter.known,threadId,taskId,workspaceId:typeof owner==="string"?owner:null,
+      turnId:taskId,cachedInputTokens:meter.cached,ttftMs:meter.timing.ttft,tokensPerSec:meter.timing.speed(meter.output),
       latencyMs: Math.round(performance.now() - start), statusCode: reply.raw.writableFinished ? meter.status : 499,
       failoverFrom: meter.attempted.length > 1 ? meter.attempted.slice(0, -1).join(",") : null,
       error: meter.error, createdAt: new Date().toISOString(),
     }).run();
+    context.onUsageRecorded?.();
   };
   const afterResponse = () => {
     reply.raw.removeListener("finish", afterResponse);
@@ -63,11 +62,13 @@ function registerUsage(reply: FastifyReply, alias: string, context: ServerContex
 }
 
 function readUsage(response: Record<string, unknown>, meter: Meter) {
-  const usage = response.usage as { input_tokens?: number; output_tokens?: number } | null;
+  const usage = response.usage as { input_tokens?: number; output_tokens?: number; input_tokens_details?:{cached_tokens?:number} } | null;
   if (!usage) return;
   meter.known=Number.isSafeInteger(usage.input_tokens) && usage.input_tokens!>=0 && Number.isSafeInteger(usage.output_tokens) && usage.output_tokens!>=0;
   if (Number.isSafeInteger(usage.input_tokens) && usage.input_tokens! >= 0) meter.input = usage.input_tokens!;
   if (Number.isSafeInteger(usage.output_tokens) && usage.output_tokens! >= 0) meter.output = usage.output_tokens!;
+  const cached=usage.input_tokens_details?.cached_tokens;
+  if(typeof cached==="number" && Number.isSafeInteger(cached) && cached>=0 && cached<=meter.input) meter.cached=cached;
 }
 
 async function* streamFrames(body: ReadableStream<Uint8Array>, chat: boolean, request: ResponseRequest): AsyncGenerator<SseFrame> {
@@ -87,7 +88,6 @@ function setFailoverHeader(reply: FastifyReply, meter: Meter) {
 
 async function forward(context: ServerContext, reply: FastifyReply, channel: Channel, request: ResponseRequest, meter: Meter) {
   const { model, provider } = channel;
-  const { headers, apiKey } = readCredentials(provider, context);
   const caps = model.lastProbeJson ? JSON.parse(model.lastProbeJson).capabilities : null;
   const quirks = JSON.parse(provider.quirksJson);
   let chat = quirks.force_chat === true || model.protocol === "chat" || (model.protocol === "auto" && !caps?.responses && !!caps?.chat);
@@ -97,8 +97,9 @@ async function forward(context: ServerContext, reply: FastifyReply, channel: Cha
   reply.raw.once("close", onClose);
   const timeout = setTimeout(() => abort.abort(new Error("timeout")), context.gatewayConfig.upstream_timeout_ms);
   try {
-    const call = (useChat: boolean) => {
-      const body = useChat ? toChatRequest(request, model.modelId) : { ...request, model: model.modelId };
+    const capped={...request,max_output_tokens:Math.min(typeof request.max_output_tokens==="number"?request.max_output_tokens:model.maxOutputTokens,model.maxOutputTokens)};
+    const call = (useChat: boolean,apiKey:string,headers:Record<string,string>) => {
+      const body = useChat ? toChatRequest(capped, model.modelId) : { ...capped, model: model.modelId };
       if (stripReasoning) {
         delete body.reasoning;
         delete body.reasoning_effort;
@@ -107,15 +108,16 @@ async function forward(context: ServerContext, reply: FastifyReply, channel: Cha
         method: "POST", headers: upstreamHeaders(headers, apiKey), body: JSON.stringify(body), signal: abort.signal,
       },!!apiKey || Object.values(headers).some(Boolean),[context.gatewayConfig.port,(reply.server.server.address() as AddressInfo|null)?.port]);
     };
-    let response = await call(chat);
-    if (!chat && model.protocol === "auto" && [404, 405].includes(response.status)) {
-      await response.body?.cancel();
-      chat = true;
-      response = await call(true);
-    }
+    const response = await withProviderKey(provider,context,async(apiKey,headers)=>{
+      const first=await call(chat,apiKey,headers);
+      if(chat || model.protocol!=="auto" || ![404,405].includes(first.status)) return first;
+      await first.body?.cancel();
+      chat=true;
+      return call(true,apiKey,headers);
+    });
     if (!response.ok || !response.body) {
       await response.body?.cancel();
-      throw new GatewayError(response.ok ? 502 : response.status, `Upstream returned HTTP ${response.status}.`, response.status === 429 || response.status >= 500);
+      throw new GatewayError(response.ok ? 502 : response.status, `Upstream returned HTTP ${response.status}.`, [401,429].includes(response.status) || response.status >= 500);
     }
 
     if (!request.stream) {
@@ -129,7 +131,10 @@ async function forward(context: ServerContext, reply: FastifyReply, channel: Cha
 
     let terminal = false;
     const frames = streamFrames(response.body, chat, request);
-    for await (const { raw, event } of redactSse(frames, context.masker)) {
+    const observed=redactSse(frames,context.masker,event=>{
+      if (["response.output_text.delta","response.function_call_arguments.delta"].includes(String(event.type))) meter.timing.delta(event.delta);
+    });
+    for await (const { raw, event } of observed) {
       if (event) {
         if (event.response && typeof event.response === "object") readUsage(event.response as Record<string, unknown>, meter);
         if (["response.completed", "response.incomplete", "response.failed", "error"].includes(String(event.type))) terminal = true;
@@ -188,8 +193,8 @@ export function registerGatewayRoutes(app: FastifyInstance, context: ServerConte
       const thread = context.native.prepare("SELECT active_model_alias,reasoning_effort FROM threads WHERE id=?")
         .get(claims.thread_id) as {active_model_alias: string | null; reasoning_effort: string | null} | undefined;
       if (!thread?.active_model_alias) return reply.code(403).send({error: "Thread unavailable."});
-      input.model = thread.active_model_alias;
-      if (thread.reasoning_effort) input.reasoning = { ...input.reasoning as object, effort: thread.reasoning_effort };
+      input.model = claims.purpose==="compaction" && typeof claims.model_alias==="string" ? claims.model_alias : thread.active_model_alias;
+      if (thread.reasoning_effort && claims.purpose!=="compaction") input.reasoning = { ...input.reasoning as object, effort: thread.reasoning_effort };
     }
     const meter = registerUsage(reply, input.model, context,typeof claims?.thread_id==="string"?claims.thread_id:undefined,typeof claims?.task_id==="string"?claims.task_id:undefined);
     const primary = findChannel(context, "alias", input.model);

@@ -11,6 +11,14 @@ export function registerWorkspaceRoutes(app: FastifyInstance, ctx: ServerContext
   const auth = { preHandler: createRequireAdmin(ctx) };
   type ById = { Params: { id: string } };
   app.get("/api/workspaces", auth, async () => files.list());
+  app.patch<ById>("/api/workspaces/:id",auth,async req=>{
+    const p=workspaceCreateSchema.pick({automation_level:true}).required().strict().safeParse(req.body);
+    if (!p.success || !(req.body && typeof req.body==="object" && "automation_level" in req.body)) throw fileError(400,"Invalid automation level.");
+    const row=ctx.native.prepare("UPDATE workspaces SET automation_level=?,updated_at=? WHERE id=? RETURNING *")
+      .get(p.data.automation_level,new Date().toISOString(),req.params.id);
+    if (!row) throw fileError(404,"Workspace not found.");
+    return row;
+  });
   app.post("/api/workspaces", auth, async (req, reply) => {
     const p = workspaceCreateSchema.safeParse(req.body);
     if (!p.success) throw fileError(400, "Invalid workspace.");

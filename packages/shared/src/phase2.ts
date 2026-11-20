@@ -6,9 +6,10 @@ export const threadEventSchema = z.object({
 });
 export type ThreadEvent = z.infer<typeof threadEventSchema>;
 export const subscriptionSchema = z.object({
-  type: z.literal("subscribe"), thread_id: z.string().optional(), last_seq_id: z.number().int().nonnegative().default(0),
+  type: z.literal("subscribe"), debug:z.boolean().default(false), thread_id: z.string().optional(), last_seq_id: z.number().int().nonnegative().default(0),
 });
 export const wsFrameSchema = z.discriminatedUnion("type", [
+  z.object({type:z.literal("cursor"),seq_id:z.number().int().positive(),thread_id:z.string()}),
   z.object({ type: z.literal("event"), event: threadEventSchema }),
   z.object({ type: z.literal("approvals_count"), count: z.number().int().nonnegative() }),
   z.object({type:z.literal("thread_changed"),thread_id:z.string()}),

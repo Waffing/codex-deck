@@ -24,11 +24,11 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test
-      - name: Run the real Codex bridge and approval flow
+      - name: Verify real Codex approvals and compaction recovery
         run: |
           version=$(sed -n 's/^ARG CODEX_VERSION=//p' deploy/Dockerfile)
           npm install --prefix "$RUNNER_TEMP/codex-fixture" "@openai/codex@$version"
-          CODEX_BIN="$RUNNER_TEMP/codex-fixture/node_modules/.bin/codex" CODEXDECK_REAL_CODEX=1 pnpm --filter @codexdeck/server exec vitest run test/real-bridge.test.ts
+          CODEX_BIN="$RUNNER_TEMP/codex-fixture/node_modules/.bin/codex" CODEXDECK_REAL_CODEX=1 pnpm --filter @codexdeck/server exec vitest run test/real-bridge.test.ts test/compaction-real.test.ts
       - name: Browser console journeys
         run: |
           pnpm --filter @codexdeck/web exec playwright-core install --with-deps chromium

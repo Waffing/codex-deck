@@ -4,3 +4,5 @@ export * from "./files.js";
 export * from "./threads.js";
 export * from "./ops.js";
 export * from "./console.js";
+export * from "./usage.js";
+export * from "./timeline.js";

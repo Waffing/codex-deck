@@ -98,6 +98,20 @@ it("generates isolated Codex homes, selects the configured alias and runs a sign
     expect(toml).toContain("model_catalog_json = " + JSON.stringify(path.join(config.codexHome, "models.json")));
     expect(toml).toContain(`http://127.0.0.1:${port}/internal/v1`);
     expect(JSON.parse(catalog).models[0].slug).toBe("preferred");
+    expect(JSON.parse(catalog).models[0].context_window).toBe(128000);
+    expect(JSON.parse(catalog).models[0].supports_reasoning_summaries).toBe(false);
+    const readSummarySupport=async()=>{
+      const config=await generateCodexConfig(options);
+      const catalog=JSON.parse(await readFile(path.join(config.codexHome,"models.json"),"utf8"));
+      return catalog.models[0].supports_reasoning_summaries;
+    };
+    native.exec(`UPDATE models SET protocol='responses',capabilities_json='["reasoning_summary"]' WHERE alias='preferred'`);
+    expect(await readSummarySupport()).toBe(true);
+    native.exec(`UPDATE providers SET quirks_json='{"strip_reasoning":true}' WHERE id='p'`);
+    expect(await readSummarySupport()).toBe(false);
+    native.exec(`UPDATE providers SET quirks_json='{}' WHERE id='p'; UPDATE models SET protocol='chat' WHERE alias='preferred'`);
+    expect(await readSummarySupport()).toBe(false);
+    expect(toml).toContain("model_context_window = 128000");
     expect(toml + catalog).not.toContain(config.env.CODEXDECK_INTERNAL_TOKEN);
     expect(toml + catalog + JSON.stringify(config.env)).not.toContain(secret);
     await smoke(config);
@@ -106,6 +120,13 @@ it("generates isolated Codex homes, selects the configured alias and runs a sign
     native.prepare("UPDATE providers SET api_key_ciphertext = ? WHERE id = 'p'").run(encryptSecret(opaqueKey, masterKey));
     native.prepare("UPDATE models SET alias = ? WHERE id = 'm1'").run(opaqueKey);
     await expect(generateCodexConfig({ ...options, defaultModel: opaqueKey })).rejects.toThrow(/contains a credential/);
+    const secondary="fixture-only-another-provider-key";
+    native.prepare("UPDATE providers SET api_keys_enc=? WHERE id='p'").run(encryptSecret(JSON.stringify([{id:"one",value:opaqueKey},{id:"two",value:secondary}]),masterKey));
+    for(const candidate of [secondary,"fixture-control-plane-credential"]) {
+      native.prepare("UPDATE providers SET balance_token_enc=? WHERE id='p'").run(encryptSecret("fixture-control-plane-credential",masterKey));
+      native.prepare("UPDATE models SET alias=? WHERE id='m1'").run(candidate);
+      await expect(generateCodexConfig({...options,defaultModel:candidate})).rejects.toThrow(/contains a credential/);
+    }
   } finally {
     native.close();
     if (gateway.listening) await new Promise<void>(resolve => gateway.close(() => resolve()));

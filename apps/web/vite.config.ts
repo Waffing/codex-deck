@@ -8,6 +8,8 @@ export default defineConfig({
   build:{
     rollupOptions:{output:{manualChunks:{
       "react-runtime":["react","react-dom/client"],
+      "markdown":["react-markdown","remark-gfm"],
+      "syntax":["rehype-highlight"],
     }}},
   },
   server:{proxy:{"/api":{target},"/ws":{target,ws:true},"/preview":{target,ws:true}}},

@@ -21,6 +21,7 @@ export interface ServerContext {
   masterKey: Buffer;
   masker: SecretMasker;
   gatewayConfig: GatewayConfig;
+  onUsageRecorded?: () => void;
   resolveSessionLease?: (credential:string, kind:"model"|"ops")=>string|null;
 }
 

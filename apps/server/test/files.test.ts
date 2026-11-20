@@ -189,6 +189,7 @@ it("creates an invisible pre-turn checkpoint, tracks changed files, streams a ZI
   await writeFile(path.join(root,"untracked.txt"),"keep");
   const head = await git("rev-parse","HEAD");
   const index = await readFile(path.join(root,".git","index"));
+  native.prepare("INSERT INTO tasks(id,workspace_id,thread_id,prompt,created_at,updated_at) VALUES('turn-1',?,'thread','test','','')").run(workspace);
   const before = await files.beforeTurn(workspace,"thread","turn-1");
   expect(await git("log","--oneline")).toMatch(/^[^\n]+original\r?\n$/);
   expect(await readFile(path.join(root,".git","index"))).toEqual(index);
@@ -197,6 +198,9 @@ it("creates an invisible pre-turn checkpoint, tracks changed files, streams a ZI
   await writeFile(path.join(root,"build.out"),"ignored");
   await rm(path.join(root,"untracked.txt"));
   const artifacts = await files.afterTurn(workspace,"thread","turn-1",before);
+  const turnDiff=JSON.parse(String(native.prepare("SELECT turn_diff_json FROM tasks WHERE id='turn-1'").pluck().get()));
+  expect(turnDiff.files).toEqual([{path:"new.txt",added:1,removed:0},{path:"tracked.txt",added:1,removed:1},{path:"untracked.txt",added:0,removed:1}]);
+  expect(turnDiff.diff).toContain("-unstaged");expect(turnDiff.diff).not.toContain("-base");
   expect(artifacts.map(a=>[a.path,a.change_type]).sort()).toEqual([["new.txt","added"],["tracked.txt","modified"]]);
   expect(events.at(-1)?.type).toBe("artifacts_updated");
   const signed = await app.inject({method:"POST",url:"/api/artifacts/sign",headers:{cookie},payload:{turn_id:"turn-1"}});
@@ -213,3 +217,15 @@ it("creates an invisible pre-turn checkpoint, tracks changed files, streams a ZI
   expect(await readFile(path.join(root,"untracked.txt"),"utf8")).toBe("keep");
   await expect(lstat(path.join(root,"new.txt"))).rejects.toMatchObject({code:"ENOENT"});
 },15000);
+
+it("finds workspace paths and uploaded attachments without traversing dependencies or external links",async()=>{
+  await mkdir(path.join(root,".codex-uploads"));await mkdir(path.join(root,"node_modules"));
+  await writeFile(path.join(root,".codex-uploads","story.ts"),"");await writeFile(path.join(root,"story.ts"),"");
+  await writeFile(path.join(root,"node_modules","story.ts"),"");
+  const outside=path.join(fixture,"unrelated-dir");await mkdir(outside);await writeFile(path.join(outside,"story.ts"),"");
+  await symlink(outside,path.join(root,"external"),process.platform==="win32"?"junction":"dir");
+  const url=pathBase+"/files/search?q=strts";
+  expect((await app.inject({url})).statusCode).toBe(401);
+  const resp=await app.inject({url,headers:{cookie}});expect(resp.statusCode,resp.body).toBe(200);
+  expect(resp.json().files.sort()).toEqual([".codex-uploads/story.ts","story.ts"]);
+});

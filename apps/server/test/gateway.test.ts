@@ -10,7 +10,7 @@ import { models, providers, schema, usageLogs } from "../src/db/schema.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createInternalToken, encryptSecret, signPayload } from "../src/security/crypto.js";
 import { SecretMasker } from "../src/security/secret-masker.js";
-import { sealHeaders } from "../src/gateway/credentials.js";
+import { keyFields,sealHeaders } from "../src/gateway/credentials.js";
 import { readSse } from "../src/gateway/sse.js";
 
 const upstreamKey = "fixture.opaque-provider-passphrase";
@@ -117,7 +117,7 @@ test("forwards native JSON and preserves raw SSE including comments, CRLF and UT
   };
   expect(await (await post("native", { reasoning: { effort: "high" }, metadata: { tag: "retained" } })).json()).toEqual(nativeResult);
   expect(observed[0].path).toBe("/v1/responses");
-  expect(observed[0].body).toEqual({ model: "real-native", input: "hello", stream: false, metadata: { tag: "retained" } });
+  expect(observed[0].body).toEqual({ model: "real-native", input: "hello", stream: false, max_output_tokens:16384,metadata: { tag: "retained" } });
   expect(observed[0].headers.authorization).toBe("Bearer " + upstreamKey);
   expect(observed[0].headers["x-tenant"]).toBe(tenantKey);
   const response = await post("native", { stream: true });
@@ -136,6 +136,45 @@ test("honors forced Chat mode and accounts CNY prices in their configured curren
   expect((await (await post("native")).json()).output[0].content[0].text).toBe("hello");
   expect(observed.map(item=>item.path)).toEqual(["/v1/chat/completions"]);
   expect(context.orm.select().from(usageLogs).get()).toMatchObject({costCny:0.00015,costUsd:0});
+});
+
+test("rotates healthy keys, cools rejected keys, masks echoes and bills cached input only once",async()=>{
+  addModel("pool","responses");
+  const secrets=["tenant-secret-A1123","tenant-secret-B2345","tenant-secret-C9876"];
+  const sealed=keyFields({api_keys:secrets},context);
+  context.native.prepare("UPDATE providers SET api_keys_enc=?,api_key_ciphertext=?,api_key_masked=?").run(sealed.apiKeysEnc,sealed.apiKeyCiphertext,sealed.apiKeyMasked);
+  context.native.exec("UPDATE models SET cache_read_price_per_1m=0.5");
+  let fail=false;
+  serve=(_body,res)=>{
+    const auth=observed.at(-1)!.headers.authorization;
+    if(fail && auth!==`Bearer ${secrets[2]}`) {
+      res.writeHead(auth===`Bearer ${secrets[0]}`?429:401,{"retry-after":"60"}).end(secrets[0]);return;
+    }
+    res.end(JSON.stringify({...nativeResult,output:[{text:secrets.join("/")}],usage:{input_tokens:20,output_tokens:7,input_tokens_details:{cached_tokens:8}}}));
+  };
+  for(let i=0;i<3;i++) {
+    const body=await (await post("pool")).text();
+    for(const key of secrets) expect(body).not.toContain(key);
+  }
+  expect(observed.map(r=>r.headers.authorization)).toEqual(secrets.map(key=>"Bearer "+key));
+  fail=true;
+  for(let i=0;i<2;i++) expect((await post("pool")).status).toBe(200);
+  expect(observed.slice(3).map(r=>r.headers.authorization)).toEqual([0,1,2,2].map(i=>"Bearer "+secrets[i]));
+  const entries=context.orm.select().from(usageLogs).all();
+  expect(entries).toHaveLength(5);
+  for(const row of entries) expect(row).toMatchObject({cachedInputTokens:8,costUsd:0.000063,failoverFrom:null});
+  for(const key of secrets) expect(JSON.stringify(entries)+JSON.stringify(context.orm.select().from(providers).all())).not.toContain(key);
+});
+
+test("tries each key before switching models on a pool of unauthorized keys",async()=>{
+  addModel("backup","responses");addModel("primary","responses",["backup"]);
+  const sealed=keyFields({api_keys:["primary-test-first","primary-test-second"]},context);
+  context.native.prepare("UPDATE providers SET rotation_strategy='failover',api_keys_enc=? WHERE id='p-primary'").run(sealed.apiKeysEnc);
+  serve=(body,res)=>body.model==="real-primary"?res.writeHead(401).end():res.end(JSON.stringify(nativeResult));
+  const response=await post("primary");
+  expect(response.status).toBe(200);
+  expect(response.headers.get("x-codexdeck-failover")).toBe("primary,backup");
+  expect(observed.map(r=>r.headers.authorization)).toEqual(["Bearer primary-test-first","Bearer primary-test-second","Bearer "+upstreamKey]);
 });
 
 test("bills the active task and distinguishes actual zeroes from missing or partial Chat usage", async()=>{

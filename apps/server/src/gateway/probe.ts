@@ -1,7 +1,7 @@
 import { probeResultSchema, type ProbeResult } from "@codexdeck/shared";
 import type { providers } from "../db/schema.js";
 import type { ServerContext } from "../app.js";
-import { readCredentials } from "./credentials.js";
+import { withProviderKey } from "./credentials.js";
 import { readSse } from "./sse.js";
 import { upstreamHeaders, upstreamUrl } from "./upstream.js";
 import { targetPolicy,upstreamFetch } from "./transport.js";
@@ -66,17 +66,16 @@ export async function probeProvider(provider: typeof providers.$inferSelect, con
   const result: ProbeResult = { provider_id: provider.id, ok: false, models: [],
     checked_at: new Date().toISOString(), capabilities: { responses: false, chat: false, tools: false, vision: false, latency_ms: null } };
   const base = upstreamUrl(provider.baseUrl, "models");
-  const { apiKey, headers } = readCredentials(provider, context);
-  const credentials=!!apiKey || Object.values(headers).some(Boolean);
+  const credentials=!!provider.apiKeyCiphertext || Object.values(JSON.parse(provider.headersJson)).some(Boolean);
   const ports=[context.gatewayConfig.port,boundPort];
   try { targetPolicy(base,credentials,ports); } catch(error) {return {...result,error:(error as Error).message};}
   const failures=new Map<string,string>();
   const request: RequestUpstream = async (endpoint, body) => {
     try {
-    const response=await upstreamFetch(upstreamUrl(provider.baseUrl, endpoint), {
+    const response=await withProviderKey(provider,context,(apiKey,headers)=>upstreamFetch(upstreamUrl(provider.baseUrl, endpoint), {
     method: body ? "POST" : "GET", headers: upstreamHeaders(headers, apiKey),
     body: body && JSON.stringify(body), signal: AbortSignal.timeout(Math.min(context.gatewayConfig.upstream_timeout_ms, 8000)),
-    },credentials,ports);
+    },credentials,ports));
     if (!response.ok) failures.set(endpoint,`HTTP ${response.status}`);
     return response;
     } catch (error) {

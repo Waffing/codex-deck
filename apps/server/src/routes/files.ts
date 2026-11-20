@@ -21,6 +21,35 @@ export function registerFileRoutes(app: FastifyInstance, ctx: ServerContext, fil
   registerWorkspaceRoutes(app, ctx, files);
   app.register(multipart, { limits: { fileSize: 16 * 1024 * 1024, files: 1, fields: 0, parts: 1 } });
   app.addHook("onClose", async () => files.close());
+  app.get<ById & {Querystring:{q?:string}}>("/api/workspaces/:id/files/search",auth,async req=>{
+    const q=req.query.q??"";
+    if (typeof q!=="string" || q.length>180) throw fileError(400,"Invalid file query.");
+    const root=await files.getRoot(req.params.id);
+    const needle=q.trim().toLowerCase();
+    const results:string[]=[];
+    const directories=[".codex-uploads",""];
+    let visited=0;
+    for (let i=0;i<directories.length && visited<12000 && results.length<150;i++) {
+      const relative=directories[i];
+      const absolute=await resolveSafeWorkspacePath(root,relative);
+      const entries=await readdir(absolute,{withFileTypes:true}).catch(e=>{if(missing(e))return [];throw e;});
+      for (const entry of entries) {
+        if (++visited>12000) break;
+        const name=entry.name;
+        if (entry.isSymbolicLink() || ignored.has(name.toLowerCase()) || [".codex-uploads","dist","coverage",".next"].includes(name)) continue;
+        const child=path.posix.join(relative,name);
+        if (entry.isDirectory()) {directories.push(child);continue;}
+        const lower=child.toLowerCase();
+        let position=-1;
+        if (!entry.isFile() || ![...needle].every(char=>(position=lower.indexOf(char,position+1))>=0)) continue;
+        await resolveSafeWorkspacePath(root,child);
+        results.push(child);
+        if(results.length>=150) break;
+      }
+    }
+    results.sort((a,b)=>Number(b.toLowerCase().includes(needle))-Number(a.toLowerCase().includes(needle))||a.length-b.length||a.localeCompare(b));
+    return {files:results.slice(0,50)};
+  });
   app.get<ById & { Querystring: { path?: string } }>("/api/workspaces/:id/files/tree", auth, async req => {
     const root = await files.getRoot(req.params.id);
     const params = fileTreeQuerySchema.safeParse(req.query);

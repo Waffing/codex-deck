@@ -6,7 +6,7 @@ import { Transform } from "node:stream";
 import { lookup } from "mime-types";
 import type { ChangeType, Workspace, Artifact } from "@codexdeck/shared";
 import type { ServerContext } from "../app.js";
-import { cloneRepository, createCheckpoint, restoreCheckpoint } from "./git.js";
+import { checkpointDiff,cloneRepository, createCheckpoint, restoreCheckpoint } from "./git.js";
 import { ensureDirectory, fileError, missing, openWorkspaceFile, resolveSafeWorkspacePath, saveWorkspaceFile } from "./sandbox.js";
 import { signDownload } from "./signed-url.js";
 import { snapshotFiles, type FileSnapshot } from "./tracker.js";
@@ -185,6 +185,13 @@ export class WorkspaceFiles {
         if (!registered.has(name) && previous.get(name) !== fingerprint) {
           artifacts.push(await this.registerArtifact(workspaceId, threadId, turnId, name, previous.has(name) ? "modified" : "added"));
         }
+      }
+      const changes=await checkpointDiff(root,turnId);
+      const recorded=this.context.native.prepare("SELECT turn_diff_json FROM tasks WHERE id=?").pluck().get(turnId);
+      if (changes || !recorded) {
+        const all=new Set([...current.keys(),...previous.keys()]);
+        const fallback=[...all].filter(name=>current.get(name)!==previous.get(name)).map(path=>({path,added:null,removed:null}));
+        this.context.native.prepare("UPDATE tasks SET turn_diff_json=? WHERE id=?").run(JSON.stringify(this.context.masker.maskObject(changes??{files:fallback,diff:""})),turnId);
       }
       await this.append(threadId, "artifacts_updated", { turn_id: turnId, artifacts });
       return artifacts;

@@ -1,6 +1,6 @@
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { threadSchema, type Thread, type ApprovalDecision } from "@codexdeck/shared";
+import { threadSchema, type Thread, type TurnTelemetry, type ApprovalDecision } from "@codexdeck/shared";
 import type { ServerContext } from "../app.js";
 import type { WorkspaceFiles } from "../files/workspace-files.js";
 import { generateCodexConfig } from "./config-gen.js";
@@ -10,6 +10,8 @@ import { WorkspaceQueue } from "./queue.js";
 import { snapshotFiles } from "../files/tracker.js";
 import { signPayload } from "../security/crypto.js";
 import { OutputMasker } from "./output-masker.js";
+import {summarizeContext} from "./compact.js";
+import {completeAnswer,turnMetrics} from "./timeline.js";
 
 export interface ManagerOptions {
   dataDirectory: string; workspaceRoot?: string; port?: () => number; codexBin?: string; opsEntry?: string;
@@ -20,11 +22,20 @@ type Files = Pick<WorkspaceFiles, "getRoot" | "beforeTurn" | "afterTurn" | "agen
 type ThreadRow = Thread & { remote_thread_id: string | null; codex_home: string | null };
 type Terminal = "completed" | "failed" | "cancelled";
 type Turn = { taskId: string; threadId: string; workspaceId: string; prompt: string; imageIds:string[]; remoteId?: string;
+  modelAlias?:string|null;
   cancelled: boolean; summary: string; done: Promise<Terminal>; finish: (status: Terminal) => void };
-type Session = { client: RpcClient; remoteId:string; leases:Record<"model"|"ops",string>; idle?:NodeJS.Timeout };
+type Session = { client: RpcClient; remoteId:string; settings:Json; catalog:string; leases:Record<"model"|"ops",string>; idle?:NodeJS.Timeout };
+type Compacted=Omit<Awaited<ReturnType<typeof summarizeContext>>,"taskId">;
 
 function error(statusCode: number, message: string) { return Object.assign(new Error(message),{statusCode}); }
 function textInput(text: string) { return [{ type: "text", text, text_elements: [] }]; }
+// Historical notifications predate the denormalized thread fields. Use the event cursor to invalidate old reports on model change.
+const threadUsageColumns=`coalesce((SELECT max(sequence) FROM thread_events WHERE thread_id=t.id AND type='model_changed'
+  AND coalesce(json_extract(payload_json,'$.alias_changed'),1)),0)`;
+const effectiveWindow=`(SELECT json_extract(e.payload_json,'$.tokenUsage.modelContextWindow') FROM thread_events e
+  WHERE e.thread_id=t.id AND e.type='thread/tokenUsage/updated' AND e.sequence>${threadUsageColumns}
+  AND coalesce(json_extract(e.payload_json,'$.model_alias'),t.active_model_alias)=t.active_model_alias
+  AND json_type(e.payload_json,'$.tokenUsage.modelContextWindow')='integer' AND json_extract(e.payload_json,'$.tokenUsage.modelContextWindow')>0 ORDER BY e.sequence DESC LIMIT 1)`;
 
 export class ThreadManager {
   readonly approvals: ApprovalEngine;
@@ -35,6 +46,7 @@ export class ThreadManager {
   private connecting = new Map<string, Promise<Session>>();
   private jobs = new Map<string, Turn>();
   private active = new Map<string, Turn>();
+  private readonly compacting=new Map<string,Promise<Compacted>>();
   private fileChanges = new Map<string, Map<string, unknown[]>>();
   private stopping = false;
   private recovered = false;
@@ -63,13 +75,13 @@ export class ThreadManager {
   }
 
   private row(id: string) {
-    const row = this.context.native.prepare("SELECT * FROM threads WHERE id=?").get(id) as ThreadRow | undefined;
+    const row = this.context.native.prepare(`SELECT t.*,${threadUsageColumns} AS model_changed_seq,${effectiveWindow} AS effective_context_window FROM threads t WHERE t.id=?`).get(id) as ThreadRow | undefined;
     if (!row) throw error(404,"Thread not found.");
     return row;
   }
 
   list(workspaceId?: string) {
-    const sql = `SELECT t.*, (SELECT s.status FROM tasks s WHERE s.thread_id=t.id
+    const sql = `SELECT t.*,${threadUsageColumns} AS model_changed_seq,${effectiveWindow} AS effective_context_window, (SELECT s.status FROM tasks s WHERE s.thread_id=t.id
       ORDER BY CASE s.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,s.created_at DESC,s.rowid DESC
       LIMIT 1) AS task_status FROM threads t` + (workspaceId ? " WHERE t.workspace_id=?" : "") + " ORDER BY t.created_at,t.id";
     const rows = this.context.native.prepare(sql).all(...workspaceId ? [workspaceId] : []) as (ThreadRow & {task_status:string|null})[];
@@ -93,11 +105,13 @@ export class ThreadManager {
   }
 
   setModel(id: string, alias?: string, effort?: string | null) {
+    if(this.compacting.has(id)) throw error(409,"Thread is compacting.");
     const row = this.row(id);
     const model = alias ? this.modelName(alias) : row.active_model_alias;
-    this.context.native.prepare("UPDATE threads SET active_model_alias=?,reasoning_effort=?,updated_at=? WHERE id=?")
-      .run(model,effort === undefined ? row.reasoning_effort : effort,new Date().toISOString(),id);
-    this.events.append(id,"model_changed",{model_alias:model,reasoning_effort:effort ?? null});
+    const changed=model!==row.active_model_alias;
+    this.context.native.prepare("UPDATE threads SET active_model_alias=?,reasoning_effort=?,last_context_tokens=CASE WHEN ? THEN NULL ELSE last_context_tokens END,updated_at=? WHERE id=?")
+      .run(model,effort === undefined ? row.reasoning_effort : effort,Number(changed),new Date().toISOString(),id);
+    this.events.append(id,"model_changed",{model_alias:model,alias_changed:changed,reasoning_effort:effort??row.reasoning_effort});
     return threadSchema.parse(this.row(id));
   }
 
@@ -129,6 +143,7 @@ export class ThreadManager {
   }
 
   submit(threadId: string, prompt: string, taskId: string = randomUUID(), imageIds:string[] = []) {
+    if(this.compacting.has(threadId)) throw error(409,"Thread is compacting.");
     if (this.stopping) throw error(503,"Manager is shutting down.");
     if (this.jobs.size>=this.queueLimit) throw error(429,"Task queue is full.");
     const row = this.row(threadId);
@@ -188,6 +203,7 @@ export class ThreadManager {
   }
 
   private async run(turn: Turn) {
+    const started=Date.now();
     const { threadId, workspaceId, taskId } = turn;
     if (!this.context.native.prepare("SELECT 1 FROM tasks WHERE id=?").get(taskId)) { this.jobs.delete(taskId); return; }
     this.active.set(threadId,turn);
@@ -203,6 +219,7 @@ export class ThreadManager {
       const session = await this.connect(threadId);
       if (this.stopping || turn.cancelled) { terminal = "cancelled"; return; }
       const row = this.row(threadId);
+      turn.modelAlias=row.active_model_alias;
       const response = await session.client.call("turn/start", {
         threadId:session.remoteId, input:await this.userInput(row,turn.prompt,turn.imageIds), ...(row.reasoning_effort && { effort:row.reasoning_effort }),
       });
@@ -219,6 +236,15 @@ export class ThreadManager {
         catch { terminal = "failed"; turn.summary = "Could not record workspace artifacts."; }
       }
       this.active.delete(threadId);
+      const db=this.context.native;
+      const answer=completeAnswer(db,threadId,taskId,this.context.masker);
+      if(answer) {
+        db.prepare("UPDATE tasks SET answer_markdown=? WHERE id=?").run(answer,taskId);
+        if(terminal==="completed") turn.summary=answer.slice(-8192);
+      }
+      const patch=db.prepare("SELECT turn_diff_json FROM tasks WHERE id=?").pluck().get(taskId) as string|null;
+      const {files,diff}=patch?JSON.parse(patch):{files:[],diff:""};
+      this.events.append(threadId,"turn_telemetry",turnMetrics(db,threadId,taskId,started,files,diff),taskId);
       const session=this.sessions.get(threadId);
       if (session) {
         if (turn.cancelled) { this.sessions.delete(threadId); await session.client.close(); }
@@ -239,7 +265,7 @@ export class ThreadManager {
   private connect(threadId: string): Promise<Session> {
     if (this.stopping) return Promise.reject(error(503,"Manager closed."));
     const prior = this.sessions.get(threadId);
-    if (prior?.client.alive) { clearTimeout(prior.idle); return Promise.resolve(prior); }
+    if (prior?.client.alive && prior.catalog===this.catalogLimits(threadId)) { clearTimeout(prior.idle); return Promise.resolve(prior); }
     const existing = this.connecting.get(threadId);
     if (existing) return existing;
     const open = async () => {
@@ -249,6 +275,11 @@ export class ThreadManager {
     const pending = open().finally(() => this.connecting.delete(threadId));
     this.connecting.set(threadId,pending);
     return pending;
+  }
+
+  private catalogLimits(threadId:string) {
+    const model=this.context.native.prepare("SELECT m.context_window,m.max_output_tokens,m.last_probe_json FROM threads t JOIN models m ON m.alias=t.active_model_alias WHERE t.id=?").get(threadId);
+    return JSON.stringify(model);
   }
 
   private async open(threadId: string) {
@@ -300,7 +331,7 @@ export class ThreadManager {
       const remoteId = (response.thread as Json)?.id;
       if (typeof remoteId !== "string" || !remoteId) throw new Error("Invalid Codex thread response.");
       if (this.stopping) throw error(503,"Manager closed.");
-      const session = { client,remoteId,leases };
+      const session = { client,remoteId,leases,settings,catalog:this.catalogLimits(threadId) };
       this.context.native.prepare("UPDATE threads SET remote_thread_id=? WHERE id=?").run(remoteId,threadId);
       this.sessions.set(threadId,session);
       this.events.append(threadId,row.remote_thread_id ? "process_resumed" : "process_started",{remote_thread_id:remoteId});
@@ -310,8 +341,31 @@ export class ThreadManager {
 
   private notify(threadId: string, method: string, params: Json) {
     const turn = this.active.get(threadId);
+    if (method==="item/reasoning/textDelta" || method==="rawResponseItem/completed") return;
+    if (method==="item/started" || method==="item/completed") {
+      const item=params.item as Json|undefined;
+      if (item?.type==="reasoning") params={...params,item:{type:"reasoning",id:item.id,summary:item.summary}};
+    }
+    if (method==="thread/tokenUsage/updated" && turn) {
+      const usage=(params.tokenUsage as {last?:{totalTokens?:number}})?.last?.totalTokens;
+      if(typeof usage==="number" && Number.isSafeInteger(usage) && usage>=0) this.context.native.prepare("UPDATE threads SET last_context_tokens=? WHERE id=? AND active_model_alias=?").run(usage,threadId,turn.modelAlias??null);
+      const speed=this.context.native.prepare("SELECT tokens_per_sec FROM usage_logs WHERE turn_id=? ORDER BY rowid DESC LIMIT 1").pluck().get(turn.taskId);
+      params={...params,model_alias:turn.modelAlias??null,tokens_per_sec:speed??null};
+    }
     this.events.append(threadId,method,params,turn?.taskId);
     if (!turn) return;
+    if (method==="turn/diff/updated" && typeof params.diff==="string") {
+      const files:TurnTelemetry["files"]=[];
+      let file:TurnTelemetry["files"][number]|undefined;
+      for (const line of params.diff.split("\n")) {
+        const header=line.match(/^diff --git a\/.* b\/(.+)$/);
+        if (header) {file={path:header[1],added:0,removed:0};files.push(file);}
+        else if (file && line.startsWith("Binary files ")) {file.added=null;file.removed=null;}
+        else if (file && line.startsWith("+") && !line.startsWith("+++") && file.added!==null) file.added++;
+        else if (file && line.startsWith("-") && !line.startsWith("---") && file.removed!==null) file.removed++;
+      }
+      this.context.native.prepare("UPDATE tasks SET turn_diff_json=? WHERE id=?").run(JSON.stringify(this.context.masker.maskObject({files,diff:params.diff.slice(0,256*1024)})),turn.taskId);
+    }
     if (method === "item/started") {
       const item = params.item as Json | undefined;
       if (item?.type === "fileChange" && typeof item.id === "string" && Array.isArray(item.changes)) {
@@ -326,6 +380,65 @@ export class ThreadManager {
       const result = params.turn as Json;
       if (!result || (turn.remoteId && result.id !== turn.remoteId)) return;
       turn.finish(result.status === "completed" ? "completed" : result.status === "interrupted" ? "cancelled" : "failed");
+    }
+  }
+
+  updateThread(id:string,pinned?:boolean,title?:string) {
+    this.row(id);
+    this.context.native.prepare("UPDATE threads SET pinned=COALESCE(?,pinned),title=COALESCE(?,title),updated_at=? WHERE id=?")
+      .run(pinned===undefined?null:Number(pinned),title??null,new Date().toISOString(),id);
+    return threadSchema.parse(this.row(id));
+  }
+
+  private requireIdle(id:string) {
+    if(this.compacting.has(id) || this.active.has(id) || this.connecting.has(id) || this.context.native.prepare("SELECT id FROM tasks WHERE thread_id=? AND status IN ('queued','running')").get(id)) throw error(409,"Thread has active work.");
+  }
+
+  async deleteThread(id:string) {
+    this.row(id);this.requireIdle(id);
+    const session=this.sessions.get(id);
+    this.sessions.delete(id);
+    if(session) clearTimeout(session.idle);
+    this.context.native.prepare("DELETE FROM threads WHERE id=?").run(id);
+    if(session) await session.client.close();
+  }
+
+  async compact(id:string,alias?:string):Promise<Compacted> {
+    if(this.stopping) throw error(503,"Manager is shutting down.");
+    const existing=this.compacting.get(id);
+    if(existing) return existing;
+    const row=this.row(id);
+    if(!row.workspace_id) throw error(404,"Workspace unavailable.");
+    this.requireIdle(id);
+    const cached=this.context.native.prepare(`SELECT payload_json FROM thread_events WHERE thread_id=? AND type='context_compacted'
+      AND task_id=(SELECT id FROM tasks WHERE thread_id=? ORDER BY rowid DESC LIMIT 1) ORDER BY sequence DESC LIMIT 1`).pluck().get(id,id);
+    if(typeof cached==="string") return JSON.parse(cached) as Compacted;
+    const job=this.replaceContext(id,this.modelName(alias??row.active_model_alias??undefined));
+    this.compacting.set(id,job);
+    return job;
+  }
+
+  private async replaceContext(id:string,alias:string):Promise<Compacted> {
+    try {
+      const {taskId,...result}=await summarizeContext(this.context,id,alias,
+        this.options.port?.()??this.context.gatewayConfig.port);
+      const session=await this.connect(id);
+      const response=await session.client.call("thread/start",session.settings);
+      const remoteId=(response.thread as Json)?.id;
+      if(typeof remoteId!=="string" || !remoteId || remoteId===session.remoteId) throw error(502,"Could not create new context.");
+      await session.client.call("thread/inject_items",{threadId:remoteId,items:[{type:"message",role:"user",content:[
+        {type:"input_text",text:"Handoff from earlier conversation (reference material):\n"+result.summary}]}]});
+      if(!session.client.alive || this.sessions.get(id)!==session || this.stopping) throw error(503,"Session closed during compaction.");
+      this.context.native.transaction(()=>{
+        this.context.native.prepare("UPDATE threads SET compacted_summary=?,last_context_tokens=?,remote_thread_id=?,updated_at=? WHERE id=?")
+          .run(result.summary,result.after_tokens,remoteId,new Date().toISOString(),id);
+        this.events.append(id,"context_compacted",result,taskId);
+      })();
+      session.remoteId=remoteId;
+      return result;
+    } finally {this.compacting.delete(id);
+      const session=this.sessions.get(id);
+      if(session && !this.active.has(id)) {clearTimeout(session.idle);session.idle=setTimeout(()=>{if(this.sessions.get(id)===session && !this.active.has(id)) {this.sessions.delete(id);void session.client.close();}},this.idleMs);session.idle.unref();}
     }
   }
 
@@ -397,6 +510,7 @@ export class ThreadManager {
       if (!this.active.has(turn.threadId) || this.active.get(turn.threadId) !== turn) this.terminal(turn,"cancelled");
     }
     await Promise.allSettled(this.connecting.values());
+    await Promise.allSettled(this.compacting.values());
     await Promise.allSettled([...this.sessions.values()].map(session => session.client.close()));
     await this.queue.drain();
   }

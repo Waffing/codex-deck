@@ -140,6 +140,33 @@ export const migrations = [
       );
     `,
   },
+  {
+    version: 5,
+    sql: `
+      ALTER TABLE providers ADD COLUMN api_keys_enc TEXT;
+      ALTER TABLE providers ADD COLUMN balance_endpoint TEXT;
+      ALTER TABLE providers ADD COLUMN balance_token_enc TEXT;
+      ALTER TABLE providers ADD COLUMN balance_user_id TEXT;
+      ALTER TABLE providers ADD COLUMN last_balance_json TEXT;
+      ALTER TABLE providers ADD COLUMN rotation_strategy TEXT NOT NULL DEFAULT 'round_robin';
+      ALTER TABLE models ADD COLUMN context_window INTEGER NOT NULL DEFAULT 128000;
+      ALTER TABLE models ADD COLUMN max_output_tokens INTEGER NOT NULL DEFAULT 16384;
+      ALTER TABLE models ADD COLUMN cache_read_price_per_1m REAL NOT NULL DEFAULT 0;
+      ALTER TABLE models ADD COLUMN capabilities_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE models ADD COLUMN last_benchmark_json TEXT;
+      ALTER TABLE usage_logs ADD COLUMN cached_input_tokens INTEGER;
+      ALTER TABLE usage_logs ADD COLUMN ttft_ms INTEGER;
+      ALTER TABLE usage_logs ADD COLUMN tokens_per_sec REAL;
+      ALTER TABLE usage_logs ADD COLUMN turn_id TEXT;
+      UPDATE usage_logs SET turn_id=task_id WHERE task_id IS NOT NULL;
+      CREATE INDEX usage_logs_turn ON usage_logs(turn_id);
+      ALTER TABLE threads ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE threads ADD COLUMN last_context_tokens INTEGER;
+      ALTER TABLE threads ADD COLUMN compacted_summary TEXT;
+      ALTER TABLE tasks ADD COLUMN answer_markdown TEXT;
+      ALTER TABLE tasks ADD COLUMN turn_diff_json TEXT;
+    `,
+  },
 ];
 
 export function runMigrations(database: Database.Database): void {

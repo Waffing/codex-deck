@@ -7,7 +7,7 @@ type Group = { text: string; parts: Buffered[] };
 
 // A key echoed in several deltas must be redacted before any of those fragments
 // reach the client. Hold only frames whose text could still complete a known key.
-export async function* redactSse(frames: AsyncIterable<SseFrame>, masker: SecretMasker) {
+export async function* redactSse(frames: AsyncIterable<SseFrame>, masker: SecretMasker, observe?:(event:Event)=>void) {
   const queue: Buffered[] = [];
   const groups = new Map<string, Group>();
   let bytesHeld = 0;
@@ -41,6 +41,7 @@ export async function* redactSse(frames: AsyncIterable<SseFrame>, masker: Secret
 
   for await (const frame of frames) {
     const event: Event | undefined = frame.data && frame.data.trim() !== "[DONE]" ? JSON.parse(frame.data) : undefined;
+    if(event) observe?.(event);
     const part: Buffered = { frame, event, ready: true };
     queue.push(part);
     bytesHeld += frame.raw.length;

@@ -122,3 +122,28 @@ test("sends a test notification to the selected channel and reports an unsuccess
     if(http.listening) await new Promise<void>(resolve=>http.close(()=>resolve()));
   }
 });
+
+test("aggregates UTC periods, excludes unknown cache denominators, exports safe CSV and alerts once per budget",async()=>{
+  expect((await app.inject("/api/usage/export.csv")).statusCode).toBe(401);
+  const now=new Date().toISOString();
+  const insert=db.native.prepare(`INSERT INTO usage_logs(id,requested_alias,input_tokens,output_tokens,
+    cost_usd,cost_cny,cached_input_tokens,tokens_per_sec,ttft_ms,usage_known,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`);
+  insert.run("analytics1","=formula",120,8,1.25,0,60,20,125,1,now);
+  insert.run("analytics2","=formula",500,12,0,2,null,null,null,1,now);
+  const data=(await get("/api/usage/analytics?period=week&group_by=model")).json();
+  const row=data.rows.find((r:{label:string})=>r.label==="=formula");
+  expect(row).toMatchObject({input_tokens:620,output_tokens:20,cached_input_tokens:60,cache_hit_rate:.5,
+    ttft_ms:125,tokens_per_sec:20,cost_usd:1.25,cost_cny:2});
+  expect(data.trend.every((v:{label:string})=>new Date(v.label+"T00:00:00Z").getUTCDay()===1)).toBe(true);
+  const csv=await get("/api/usage/export.csv?group_by=model");
+  expect(csv.headers["content-type"]).toContain("text/csv");
+  expect(csv.body).toContain(`"'=formula"`);expect(csv.body).toContain("cached_input_tokens");
+  const budget={daily_usd:1,monthly_usd:null,daily_cny:null,monthly_cny:1.5};
+  const save=()=>app.inject({method:"PUT",url:"/api/usage/budget",headers:{cookie},payload:budget});
+  expect((await save()).json()).toEqual(budget);
+  const first=(await get("/api/usage/budget")).json().alerts;
+  expect(first.map((alert:{kind:string})=>alert.kind).sort()).toEqual(["daily_usd","monthly_cny"]);
+  await save();
+  expect((await get("/api/usage/budget")).json().alerts).toEqual(first);
+  expect((await get("/api/usage/analytics?period=fortnight")).statusCode).toBe(400);
+});

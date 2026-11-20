@@ -8,9 +8,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+import {modelLedgerJourney} from "./model-ledger.mjs";
 import { createServer, parseGatewayConfig } from "../../server/dist/app.js";
 import { openDatabase } from "../../server/dist/db/index.js";
 import { SecretMasker } from "../../server/dist/security/secret-masker.js";
+import { chatExperienceJourney, mobileExperienceJourney } from "./chat-experience.mjs";
 
 process.env.NODE_ENV = "production";
 // The browser fixture starts an approved local static preview in its temporary workspace.
@@ -22,11 +24,27 @@ const codexBin = fileURLToPath(new URL("../../server/tests/fixtures/fake-app-ser
 const probePaths = new Set();
 const mock = httpServer(async (req,res) => {
   probePaths.add(req.url);
-  if(req.url === "/v1/models") return res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({data:[{id:"fixture-model"}]}));
+  if(req.url === "/v1/models") return res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({data:[{id:"fixture-model"},{id:"lab/library",context_length:200000}]}));
+  if(req.url === "/balance") return res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({data:{balance:24.5,currency:"USD"}}));
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const body = JSON.parse(Buffer.concat(chunks).toString());
   const native = req.url === "/v1/responses";
+  if (native && body.instructions?.includes("structured handoff")) {
+    return res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({
+      id:"resp_compact",status:"completed",model:body.model,output:[{type:"message",content:[{type:"output_text",text:"已核对说明与测试，下一步复查部署。"}]}],
+      usage:{input_tokens:540,output_tokens:18},
+    }));
+  }
+  if(body.stream && body.model==="lab/library" && native) {
+    const sample=body.max_output_tokens;
+    res.writeHead(200,{"content-type":"text/event-stream"});
+    const send=event=>res.write(`data: ${JSON.stringify(event)}\n\n`);
+    send({type:"response.output_text.delta",delta:"1"});
+    if(sample>1) {await new Promise(resolve=>setTimeout(resolve,45));send({type:"response.output_text.delta",delta:" 2 3"});}
+    send({type:"response.completed",response:{usage:{input_tokens:8,output_tokens:sample>1?3:1,input_tokens_details:{cached_tokens:2}}}});
+    return res.end();
+  }
   if(body.stream) {
     const delta = native ? {type:"response.output_text.delta",delta:"OK"} : {choices:[{delta:{content:"OK"}}]};
     return res.writeHead(200,{"Content-Type":"text/event-stream"}).end("data: "+JSON.stringify(delta)+"\n\n");
@@ -102,8 +120,9 @@ try {
   await approve(card);
   const answer="正在检查工作区。已生成验收摘要。";
   await desktop.getByText(answer,{exact:true}).waitFor();
-  const toggle=desktop.getByRole("button",{name:/已完成 1 步/});
+  const toggle=desktop.getByRole("button",{name:/运行完成.*1 个工具/});
   assert.equal(await toggle.getAttribute("aria-expanded"),"false");await toggle.click();
+  await desktop.getByText("执行命令 · 1 次操作").click();
   await desktop.locator(".cd-step-block pre").filter({hasText:"working tree clean"}).waitFor();
   await toggle.click();
   await desktop.getByRole("button",{name:/^result\.txt/}).click();
@@ -119,6 +138,8 @@ try {
     const r=await context.request.get(origin+"/"+prefix+"/nonexistent");
     assert.ok(r.status()>=400&&r.status()<500);assert.doesNotMatch(r.headers()["content-type"]??"",/text\/html/);
   }
+  step="V1.1 双主题、文档流与上下文";
+  await chatExperienceJourney(desktop,submit,shot);
 
   step="移动端审批、输入与预发布";
   const handheld=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,
@@ -143,6 +164,10 @@ try {
   await preview.waitFor();await shot(desktop,"05-services-desktop");
   await preview.click();
   await desktop.frameLocator("iframe").getByText("CodexDeck preview ready",{exact:true}).waitFor();
+  step="多 Key、模型排行与账本";
+  await modelLedgerJourney(desktop,origin,shot);
+  step="移动端主题、协议抽屉、IME、压缩、测速和账本";
+  await mobileExperienceJourney(mobile,shot,fits);
   assert.deepEqual(failures,{pageErrors:[],consoleErrors:[],http5xx:[]});
   console.log("PASS desktop 1440x900, mobile 390x844, single-port SPA / API / WS / preview and replay");
   console.log("Page errors 0 | Console errors 0 | Unexpected HTTP 5xx 0");

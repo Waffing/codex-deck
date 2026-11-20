@@ -15,11 +15,13 @@ export function rotateMasterKey(db: Database.Database, current: Buffer, next: Bu
     if (marker === rotationProof(next)) return 'Already rotated. Configure the new master key before starting the service.';
     if (marker != null && marker !== rotationProof(current)) throw new Error('Current key does not match this database.');
     const seal = (value: string) => value ? encryptSecret(decryptSecret(value, current), next) : value;
-    const provider = db.prepare('UPDATE providers SET api_key_ciphertext=?, headers_json=? WHERE id=?');
-    for (const row of db.prepare('SELECT id,api_key_ciphertext,headers_json FROM providers').all() as {id:string;api_key_ciphertext:string|null;headers_json:string}[]) {
+    const hasPool=db.prepare("SELECT 1 FROM pragma_table_info('providers') WHERE name='api_keys_enc'").get();
+    const provider = db.prepare(`UPDATE providers SET api_key_ciphertext=?, headers_json=? ${hasPool?",api_keys_enc=?, balance_token_enc=?":""} WHERE id=?`);
+    for (const row of db.prepare('SELECT * FROM providers').all() as {id:string;api_key_ciphertext:string|null;headers_json:string;api_keys_enc:string|null;balance_token_enc:string|null}[]) {
       const headers: Record<string, string> = JSON.parse(row.headers_json);
       const renewed = Object.fromEntries(Object.entries(headers).map(([name,value]) => [name, seal(value)]));
-      provider.run(row.api_key_ciphertext === null ? null : seal(row.api_key_ciphertext), JSON.stringify(renewed), row.id);
+      provider.run(row.api_key_ciphertext === null ? null : seal(row.api_key_ciphertext), JSON.stringify(renewed),
+        ...(hasPool?[row.api_keys_enc?seal(row.api_keys_enc):null,row.balance_token_enc?seal(row.balance_token_enc):null]:[]),row.id);
     }
     const channel = db.prepare('UPDATE notification_channels SET config_json=? WHERE id=?');
     for (const row of db.prepare('SELECT id,config_json FROM notification_channels').all() as {id:string;config_json:string}[]) {

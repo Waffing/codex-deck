@@ -9,7 +9,8 @@ export function useTheme(){
   const [mode,set]=useState(()=>localStorage.getItem("codexdeck.theme")??"system");
   const [dark,setDark]=useState(false);
   useEffect(()=>{const media=matchMedia("(prefers-color-scheme: dark)");const update=()=>{const d=mode==="system"?media.matches:mode==="dark";setDark(d);document.documentElement.dataset.theme=d?"dark":"light";};update();media.addEventListener("change",update);return ()=>media.removeEventListener("change",update);},[mode]);
-  return {dark,mode,toggle:()=>{const next=dark?"light":"dark";localStorage.setItem("codexdeck.theme",next);set(next);},system:()=>{localStorage.removeItem("codexdeck.theme");set("system")}};
+  function select(next:string){if(next==="system")localStorage.removeItem("codexdeck.theme");else localStorage.setItem("codexdeck.theme",next);set(next);}
+  return {dark,mode,select,toggle:()=>select(dark?"light":"dark"),system:()=>select("system")};
 }
 const initial={workspaces:[] as Workspace[],threads:[] as Thread[],models:[] as Model[],providers:[] as Provider[],approvals:[] as Approval[],profile:null as ServerProfile|null};
 export function useSnapshot(enabled:boolean,onError:(e:unknown)=>void){

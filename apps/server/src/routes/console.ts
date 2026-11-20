@@ -3,6 +3,7 @@ import { localImportSchema, usageGroupSchema, type UsageReport } from "@codexdec
 import { authenticated, createRequireAdmin } from "../auth.js";
 import type { ServerContext } from "../app.js";
 import type { WorkspaceFiles } from "../files/workspace-files.js";
+import {turnEvents} from "../codex/timeline.js";
 
 export function registerConsoleRoutes(app:FastifyInstance,ctx:ServerContext,files:WorkspaceFiles) {
   const db=ctx.native;
@@ -30,14 +31,14 @@ export function registerConsoleRoutes(app:FastifyInstance,ctx:ServerContext,file
     if (!input.success) return reply.code(400).send({error:"Invalid local workspace directory."});
     return reply.code(201).send(await files.importLocal(input.data));
   });
-  app.get<{Params:{id:string};Querystring:{before?:string;artifact_before?:string}}>("/api/threads/:id/history",auth,async (req,reply)=>{
+  app.get<{Params:{id:string};Querystring:{before?:string;artifact_before?:string;debug?:string}}>("/api/threads/:id/history",auth,async (req,reply)=>{
     if (!db.prepare("SELECT 1 FROM threads WHERE id=?").get(req.params.id)) return reply.code(404).send({error:"Unknown thread."});
     const before=Number(req.query.before??Number.MAX_SAFE_INTEGER), artifactBefore=Number(req.query.artifact_before??Number.MAX_SAFE_INTEGER);
     if (![before,artifactBefore].every(n=>Number.isSafeInteger(n)&&n>=0)) return reply.code(400).send({error:"Invalid history cursor."});
-    const tasks=db.prepare(`SELECT t.rowid cursor,t.id,t.prompt,t.status,t.summary,t.created_at,t.updated_at,c.ref checkpoint_ref
-      FROM tasks t LEFT JOIN checkpoints c ON c.turn_id=t.id WHERE t.thread_id=? AND t.rowid<? ORDER BY t.rowid DESC LIMIT 51`).all(req.params.id,before) as {cursor:number}[];
+    const tasks=db.prepare(`SELECT t.rowid cursor,t.id,t.prompt,t.status,t.summary,t.answer_markdown,t.created_at,t.updated_at,c.ref checkpoint_ref
+      FROM tasks t LEFT JOIN checkpoints c ON c.turn_id=t.id WHERE t.thread_id=? AND t.rowid<? ORDER BY t.rowid DESC LIMIT 51`).all(req.params.id,before) as {cursor:number;id:string}[];
     const artifacts=db.prepare("SELECT rowid cursor,* FROM artifacts WHERE thread_id=? AND rowid<? ORDER BY rowid DESC LIMIT 101").all(req.params.id,artifactBefore) as {cursor:number}[];
-    return {tasks:tasks.slice(0,50).reverse(),artifacts:artifacts.slice(0,100).reverse(),
+    return {tasks:tasks.slice(0,50).reverse().map(task=>({...task,events:turnEvents(db,req.params.id,task.id,ctx.masker,req.query.debug==="true")})),artifacts:artifacts.slice(0,100).reverse(),
       next_before:tasks.length>50?tasks[49].cursor:null,next_artifact_before:artifacts.length>100?artifacts[99].cursor:null};
   });
   app.get<{Querystring:{group_by?:string}}>("/api/usage",auth,async(req,reply)=>{

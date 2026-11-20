@@ -17,6 +17,12 @@ const headersSchema = z.record(z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/)
   (name) => !["host", "connection", "content-length", "transfer-encoding", "upgrade", "cookie", "proxy-authorization"].includes(name.toLowerCase()),
 ), z.string().regex(/^[\t\x20-\x7e]*$/));
 const providerFields = z.object({
+  api_keys: z.array(z.string().trim().min(1).max(16384)).max(64).optional(),
+  retain_key_ids: z.array(z.string().min(1)).max(64).optional(),
+  rotation_strategy: z.enum(["round_robin","failover"]).optional(),
+  balance_endpoint: z.string().max(2048).nullable().optional(),
+  balance_token: z.string().max(16384).optional(),
+  balance_user_id: z.string().regex(/^[0-9]{0,24}$/).nullable().optional(),
   name: z.string().trim().min(1).max(120),
   preset: providerPresetSchema,
   base_url: baseUrl,
@@ -33,7 +39,17 @@ export const providerCreateSchema = providerFields.extend({
 });
 export const providerPatchSchema = providerFields.partial();
 
+export const providerBalanceSchema = z.object({
+  status:z.enum(["ok","unsupported","unauthorized","error"]),amount:z.number().nullable(),
+  unit:z.string().nullable(),checked_at:z.string(),balance_at:z.string().nullable(),error:z.string().optional(),
+});
 const publicProviderFields = z.object({
+  rotation_strategy: z.enum(["round_robin","failover"]).default("round_robin"),
+  keys: z.array(z.object({id:z.string(),masked:z.string(),status:z.enum(["ready","cooldown","unauthorized"]),cooldown_until:z.string().nullable()})).default([]),
+  balance_endpoint: z.string().nullable().default(null),
+  has_balance_token: z.boolean().default(false),
+  balance_user_id: z.string().nullable().default(null),
+  last_balance: providerBalanceSchema.nullable().default(null),
   id: z.string(),
   name: z.string(),
   preset: providerPresetSchema,
@@ -47,6 +63,10 @@ const publicProviderFields = z.object({
 });
 
 const modelFields = z.object({
+  context_window: z.number().int().positive().max(2147483647),
+  max_output_tokens: z.number().int().positive().max(2147483647),
+  cache_read_price_per_1m: z.number().finite().nonnegative(),
+  capabilities: z.array(z.string().trim().min(1).max(40)).max(20),
   pricing_currency: z.enum(["USD","CNY"]),
   cost_input_cny_per_million: z.number().nonnegative(),
   cost_output_cny_per_million: z.number().nonnegative(),
@@ -60,6 +80,10 @@ const modelFields = z.object({
   enabled: z.boolean(),
 });
 export const modelCreateSchema = modelFields.extend({
+  context_window: modelFields.shape.context_window.default(128000),
+  max_output_tokens: modelFields.shape.max_output_tokens.default(16384),
+  cache_read_price_per_1m: modelFields.shape.cache_read_price_per_1m.default(0),
+  capabilities: modelFields.shape.capabilities.default([]),
   pricing_currency: modelFields.shape.pricing_currency.default("USD"),
   cost_input_cny_per_million: modelFields.shape.cost_input_cny_per_million.default(0),
   cost_output_cny_per_million: modelFields.shape.cost_output_cny_per_million.default(0),
@@ -70,6 +94,15 @@ export const modelCreateSchema = modelFields.extend({
   enabled: z.boolean().default(true),
 });
 export const modelPatchSchema = modelFields.partial();
+export const discoveredModelSchema = z.object({model_id:modelFields.shape.model_id, context_window:modelFields.shape.context_window, context_source:z.enum(["upstream","inferred"]),capabilities:modelFields.shape.capabilities});
+export const fetchModelsResponseSchema = z.object({models:z.array(discoveredModelSchema)});
+export const modelBatchSchema = z.object({provider_id:modelFields.shape.provider_id, models:z.array(discoveredModelSchema.partial({context_window:true,context_source:true,capabilities:true}).extend({alias:modelFields.shape.alias.optional()})).min(1).max(500)});
+export const benchmarkRequestSchema = z.object({model_ids:z.array(z.string().min(1)).min(1).max(200),concurrency:z.number().int().min(1).max(8).default(3),sample_tokens:z.union([z.literal(1),z.literal(32)]).default(1)});
+export const benchmarkResultSchema = z.object({model_id:z.string(),ttft_ms:z.number().nullable(),tokens_per_sec:z.number().nullable(),sample_tokens:z.union([z.literal(1),z.literal(32)]),output_tokens:z.number().int().nonnegative().nullable(),status:z.enum(["ok","failed"]),tested_at:z.string(),error:z.string().optional()});
+export const benchmarkResponseSchema = z.object({results:z.array(benchmarkResultSchema)});
+export type BenchmarkResult = z.infer<typeof benchmarkResultSchema>;
+export type DiscoveredModel = z.infer<typeof discoveredModelSchema>;
+export type ProviderBalance = z.infer<typeof providerBalanceSchema>;
 
 export const probeCapabilitiesSchema = z.object({
   responses: z.boolean(),
@@ -89,6 +122,11 @@ export const probeResultSchema = z.object({
 });
 
 export const modelSchema = z.object({
+  context_window: modelFields.shape.context_window.default(128000),
+  max_output_tokens: modelFields.shape.max_output_tokens.default(16384),
+  cache_read_price_per_1m: modelFields.shape.cache_read_price_per_1m.default(0),
+  capabilities: modelFields.shape.capabilities.default([]),
+  last_benchmark: benchmarkResultSchema.nullable().default(null),
   last_probe: probeResultSchema.nullable().optional(),
   pricing_currency: modelFields.shape.pricing_currency.default("USD"),
   cost_input_cny_per_million: modelFields.shape.cost_input_cny_per_million.default(0),
@@ -107,6 +145,7 @@ export const modelSchema = z.object({
 });
 
 export const providerSchema = publicProviderFields.extend({ last_probe: probeResultSchema.nullable() });
+export const modelBatchResponseSchema = z.object({imported:z.array(modelSchema),skipped:z.array(z.string())});
 export const providerListSchema = z.array(providerSchema);
 export const modelListSchema = z.array(modelSchema);
 export const apiErrorSchema = z.object({ error: z.string() });
@@ -132,6 +171,7 @@ export const responseRequestSchema = z.object({
   model: z.string().min(1),
   input: z.union([z.string(), z.array(z.record(z.string(), z.unknown()))]),
   instructions: z.string().optional(),
+  max_output_tokens: z.number().int().positive().optional(),
   tools: z.array(z.record(z.string(), z.unknown())).optional(),
   tool_choice: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
   stream: z.boolean().default(false),

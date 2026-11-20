@@ -133,7 +133,7 @@ function chatUsage(source: unknown): JsonObject | null {
   if (typeof input!=="number" || typeof output!=="number" || !Number.isSafeInteger(input) || !Number.isSafeInteger(output) || input<0 || output<0) return null;
   return {
     input_tokens: input,
-    input_tokens_details: { cached_tokens: record(usage.prompt_tokens_details).cached_tokens ?? 0 },
+    input_tokens_details: { cached_tokens: record(usage.prompt_tokens_details).cached_tokens ?? usage.prompt_cache_hit_tokens },
     output_tokens: output,
     output_tokens_details: { reasoning_tokens: record(usage.completion_tokens_details).reasoning_tokens ?? 0 },
     total_tokens: usage.total_tokens ?? input + output,

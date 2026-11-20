@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
-import { subscriptionSchema, type ThreadEvent } from "@codexdeck/shared";
+import { projectEvent, subscriptionSchema, type ThreadEvent } from "@codexdeck/shared";
 import { authenticated, createRequireAdmin } from "../auth.js";
 import type { ServerContext } from "../app.js";
+import {safeAnswerFragments} from "../codex/timeline.js";
 
 export class ThreadEvents {
   private readonly changes = new EventEmitter();
@@ -33,6 +34,10 @@ export class ThreadEvents {
 
   follow(thread: string, after: number, send: (event: ThreadEvent) => void, task?: string, onCaughtUp?:()=>void) {
     let cursor=after, replaying=true, stopped=false, next:NodeJS.Immediate|undefined;
+    const masker=this.ctx.masker;
+    const parts=this.ctx.native.prepare(`SELECT sequence AS seq_id,type,payload_json FROM thread_events
+      WHERE thread_id=? AND task_id=? AND type='item/agentMessage/delta' ORDER BY sequence`);
+    let currentTask:string|null=null, replacements=new Map<number,string>();
     const query = this.ctx.native.prepare(`SELECT thread_id, task_id, sequence AS seq_id, type, payload_json, created_at
       FROM thread_events WHERE thread_id=? AND sequence>? AND (? IS NULL OR task_id=?) ORDER BY sequence LIMIT 64`);
     function replay() {
@@ -40,7 +45,16 @@ export class ThreadEvents {
       const rows=query.all(thread,cursor,task ?? null,task ?? null) as Array<Omit<ThreadEvent,"payload"> & {payload_json:string}>;
       for (const {payload_json,...base} of rows) {
         if (stopped) return;
-        send({...base,payload:JSON.parse(payload_json)}); cursor=base.seq_id;
+        const payload=masker.maskObject(JSON.parse(payload_json));
+        if(base.task_id && base.type==="item/agentMessage/delta") {
+          if(currentTask!==base.task_id) {
+            currentTask=base.task_id;
+            const deltas=parts.all(thread,currentTask) as {seq_id:number;type:string;payload_json:string}[];
+            replacements=safeAnswerFragments(deltas.map(v=>({...base,seq_id:v.seq_id,type:v.type,payload:JSON.parse(v.payload_json)})),masker);
+          }
+          if(replacements.has(base.seq_id)) payload.delta=replacements.get(base.seq_id);
+        }
+        send({...base,payload}); cursor=base.seq_id;
       }
       if (rows.length===64) next=setImmediate(replay);
       else { replaying=false; onCaughtUp?.(); }
@@ -96,10 +110,14 @@ export function registerEventRoutes(app: FastifyInstance, ctx: ServerContext, ev
       if (!parsed.success) { socket.close(1008, "Invalid subscription"); return; }
       unsubscribe?.();
       unsubscribe = undefined;
-      if (parsed.data.thread_id) unsubscribe = events.follow(parsed.data.thread_id, parsed.data.last_seq_id, event => send({ type: "event", event }));
+      if (parsed.data.thread_id) unsubscribe = events.follow(parsed.data.thread_id, parsed.data.last_seq_id, raw => {
+        const event=projectEvent(raw,parsed.data.debug);
+        if (event) send({type:"event",event});
+        else send({type:"cursor",seq_id:raw.seq_id,thread_id:raw.thread_id});
+      });
     };
-    const query = req.query as { thread_id?: string; last_seq_id?: string };
-    subscribe({ type: "subscribe", thread_id: query.thread_id, last_seq_id: Number(query.last_seq_id ?? 0) });
+    const query = req.query as { thread_id?: string; last_seq_id?: string;debug?:string };
+    subscribe({ type: "subscribe", thread_id: query.thread_id, last_seq_id: Number(query.last_seq_id ?? 0),debug:query.debug==="true" });
     counts();
     send(heartbeat());
     const offCounts = events.subscribe(e => {

@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { api, json } from "../../lib/api";
 import { Abilities, Empty, Feedback, SectionHead, useAction, type Preset } from "./common";
+import {BenchmarkBoard,ModelLibrary} from "./ModelLibrary";
 
 type ProviderDraft = {
   name: string;
@@ -24,6 +25,8 @@ type ProviderDraft = {
   forceChat: boolean;
   headers: string;
   key: string;
+  extraKeys:string[]; retain:string[]; strategy:"round_robin"|"failover";
+  balanceEndpoint:string; balanceToken:string; balanceUser:string;
 };
 type ModelDraft = {
   alias: string;
@@ -33,6 +36,7 @@ type ModelDraft = {
   currency: "USD" | "CNY";
   input: number;
   output: number;
+  cache:number; context:number; maxOutput:number; capabilities:string[];
   fallback: string[];
   enabled: boolean;
 };
@@ -41,6 +45,7 @@ const blankProvider: ProviderDraft = {
   name: "",
   base_url: "",
   key: "",
+  extraKeys:[],retain:[],strategy:"round_robin",balanceEndpoint:"",balanceToken:"",balanceUser:"",
   enabled: true,
   strip: false,
   forceChat: false,
@@ -54,6 +59,7 @@ const blankModel: ModelDraft = {
   currency: "USD",
   input: 0,
   output: 0,
+  cache:0,context:128000,maxOutput:16384,capabilities:[],
   fallback: [],
   enabled: true,
 };
@@ -74,6 +80,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
   const inspectId=useRef<string|undefined>(undefined);
   const file = useRef<HTMLInputElement | null>(null);
   const a = useAction();
+  const [library,setLibrary]=useState<Provider|null>(null);
   async function load() {
     const [ps, ms, ts, current] = await Promise.all([
       api<Provider[]>("/api/providers"),
@@ -102,6 +109,8 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
             base_url: row.base_url,
             enabled: row.enabled,
             key: "",
+            extraKeys:[],retain:(row.keys??[]).map(k=>k.id),strategy:row.rotation_strategy??"round_robin",
+            balanceEndpoint:row.balance_endpoint??"",balanceToken:"",balanceUser:row.balance_user_id??"",
             headers: "",
             forceChat: !!row.quirks.force_chat,
             strip: row.quirks.strip_reasoning,
@@ -133,6 +142,8 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
             input: c === "USD" ? row.cost_input_usd_per_million : (row.cost_input_cny_per_million ?? 0),
             output: c === "USD" ? row.cost_output_usd_per_million : (row.cost_output_cny_per_million ?? 0),
             fallback: row.fallback_model_ids,
+            context:row.context_window??128000,maxOutput:row.max_output_tokens??16384,
+            cache:row.cache_read_price_per_1m??0,capabilities:row.capabilities??[],
           }
         : { ...blankModel, provider_id: providers[0]?.id ?? "" },
     );
@@ -159,7 +170,10 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
         base_url: p.base_url,
         enabled: p.enabled,
         quirks: { strip_reasoning: p.strip, force_chat: p.forceChat },
-        ...(p.key && { api_key: p.key }),
+        api_keys:[p.key,...p.extraKeys].map(k=>k.trim()).filter(Boolean),
+        ...(id&&{retain_key_ids:p.retain}), rotation_strategy:p.strategy,
+        balance_endpoint:p.balanceEndpoint.trim()||null, balance_user_id:p.balanceUser.trim()||null,
+        ...(p.balanceToken&&{balance_token:p.balanceToken}),
         ...(headers !== undefined && { headers }),
       }),
     );
@@ -182,6 +196,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
         ["cost_input_" + cur + "_per_million"]: m.input,
         ["cost_output_" + cur + "_per_million"]: m.output,
         fallback_model_ids: m.fallback,
+        context_window:m.context,max_output_tokens:m.maxOutput,cache_read_price_per_1m:m.cache,capabilities:m.capabilities,
       }),
     );
     setEditor(null);
@@ -359,6 +374,18 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
               />
             </label>
           </div>
+          <fieldset><legend>Key 轮询池</legend>
+            {providers.find(row=>row.id===editor.id)?.keys?.map(k=><label key={k.id} className="ad-check">
+              <input type="checkbox" checked={p.retain.includes(k.id)} onChange={e=>setP({...p,retain:e.target.checked?[...p.retain,k.id]:p.retain.filter(id=>id!==k.id)})}/>
+              保留 {k.masked} · {k.status}</label>)}
+            {p.extraKeys.map((key,i)=><label key={i}>附加 Key {i+1}<input type="password" autoComplete="new-password" value={key} onChange={e=>setP({...p,extraKeys:p.extraKeys.map((old,n)=>i===n?e.target.value:old)})}/></label>)}
+            <button type="button" className="ad-button" onClick={()=>setP({...p,extraKeys:[...p.extraKeys,""]})}>添加另一个 Key</button>
+            <label>轮询策略<select value={p.strategy} onChange={e=>setP({...p,strategy:e.target.value as ProviderDraft["strategy"]})}>
+              <option value="round_robin">按序轮询</option><option value="failover">仅故障切换</option></select></label></fieldset>
+          <details><summary>余额查询凭证</summary>
+            <label>余额端点<input type="url" placeholder="使用厂商预设" value={p.balanceEndpoint} onChange={e=>setP({...p,balanceEndpoint:e.target.value})}/></label>
+            <label>余额管理令牌<input type="password" autoComplete="new-password" placeholder="留空保留" value={p.balanceToken} onChange={e=>setP({...p,balanceToken:e.target.value})}/></label>
+            <label>余额用户 ID<input value={p.balanceUser} onChange={e=>setP({...p,balanceUser:e.target.value})}/></label></details>
           <details>
             <summary>高级适配</summary>
             <label className="ad-check">
@@ -409,6 +436,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
         </form>
       )}
       {deleteConfirm}
+      {library&&<ModelLibrary provider={library} close={()=>setLibrary(null)} changed={changed}/>}
       {!providers.length ? (
         <Empty title="尚未连接供应商" description="添加 OpenAI 或兼容 API 渠道，再为工作区绑定模型。" />
       ) : (
@@ -430,9 +458,19 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                 </span>
               </div>
               <small className="ad-mono">{row.base_url}</small>
+              <div className="ad-pill-group" aria-label="已保存密钥">{row.keys?.map(key=><span key={key.id} className="ad-pill" title={key.cooldown_until??undefined}>
+                <i className={"status-dot "+(key.status==="ready"?"running":key.status==="unauthorized"?"failed":"pending")}/>{key.masked} · {key.status}</span>)}</div>
+              <div className="ad-balance"><span>余额</span> <strong>{row.last_balance?.amount!=null?`${row.last_balance.amount.toLocaleString()} ${row.last_balance.unit}`:"—"}</strong>
+                {row.last_balance&&<small>
+                  {({ok:"已更新",unsupported:"上游不支持余额查询",unauthorized:"余额凭证未获授权",error:"刷新失败"})[row.last_balance.status]}
+                  {" · "}{new Date(row.last_balance.checked_at).toLocaleString()} {row.last_balance.error}
+                  {row.last_balance.status!=="ok"&&row.last_balance.balance_at&&` · 余额取自 ${new Date(row.last_balance.balance_at).toLocaleString()}`}
+                </small>}</div>
               <Abilities probe={row.last_probe} />
               {row.last_probe?.error && <small>{row.last_probe.error}</small>}
               <div className="ad-actions">
+                <button className="ad-button" onClick={()=>setLibrary(row)}>从上游获取模型</button>
+                <button className="ad-button" disabled={a.busy} onClick={()=>void a.run(async()=>{await api(`/api/providers/${row.id}/balance`,json("POST",{}));await changed()})}>刷新余额</button>
                 <button
                   className="ad-button"
                   disabled={a.busy}
@@ -518,6 +556,9 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                 onChange={(e) => setM({ ...m, input: Number(e.target.value) })}
               />
             </label>
+            <label>上下文窗口<input type="number" required min="1" step="1" value={m.context} onChange={e=>setM({...m,context:Number(e.target.value)})}/></label>
+            <label>最大输出 Token<input type="number" min="1" step="1" max={m.context} required value={m.maxOutput} onChange={e=>setM({...m,maxOutput:Number(e.target.value)})}/></label>
+            <label>缓存读取单价 / 百万 Token<input type="number" min="0" step="any" required value={m.cache} onChange={e=>setM({...m,cache:Number(e.target.value)})}/></label>
             <label>
               输出单价 / 百万 Token
               <input
@@ -542,6 +583,15 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                   {cur}
                 </button>
               ))}
+            </div>
+            <div aria-label="上下文预设" className="ad-segments">{[32,64,128,200,256,400,1000].map(k=><button type="button" key={k} data-on={m.context===k*1000}
+              onClick={()=>setM({...m,context:k*1000,maxOutput:Math.min(m.maxOutput,k*1000)})}>{k===1000?"1M":k+"K"}</button>)}</div>
+            <div role="group" aria-label="模型能力标注" className="ad-segments">
+              {Object.entries({tools:"工具调用",vision:"图片输入",reasoning:"推理",reasoning_summary:"公开推理摘要"}).map(([tag,label])=>{
+                const active=m.capabilities.includes(tag);
+                return <button type="button" key={tag} aria-pressed={active} data-on={active}
+                  onClick={()=>setM({...m,capabilities:active?m.capabilities.filter(v=>v!==tag):[...m.capabilities,tag]})}>{label}</button>;
+              })}
             </div>
             <label className="ad-check">
               <input
@@ -668,7 +718,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                       {row.alias===defaultAlias && <small> 默认</small>}
                     </td>
                     <td>{providers.find((v) => v.id === row.provider_id)?.name}</td>
-                    <td>{row.protocol}<Abilities probe={row.last_probe ?? null}/></td>
+                    <td>{row.protocol} · {(row.context_window??128000).toLocaleString()} ctx<Abilities probe={row.last_probe ?? null}/>{row.capabilities?.map(c=><span className="ad-pill" key={c}>{c}</span>)}</td>
                     <td className="num">
                       {c} {c === "CNY" ? row.cost_input_cny_per_million : row.cost_input_usd_per_million} /{" "}
                       {c === "CNY" ? row.cost_output_cny_per_million : row.cost_output_usd_per_million}
@@ -700,6 +750,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
       ) : (
         <Empty title="尚未绑定模型" description="添加模型别名后即可在工作台热切换。" />
       )}
+      <BenchmarkBoard current={defaultAlias} models={models.filter(m=>m.enabled&&providers.some(p=>p.id===m.provider_id&&p.enabled))} changed={changed}/>
     </>
   );
 }

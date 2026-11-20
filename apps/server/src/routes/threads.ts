@@ -1,4 +1,4 @@
-import { approvalDecisionSchema, threadCreateSchema, threadMessageSchema, threadModelPatchSchema } from "@codexdeck/shared";
+import { approvalDecisionSchema, threadCreateSchema, threadMessageSchema, threadModelPatchSchema,threadCompactSchema,threadUpdateSchema } from "@codexdeck/shared";
 import type { FastifyInstance } from "fastify";
 import type { ServerContext } from "../app.js";
 import { createRequireAdmin } from "../auth.js";
@@ -18,6 +18,19 @@ export function registerThreadRoutes(app: FastifyInstance, context: ServerContex
     const parsed = threadMessageSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({error:"Invalid message."});
     return reply.code(202).send(manager.submit(request.params.id,parsed.data.prompt,undefined,parsed.data.image_ids));
+  });
+  app.patch<ById>("/api/threads/:id",auth,async(req,reply)=>{
+    const input=threadUpdateSchema.safeParse(req.body);
+    if(!input.success) return reply.code(400).send({error:"Invalid thread update."});
+    return manager.updateThread(req.params.id,input.data.pinned,input.data.title);
+  });
+  app.delete<ById>("/api/threads/:id",auth,async(req,reply)=>{
+    await manager.deleteThread(req.params.id);return reply.code(204).send();
+  });
+  app.post<ById>("/api/threads/:id/compact",auth,async(req,reply)=>{
+    const input=threadCompactSchema.safeParse(req.body??{});
+    if(!input.success) return reply.code(400).send({error:"Invalid compaction options."});
+    return manager.compact(req.params.id,input.data.model_alias);
   });
   app.post<ById>("/api/threads/:id/interrupt",auth,async (request,reply) => {
     await manager.interrupt(request.params.id);

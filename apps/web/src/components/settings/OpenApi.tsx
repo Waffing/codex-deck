@@ -1,21 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Copy, KeyRound, Plus, ShieldMinus, X } from "lucide-react";
-import type { ApiKey, Workspace, UsageReport } from "@codexdeck/shared";
+import type { ApiKey, Workspace } from "@codexdeck/shared";
 import { api, json } from "../../lib/api";
+import { UsageLedger } from "./UsageLedger";
 import { Empty, Feedback, SectionHead, useAction } from "./common";
 
 type Created = { api_key: string; webhook_signing_secret: string; workspaceId: string; scopes: ApiKey["scopes"] };
 type Scope = ApiKey["scopes"][number];
 const scopes: Scope[] = ["tasks:read", "tasks:write", "files:download"];
-function costs(c: UsageReport["totals"]) {
-  return (
-    "$" +
-    c.cost_usd.toLocaleString("en-US", { maximumFractionDigits: 8 }) +
-    " / ¥" +
-    c.cost_cny.toLocaleString("en-US", { maximumFractionDigits: 8 })
-  );
-}
-
 function KeyReceipt({ item, close }: { item: Created; close: () => void }) {
   const dialog = useRef<HTMLDialogElement | null>(null);
   const a = useAction();
@@ -82,9 +74,7 @@ function KeyReceipt({ item, close }: { item: Created; close: () => void }) {
 }
 export function OpenApi() {
   const [keys, setKeys] = useState<ApiKey[]>([]),
-    [spaces, setSpaces] = useState<Workspace[]>([]),
-    [group, setGroup] = useState("day"),
-    [ledger, setLedger] = useState<UsageReport | null>(null);
+    [spaces, setSpaces] = useState<Workspace[]>([]);
   const [editing, setEditing] = useState(false),
     [name, setName] = useState(""),
     [rpm, setRpm] = useState(60),
@@ -101,19 +91,6 @@ export function OpenApi() {
   useEffect(() => {
     void a.run(keysLoad);
   }, []);
-  useEffect(() => {
-    let active = true;
-    void api<UsageReport>("/api/usage?group_by=" + group)
-      .then((r) => {
-        if (active) setLedger(r);
-      })
-      .catch((e) => {
-        if (active) a.setError(String(e));
-      });
-    return () => {
-      active = false;
-    };
-  }, [group]);
   async function issue() {
     const data = await api<Created>(
       "/api/api-keys",
@@ -275,72 +252,7 @@ export function OpenApi() {
           </button>
         </div>
       )}
-      <div className="ad-subhead">
-        <h2>用量账本</h2>
-        <div className="ad-segments">
-          {[
-            ["day", "按天"],
-            ["provider", "按渠道"],
-            ["model", "按模型"],
-            ["workspace","按工作区"],["task","按任务"],
-          ].map(([v, t]) => (
-            <button key={v} data-on={v === group} onClick={() => setGroup(v)}>
-              {t}
-            </button>
-          ))}
-        </div>
-      </div>
-      {ledger && (
-        <>
-          <div className="ad-metrics">
-            {[
-              ["请求次数", ledger.totals.requests],
-              ["输入 Token", ledger.totals.input_tokens],
-              ["输出 Token", ledger.totals.output_tokens],
-              ["估算费用", costs(ledger.totals)],
-            ].map(([t, v]) => (
-              <div key={t}>
-                <small>{t}</small>
-                <strong>{typeof v === "number" ? v.toLocaleString() : v}</strong>
-              </div>
-            ))}
-          </div>
-          {ledger.rows.length ? (
-            <div className="ad-table-wrap">
-              <table className="ad-table">
-                <thead>
-                  <tr>
-                    {[
-                      ({day:"日期",model:"模型",provider:"渠道",workspace:"工作区",task:"任务"} as Record<string,string>)[group],
-                      "请求",
-                      "未上报用量",
-                      "输入 Token",
-                      "输出 Token",
-                      "估算费用",
-                    ].map((t) => (
-                      <th key={t}>{t}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {ledger.rows.map((r) => (
-                    <tr key={r.label}>
-                      <td>{r.label}</td>
-                      <td className="num">{r.requests}</td>
-                      <td className="num">{r.unknown_usage??0}</td>
-                      <td className="num">{r.input_tokens}</td>
-                      <td className="num">{r.output_tokens}</td>
-                      <td className="num">{costs(r)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="ad-detail">网关完成模型请求后，这里会显示实际用量。</p>
-          )}
-        </>
-      )}
+      <UsageLedger />
       {receipt && <KeyReceipt item={receipt} close={() => setReceipt(null)} />}
     </>
   );

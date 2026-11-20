@@ -16,15 +16,22 @@ it.runIf(process.env.CODEXDECK_REAL_CODEX==="1")("runs the actual Codex stdio pr
   const ctx={...await openDatabase(data,path.dirname(data)),gatewayConfig:parseGatewayConfig({internal_token_ttl_seconds:1}),
     masterKey:randomBytes(32),masker:new SecretMasker()};
   const app=createServer(ctx,{dataDirectory:data});
-  let calls=0, inventory:string[]=[];
+  let calls=0,requestedTool=false,inventory:string[]=[], afterCompaction="", compactInput="";
   const model=http(async (req,res)=>{
     if (req.method!=="POST" || req.url!=="/v1/responses") { res.writeHead(404).end(); return; }
     const parts:Buffer[]=[]; for await(const part of req) parts.push(part);
-    const request=JSON.parse(Buffer.concat(parts).toString()) as {tools:Array<{name?:string;type?:string;tools?:Array<{type?:string;name?:string}>}>};
+    const request=JSON.parse(Buffer.concat(parts).toString()) as {stream:boolean;input:unknown;tools:Array<{name?:string;type?:string;tools?:Array<{type?:string;name?:string}>}>};
+    if(request.stream===false) {
+      compactInput=JSON.stringify(request.input);
+      res.writeHead(200,{"content-type":"application/json"}).end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:"Archived handoff 4712"}]}]}));return;
+    }
+    if(compactInput) afterCompaction=JSON.stringify(request.input);
     const tool=request.tools.find(t=>t.name?.endsWith("port_allocate"));
     inventory=request.tools.map(t=>[t.type,t.name,t.tools?.map(v=>`${v.type}/${v.name}`).join("|")].filter(Boolean).join("/"));
     calls++;
-    const first=calls===1;
+    const namespace=request.tools.find(t=>t.type==="namespace" && t.tools?.some(v=>v.name==="port_allocate"));
+    const first=!requestedTool && Boolean(tool||namespace);
+    if(first) requestedTool=true;
     const item=first ? {id:"fc_1",type:"function_call",name:tool?.name ?? "port_allocate",...(!tool && {namespace:"mcp__codexdeck_ops"}),
       call_id:"call_1",arguments:"{}",status:"completed"} : {id:"msg_2",type:"message",role:"assistant",status:"completed",
       content:[{type:"output_text",text:"Local bridge completed.",annotations:[]}]};
@@ -55,10 +62,15 @@ it.runIf(process.env.CODEXDECK_REAL_CODEX==="1")("runs the actual Codex stdio pr
     };
     const workspace=await post("/api/workspaces",{name:"offline-cli"});
     const thread=await post("/api/threads",{workspace_id:workspace.id});
-    const task=await post(`/api/threads/${thread.id}/messages`,{prompt:"Allocate a staging port and report completion."});
+    const ask=()=>post(`/api/threads/${thread.id}/messages`,{prompt:"Allocate a staging port and report completion."});
+    let task=await ask();
     const diagnostic=()=>ctx.native.prepare("SELECT type,payload_json FROM thread_events WHERE thread_id=? AND type IN ('stderr','error','task_failed','ops_requested','unsupported_request','approval_req','item/completed') ORDER BY sequence DESC LIMIT 10")
       .all(thread.id).map(row=>{const r=row as {type:string;payload_json:string};return r.type+" "+r.payload_json.slice(0,350);}).join("\n");
-    await expect.poll(()=>ctx.native.prepare("SELECT status FROM approvals WHERE thread_id=? ORDER BY rowid DESC LIMIT 1").pluck().get(thread.id),
+    await expect.poll(async()=>{
+      // Optional MCP servers can become available after the first tool inventory.
+      if(!requestedTool && ctx.native.prepare("SELECT status FROM tasks WHERE id=?").pluck().get(task.task_id)==="completed") task=await ask();
+      return ctx.native.prepare("SELECT status FROM approvals WHERE thread_id=? ORDER BY rowid DESC LIMIT 1").pluck().get(thread.id);
+    },
       {timeout:20000,interval:200}).toBe("pending").catch(e=>{throw new Error(String(e)+"\n"+inventory.join(", ")+"\n"+diagnostic());});
     const approval=ctx.native.prepare("SELECT id FROM approvals WHERE thread_id=? AND status='pending'").pluck().get(thread.id);
     // Deliberately let the one-second lease expire while a real model turn awaits approval.
@@ -74,6 +86,14 @@ it.runIf(process.env.CODEXDECK_REAL_CODEX==="1")("runs the actual Codex stdio pr
     expect(ctx.native.prepare("SELECT count(*) FROM thread_events WHERE thread_id=? AND type='ops_completed'").pluck().get(thread.id),
       inventory.join(", ")+"\n"+diagnostic()).toBe(1);
     expect(ctx.native.prepare("SELECT summary FROM tasks WHERE id=?").pluck().get(task.task_id)).toContain("Local bridge completed.");
+    const compact=await post(`/api/threads/${thread.id}/compact`,{});
+    expect(compact.summary).toBe("Archived handoff 4712");
+    expect(compactInput).toContain("Allocate a staging port and report completion.");
+    const next=await post(`/api/threads/${thread.id}/messages`,{prompt:"Continue from handoff."});
+    await expect.poll(()=>ctx.native.prepare("SELECT status FROM tasks WHERE id=?").pluck().get(next.task_id),{timeout:20000}).toBe("completed");
+    expect(afterCompaction).toContain("Archived handoff 4712");
+    expect(afterCompaction).toContain("Continue from handoff.");
+    expect(afterCompaction).not.toContain("Allocate a staging port and report completion.");
   } finally {
     await app.close(); model.closeAllConnections(); await new Promise<void>(resolve=>model.close(()=>resolve()));
     ctx.native.close(); await rm(data,{recursive:true,force:true,maxRetries:3});

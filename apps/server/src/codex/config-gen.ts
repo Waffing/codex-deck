@@ -6,7 +6,7 @@ import { gatewayConfigSchema, probeResultSchema } from "@codexdeck/shared";
 import { signPayload, createInternalToken } from "../security/crypto.js";
 import { repositoryRoot, workspaceDirectory, workspaceFile } from "../security/paths.js";
 import { SecretMasker } from "../security/secret-masker.js";
-import { readCredentials } from "../gateway/credentials.js";
+import { registerCredentialMasks } from "../gateway/credentials.js";
 
 interface ConfigOptions {
   workspaceRoot?: string;
@@ -28,9 +28,9 @@ export async function generateCodexConfig(options: ConfigOptions) {
   const configured = options.native.prepare("SELECT value FROM settings WHERE key = 'default_model'")
     .get() as { value: string } | undefined;
   const preferred = options.defaultModel ?? configured?.value ?? null;
-  const model = options.native.prepare(`SELECT m.alias,m.last_probe_json FROM models m JOIN providers p ON p.id = m.provider_id
+  const model = options.native.prepare(`SELECT m.alias,m.last_probe_json,m.context_window,m.protocol,m.capabilities_json,p.quirks_json FROM models m JOIN providers p ON p.id = m.provider_id
     WHERE m.enabled = 1 AND p.enabled = 1 AND (? IS NULL OR m.alias = ?)
-    ORDER BY m.created_at, m.id LIMIT 1`).get(preferred, preferred) as { alias:string; last_probe_json:string|null } | undefined;
+    ORDER BY m.created_at, m.id LIMIT 1`).get(preferred, preferred) as { alias:string; last_probe_json:string|null; context_window:number; protocol:string; capabilities_json:string; quirks_json:string } | undefined;
   if (!model) throw new Error("Configure an enabled default model and provider before generating Codex configuration.");
 
   const root = options.workspaceRoot ?? repositoryRoot;
@@ -39,11 +39,15 @@ export async function generateCodexConfig(options: ConfigOptions) {
   const alias = model.alias;
   const probe=probeResultSchema.safeParse(JSON.parse(model.last_probe_json ?? "null"));
   const caps=probe.success?probe.data.capabilities:null;
+  const declared:string[]=JSON.parse(model.capabilities_json);
+  const quirks=JSON.parse(model.quirks_json);
+  const nativeResponses=model.protocol==="responses" || (model.protocol==="auto" && (caps?.responses || declared.includes("responses")));
+  const publicSummaries=!!nativeResponses && declared.includes("reasoning_summary") && !quirks.force_chat && !quirks.strip_reasoning;
   const masker = new SecretMasker();
   const context = { masker, masterKey: Buffer.from(options.masterKey) };
-  const stored = options.native.prepare("SELECT api_key_ciphertext AS apiKeyCiphertext, headers_json AS headersJson FROM providers")
-    .all() as Parameters<typeof readCredentials>[0][];
-  for (const provider of stored) readCredentials(provider, context);
+  const stored = options.native.prepare("SELECT api_key_ciphertext AS apiKeyCiphertext, api_keys_enc AS apiKeysEnc, balance_token_enc AS balanceTokenEnc, headers_json AS headersJson FROM providers")
+    .all() as Parameters<typeof registerCredentialMasks>[0][];
+  for (const provider of stored) registerCredentialMasks(provider, context);
   if (masker.maskString(alias) !== alias || masker.maskString(base) !== base) {
     throw new Error("The model alias or Codex home path contains a credential.");
   }
@@ -58,6 +62,8 @@ export async function generateCodexConfig(options: ConfigOptions) {
   const baseUrl = `http://127.0.0.1:${port}/internal/v1`;
   const catalog = { models: [{
     slug: alias,
+    context_window: model.context_window,
+    max_context_window: model.context_window,
     display_name: alias,
     description: "CodexDeck gateway model",
     supported_reasoning_levels: [],
@@ -66,7 +72,7 @@ export async function generateCodexConfig(options: ConfigOptions) {
     supported_in_api: true,
     priority: 1,
     base_instructions: "You are a coding assistant.",
-    supports_reasoning_summaries: false,
+    supports_reasoning_summaries: publicSummaries,
     support_verbosity: false,
     truncation_policy: { mode: "tokens", limit: 10000 },
     supports_parallel_tool_calls: false,
@@ -85,6 +91,8 @@ export async function generateCodexConfig(options: ConfigOptions) {
   }
   const toml = [
     `model = ${JSON.stringify(alias)}`,
+    `model_context_window = ${model.context_window}`,
+    ...(publicSummaries?['model_reasoning_summary = "auto"']:[]),
     'model_provider = "codexdeck"',
     `model_catalog_json = ${JSON.stringify(catalogPath)}`,
     "",

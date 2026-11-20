@@ -19,6 +19,11 @@ async function receive(msg) {
   const reply = result => emit({id,result});
   if (method === "initialize") { reply({userAgent:"fake-codex-app-server"}); return; }
   if (method === "initialized") return;
+  if (method === "thread/inject_items") {
+    if (params.threadId!==threadId || !Array.isArray(params.items)) {emit({id,error:{code:-32602,message:"Invalid thread items"}});return;}
+    await writeFile(join(process.env.CODEX_HOME,"fixture-context-"+threadId),JSON.stringify(params.items));
+    reply({});return;
+  }
   if (method === "thread/start" || method === "thread/resume") {
     threadId = params.threadId ?? randomUUID();
     reply({thread:{id:threadId}});
@@ -30,6 +35,26 @@ async function receive(msg) {
     reply({turn:{id:turnId,status:"inProgress",items:[]}});
     notify("turn/started",{turn:{id:turnId,status:"inProgress"}});
     const prompt = params.input[0].text;
+    if(prompt==="test effective window") {
+      notify("thread/tokenUsage/updated",{turnId,tokenUsage:{modelContextWindow:64000,last:{totalTokens:16000}}});
+      delta("Window confirmed.");end();return;
+    }
+    if(prompt==="check handoff") {
+      const history=await readFile(join(process.env.CODEX_HOME,"fixture-context-"+threadId),"utf8");
+      delta(history);end();return;
+    }
+    if (prompt === "核验工作台 V1.1") {
+      notify("thread/status/changed",{status:{type:"active"}});
+      notify("item/reasoning/summaryTextDelta",{turnId,itemId:"summary",delta:"先核对文件说明，再比对测试输出。"});
+      for(const file of ["README.md","result.txt"]) {
+        const item={id:randomUUID(),type:"commandExecution",command:`cat ${file}`,commandActions:[{type:"read",path:file}]};
+        notify("item/started",{turnId,item});notify("item/completed",{turnId,item:{...item,status:"completed",aggregatedOutput:"ok"}});
+      }
+      notify("turn/plan/updated",{turnId,plan:[{step:"核对说明",status:"completed"},{step:"检查输出",status:"completed"}]});
+      notify("thread/tokenUsage/updated",{turnId,tokenUsage:{last:{totalTokens:113000,inputTokens:112980,cachedInputTokens:100000,outputTokens:20}}});
+      delta("## 核验结果\n\n**全部通过**。文件 `result.txt` 检查成功，耗时 12ms。曾有警告，已修复。\n\n```js\nconst result = true;\n```\n");
+      end();return;
+    }
     if (prompt === "启动预发布验收站点") {
       await mkdir("public",{recursive:true});
       await writeFile("public/index.html","<!doctype html><meta charset=utf-8><title>Preview</title><p>CodexDeck preview ready</p>");

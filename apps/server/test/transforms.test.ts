@@ -167,3 +167,19 @@ describe("progressive Chat chunks", () => {
     });
   });
 });
+it("enforces the per-event SSE buffer limit before dispatch and preserves complete neighboring frames",async()=>{
+  let cancelled=false;
+  const body=new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode("data: a\n\ndata: b\r"));
+      controller.enqueue(encoder.encode("\n\r\n"));
+      controller.enqueue(encoder.encode("data: incomplete"));
+    },
+    cancel(){cancelled=true;},
+  });
+  const frames=readSse(body,12);
+  expect((await frames.next()).value?.data).toBe("a");
+  expect((await frames.next()).value?.data).toBe("b");
+  await expect(frames.next()).rejects.toThrow(/size limit/);
+  expect(cancelled).toBe(true);
+});

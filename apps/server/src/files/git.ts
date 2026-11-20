@@ -104,3 +104,23 @@ export async function restoreCheckpoint(root: string, turnId: string) {
   const ref = checkpointRef(turnId);
   await withIndex(root, index => run(root, ["read-tree", "--reset", "-u", ref], index));
 }
+
+export async function checkpointDiff(root:string,turnId:string) {
+  if (!(await gitDirectory(root))) return null;
+  const ref=checkpointRef(turnId);
+  return withIndex(root,async index=>{
+    const options=["diff","--cached","--no-ext-diff","--no-textconv","--no-renames"];
+    const stats=await run(root,[...options,"--numstat","-z",ref,"--"],index);
+    const files=stats.split("\0").filter(Boolean).map(line=>{
+      const [plus,minus,...name]=line.split("\t");
+      return {path:name.join("\t"),added:plus==="-"?null:Number(plus),removed:minus==="-"?null:Number(minus)};
+    });
+    let diff:string;
+    try {diff=await run(root,[...options,ref,"--"],index);}
+    catch(error) {
+      if((error as NodeJS.ErrnoException).code!=="ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw error;
+      diff="Patch exceeds the preview size limit.";
+    }
+    return {files,diff:diff.slice(0,256*1024)};
+  });
+}

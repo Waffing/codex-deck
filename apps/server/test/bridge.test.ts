@@ -20,6 +20,8 @@ import { ThreadEvents } from "../src/ws/events.js";
 import { Notifications } from "../src/notifications/index.js";
 import { SecretMasker } from "../src/security/secret-masker.js";
 import { encryptSecret } from "../src/security/crypto.js";
+import {completeAnswer,turnEvents} from "../src/codex/timeline.js";
+import {projectTurn} from "@codexdeck/shared";
 
 const fake = fileURLToPath(new URL("../tests/fixtures/fake-app-server.mjs",import.meta.url));
 let root: string, ctx: ServerContext, app: ReturnType<typeof Fastify>, manager: ThreadManager;
@@ -37,6 +39,9 @@ beforeEach(async () => {
     if (request.url === "/notice") { notices.push(body.event); response.end("ok"); return; }
     upstream.push(body.model);
     response.setHeader("content-type","application/json");
+    if(String(body.instructions??"").startsWith("Produce a concise structured handoff")) {
+      response.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:"Preserve the verified result.txt artifact."}]}]}));return;
+    }
     response.end(JSON.stringify({id:"test",object:"response",status:"completed",model:body.model,output:[]}));
   });
   mock.listen(0,"127.0.0.1"); await once(mock,"listening");
@@ -171,4 +176,51 @@ it("serializes different threads in one workspace and cancels waiting turns",asy
   await manager.cancel(first);
   await poll(() => expect(status(next)).toBe("completed"));
   expect(ctx.native.prepare("SELECT count(*) FROM artifacts WHERE thread_id=?").pluck().get(second)).toBe(1);
+});
+
+it("compacts into a fresh resumable runtime, rejects concurrent work and keeps the full local history",async()=>{
+  const first=await submit("verify changes");
+  await poll(()=>expect(status(first)).toBe("completed"));
+  const old=ctx.native.prepare("SELECT remote_thread_id FROM threads WHERE id=?").pluck().get(thread);
+  const [compact,duplicate]=await Promise.all([post(`/api/threads/${thread}/compact`,{model_alias:"bbb"}),post(`/api/threads/${thread}/compact`,{model_alias:"bbb"})]);
+  expect(compact.statusCode,compact.body).toBe(200);
+  expect(duplicate.json()).toEqual(compact.json());
+  expect(compact.json()).toMatchObject({summary:"Preserve the verified result.txt artifact.",estimated:true});
+  expect(upstream.at(-1)).toBe("real-b");
+  expect(ctx.native.prepare("SELECT remote_thread_id FROM threads WHERE id=?").pluck().get(thread)).not.toBe(old);
+  expect((await post(`/api/threads/${thread}/compact`)).json()).toEqual(compact.json());
+  expect(upstream.filter(name=>name==="real-b")).toHaveLength(1);
+  const next=await submit("check handoff");
+  await poll(()=>expect(status(next)).toBe("completed"));
+  const answer=ctx.native.prepare("SELECT answer_markdown FROM tasks WHERE id=?").pluck().get(next);
+  expect(answer).toContain("Preserve the verified result.txt artifact.");expect(answer).not.toContain("verify changes");
+  const running=await submit("wait");
+  await poll(()=>expect(status(running)).toBe("running"));
+  expect((await post(`/api/threads/${thread}/compact`)).statusCode).toBe(409);
+  expect((await app.inject({method:"DELETE",url:`/api/threads/${thread}`,headers:{cookie}})).statusCode).toBe(409);
+  await manager.cancel(running);
+  await poll(()=>expect(status(running)).toBe("cancelled"));
+  const update=await app.inject({method:"PATCH",url:`/api/threads/${thread}`,headers:{cookie},payload:{pinned:true,title:"Reviewed"}});
+  expect(update.json()).toMatchObject({pinned:true,title:"Reviewed"});
+  expect((await app.inject({method:"DELETE",url:`/api/threads/${thread}`,headers:{cookie}})).statusCode).toBe(204);
+});
+
+it("uses persisted Codex effective windows, invalidates only on model switch, and masks legacy split answers on replay",async()=>{
+  const id=await submit("test effective window");await poll(()=>expect(status(id)).toBe("completed"));
+  const list=async()=>(await app.inject({url:"/api/threads",headers:{cookie}})).json()[0];
+  expect(await list()).toMatchObject({last_context_tokens:16000,effective_context_window:64000});
+  const select=async(payload:Record<string,string>)=>(await app.inject({method:"PATCH",url:`/api/threads/${thread}/model`,headers:{cookie},payload})).json();
+  expect((await select({reasoning_effort:"high"})).effective_context_window).toBe(64000);
+  expect(await select({model_alias:"bbb"})).toMatchObject({effective_context_window:null,last_context_tokens:null});
+  expect(await select({model_alias:"aaa"})).toMatchObject({effective_context_window:null,last_context_tokens:null});
+  const source=new ThreadEvents(ctx), fixtureSecret="fixture-sensitive-split-value";
+  ctx.masker.register(fixtureSecret);
+  const seq=source.append(thread,"item/agentMessage/delta",{itemId:"old",delta:"fixture-sensitive-"},id).seq_id;
+  source.append(thread,"item/agentMessage/delta",{itemId:"old",delta:"split-value"},id);
+  expect(completeAnswer(ctx.native,thread,id,ctx.masker)).toContain("[REDACTED]");
+  const view=projectTurn(turnEvents(ctx.native,thread,id,ctx.masker,true));
+  expect(view.answer).not.toContain(fixtureSecret);expect(JSON.stringify(view.debug)).not.toContain("fixture-sensitive-");
+  const replayed:string[]=[];
+  await new Promise<void>(resolve=>{const off=source.follow(thread,seq-1,e=>replayed.push(String((e.payload as {delta:string}).delta)),id,()=>{off();resolve();});});
+  expect(replayed.join("")).toBe("[REDACTED]");
 });

@@ -12,6 +12,12 @@ export const providers = sqliteTable("providers", {
   preset: text("preset").notNull(),
   baseUrl: text("base_url").notNull(),
   apiKeyCiphertext: text("api_key_ciphertext"),
+  apiKeysEnc: text("api_keys_enc"),
+  balanceEndpoint: text("balance_endpoint"),
+  balanceTokenEnc: text("balance_token_enc"),
+  balanceUserId: text("balance_user_id"),
+  lastBalanceJson: text("last_balance_json"),
+  rotationStrategy: text("rotation_strategy").notNull().default("round_robin"),
   apiKeyMasked: text("api_key_masked"),
   headersJson: text("headers_json").notNull(),
   quirksJson: text("quirks_json").notNull(),
@@ -22,6 +28,11 @@ export const providers = sqliteTable("providers", {
 });
 
 export const models = sqliteTable("models", {
+  contextWindow: integer("context_window").notNull().default(128000),
+  maxOutputTokens: integer("max_output_tokens").notNull().default(16384),
+  cacheReadPricePer1m: real("cache_read_price_per_1m").notNull().default(0),
+  capabilitiesJson: text("capabilities_json").notNull().default("[]"),
+  lastBenchmarkJson: text("last_benchmark_json"),
   lastProbeJson: text("last_probe_json"),
   pricingCurrency: text("pricing_currency").notNull().default("USD"),
   costInputCnyPerMillion: real("cost_input_cny_per_million").notNull().default(0),
@@ -50,6 +61,9 @@ export const workspaces = sqliteTable("workspaces", {
 });
 
 export const threads = sqliteTable("threads", {
+  pinned: integer("pinned", {mode:"boolean"}).notNull().default(false),
+  lastContextTokens: integer("last_context_tokens"),
+  compactedSummary: text("compacted_summary"),
   activeModelAlias: text("active_model_alias"),
   reasoningEffort: text("reasoning_effort"),
   sessionRulesJson: text("session_rules_json").notNull().default("[]"),
@@ -122,6 +136,10 @@ export const apiKeys = sqliteTable("api_keys", {
 });
 
 export const usageLogs = sqliteTable("usage_logs", {
+  turnId: text("turn_id"),
+  cachedInputTokens: integer("cached_input_tokens"),
+  ttftMs: integer("ttft_ms"),
+  tokensPerSec: real("tokens_per_sec"),
   threadId:text("thread_id"), taskId:text("task_id"), workspaceId:text("workspace_id"),
   usageKnown:integer("usage_known",{mode:"boolean"}).notNull().default(false),
   costCny: real("cost_cny").notNull().default(0),
@@ -150,6 +168,8 @@ export const notificationChannels = sqliteTable("notification_channels", {
 });
 
 export const tasks = sqliteTable("tasks", {
+  answerMarkdown: text("answer_markdown"),
+  turnDiffJson: text("turn_diff_json"),
   imageIdsJson:text("image_ids_json").notNull().default("[]"),
   id: text("id").primaryKey(),
   workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),

@@ -7,6 +7,17 @@
   color: var(--text);
   scrollbar-width: thin;
 }
+.ad-balance{display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap;font-size:13px}
+.ad-balance small,.usage-trend small,.library-list small{display:block;color:var(--muted);font-size:11px}
+.ad-balance small{flex-basis:100%}
+.ad-pill .status-dot{margin-inline-end:.3rem}
+.model-library{width:min(600px,95vw)}
+.library-list{max-height:38dvh;overflow:auto;border-block:1px solid var(--border);padding:.4rem 0}
+.library-list label{padding:.4rem;overflow-wrap:anywhere}
+.usage-trend{border:1px solid var(--border);border-radius:8px;padding:14px 18px;margin:14px 0}
+.usage-bars{height:90px;display:flex;align-items:end;gap:3px;border-bottom:1px solid var(--border);margin:.7rem 0}
+.usage-bars div{background:var(--accent);flex:1;max-width:46px;border-radius:3px 3px 0 0;min-height:1px}
+.benchmark-board td small{display:block;max-width:25ch;overflow-wrap:anywhere}
 .admin-inner {
   max-width: 1210px;
   margin: auto;

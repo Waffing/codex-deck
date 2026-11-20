@@ -12,10 +12,16 @@ import {AdminPages} from "./components/settings/AdminPages";
 import {Panel,tabKey,type PanelTab} from "./components/layout/Panel";
 import {CommandBar,type DeckCommand} from "./components/layout/CommandBar";
 import {WorkspaceMenu} from "./components/layout/WorkspaceMenu";
+import {ConversationList} from "./components/layout/ConversationList";
+import {PreferenceControls,usePreferences} from "./components/layout/Preferences";
+import {SessionInspector} from "./components/layout/SessionInspector";
+import type {ChatTurn} from "./components/chat/Timeline";
+import type {ThreadEvent} from "@codexdeck/shared";
 import {MobileOverview} from "./components/layout/MobileOverview";
 import {useTheme,useSnapshot,readView,viewName,type View} from "./components/layout/session";
 const navigation=[{view:"workbench",icon:LayoutDashboard},{view:"services",icon:Box},{view:"providers",icon:Layers3},{view:"open-api",icon:KeyRound},{view:"system",icon:SlidersHorizontal}] as const;
 const mobileNav=[{view:"workbench",label:"工作台",icon:Terminal},{view:"approvals",label:"审批",icon:ShieldCheck},{view:"services",label:"服务",icon:Server},{view:"more",label:"更多",icon:Menu}] as const;
+const noEvents:ThreadEvent[]=[];
 
 function Wordmark(){return <div className="deck-wordmark"><span className="logo-tile"><Layers3 size={19} strokeWidth={2.3}/></span><strong>Codex<span>Deck</span></strong></div>;}
 export default function App(){
@@ -25,6 +31,10 @@ export default function App(){
   const [tabs,setTabs]=useState<PanelTab[]>([]),[selected,setSelected]=useState("");
   const [requesting,setRequesting]=useState(false);
   const theme=useTheme();
+  const preferences=usePreferences();
+  const [inspected,setInspected]=useState<ChatTurn>();
+  const [infoOpen,setInfoOpen]=useState(()=>localStorage.getItem("deck.inspector")==="open");
+  function toggleInfo(){setInfoOpen(!infoOpen);localStorage.setItem("deck.inspector",infoOpen?"closed":"open")}
   const live=useRealtime();
   const handleError=useCallback((e:unknown)=>{if((e as {status?:number})?.status===401){clearRealtime();setGate("setup");return;}setError(e instanceof Error?e.message:"操作失败");},[]);
   const {data,reload}=useSnapshot(gate==="ready",handleError);
@@ -34,7 +44,7 @@ export default function App(){
   const count=live.approvals??data.approvals.length;
   const activeThread=thread?.id??"";
   useEffect(()=>{void api<{authenticated:boolean}>("/api/auth/status").then(async s=>{if(!s.authenticated)return setGate("setup");const status=await api<{completed:boolean}>("/api/onboarding/status");setGate(status.completed?"ready":"setup");}).catch(handleError);},[handleError]);
-  useEffect(()=>{if(gate!=="ready")return;return connectEvents(activeThread,()=>{void reload()},()=>{clearRealtime();setGate("setup")});},[gate,activeThread,reload]);
+  useEffect(()=>{if(gate!=="ready")return;return connectEvents(activeThread,()=>{void reload()},()=>{clearRealtime();setGate("setup")},preferences.prefs.debug);},[gate,activeThread,reload,preferences.prefs.debug]);
   useEffect(()=>{const pop=()=>{setView(readView());setMenu(null)};window.addEventListener("popstate",pop);return ()=>window.removeEventListener("popstate",pop);},[]);
   useEffect(()=>{const k=(e:KeyboardEvent)=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="k"){e.preventDefault();setMenu(m=>m==="commands"?null:"commands");}if(e.key==="Escape")setMenu(null);};window.addEventListener("keydown",k);return ()=>window.removeEventListener("keydown",k);},[]);
   const seen=useRef(new Set<string>());
@@ -77,20 +87,20 @@ export default function App(){
     {menu==="commands"&&<CommandBar items={options} close={()=>setMenu(null)}/>}
     {menu==="workspaces"&&<WorkspaceMenu workspaces={data.workspaces} selected={workspace?.id??""} choose={choose}/>}
     {menu==="account"&&<section className="deck-menu account-menu"><div className="menu-caption">管理员</div>{accountActions}</section>}
-    {menu==="threads"&&<section className="deck-menu workspace-menu">{threads.map(t=><button className="menu-line" key={t.id} onClick={()=>jump(t)}>{t.title}</button>)}<button className="menu-line" onClick={()=>act(newThread)}><Plus size={14}/>新会话</button></section>}
+    {menu==="threads"&&<section className="deck-menu workspace-menu"><ConversationList threads={data.threads} workspaces={data.workspaces} activeId={activeThread} pending={new Set(data.approvals.map(a=>a.thread_id))} open={jump} create={()=>act(newThread)} refresh={reload} onError={handleError}/></section>}
     <div className="deck-body"><aside className="deck-sidebar"><div className="side-context"><span className="side-context-icon"><Terminal size={17}/></span><div><strong>{workspace?.name??"工作区"}</strong><small>Workspace</small></div><button className="deck-icon" title="折叠导航栏" onClick={()=>setCollapsed(!collapsed)}>{collapsed?<PanelLeftOpen size={15}/>:<PanelLeftClose size={15}/>}</button></div>
-    <div className="side-label"><span>会话</span><button className="deck-icon" title="新建会话" onClick={()=>act(newThread)}><Plus size={15}/></button></div><div className="session-list">{threads.length===0?<button className="new-session" onClick={()=>act(newThread)}><Plus size={14}/><span>新建会话</span></button>:threads.map(t=><button key={t.id} title={t.title} className={thread?.id===t.id?"active":""} onClick={()=>jump(t)}><i className={"status-dot "+(data.approvals.some(a=>a.thread_id===t.id)?"pending":t.status)}/><span>{t.title}</span></button>)}</div>
+    <ConversationList threads={data.threads} workspaces={data.workspaces} activeId={activeThread} pending={new Set(data.approvals.map(a=>a.thread_id))} open={jump} create={()=>act(newThread)} refresh={reload} onError={handleError}/>
     <div className="side-label nav-label">控制台</div><nav className="desk-nav">{navigation.map(n=><button key={n.view} title={viewName[n.view]} aria-current={view===n.view?"page":undefined} onClick={()=>go(n.view)}><n.icon size={16}/><span>{viewName[n.view]}</span></button>)}</nav>
     <div className="side-foot"><i className={"status-dot "+(live.state==="online"?"running":"idle")}/><span>{live.state==="online"?"实时连接":"正在连接"}</span><code>WS</code></div></aside>
     <main className="desk-main">
     <div className="desk-path"><div><Terminal size={14}/><span>{workspace?.name??"控制台"}</span><em>/</em><strong>{viewName[view]}</strong></div>
-    {view==="workbench"&&<div className="drawer-actions">{([{kind:"tree",title:"文件树",I:Files},{kind:"diff",title:"Git Diff",I:GitCompareArrows},{kind:"agents",title:"AGENTS.md",I:FileCode2}] as const).map(({kind,title,I})=><button key={kind} title={title} aria-label={title} onClick={()=>open({kind,title})}><I size={14}/><span>{title}</span></button>)}<button className="mobile-thread" aria-label="选择会话" onClick={()=>setMenu("threads")}><MessageSquare size={16}/></button></div>}</div>
+    {view==="workbench"&&<div className="drawer-actions">{([{kind:"tree",title:"文件树",I:Files},{kind:"diff",title:"Git Diff",I:GitCompareArrows},{kind:"agents",title:"AGENTS.md",I:FileCode2}] as const).map(({kind,title,I})=><button key={kind} title={title} aria-label={title} onClick={()=>open({kind,title})}><I size={14}/><span>{title}</span></button>)}<button className="inspect-toggle" title="会话信息" aria-label="会话信息" aria-expanded={infoOpen} onClick={toggleInfo}><CircleDot size={14}/><span>会话信息</span></button><button className="mobile-thread" aria-label="选择会话" onClick={()=>setMenu("threads")}><MessageSquare size={16}/></button></div>}</div>
     {count>0&&view!=="approvals"&&<button className="pending-jump" onClick={jumpApproval}><ShieldCheck size={14}/>{count} 项操作等待审批 <ArrowRight size={14}/></button>}
     {live.state==="offline"&&<div className="ws-note"><WifiOff size={14}/>连接已断开，正在重连</div>}
-    {view==="workbench"&&<><MobileOverview approvals={data.approvals} threads={data.threads} workspaces={data.workspaces} refresh={reload} jump={jump} open={open} thread={thread}/>{workspace?<ChatPane key={workspace.id} workspace={workspace} thread={thread} events={live.thread===activeThread?live.events:[]} models={data.models} providers={data.providers} approvals={data.approvals.filter(a=>a.thread_id===activeThread)} onCreateThread={newThread} onRefresh={reload} onOpen={open} mobileApprovalId={data.approvals[0]?.id}/>:<div className="deck-empty"><FolderGit2/><h2>创建工作区</h2><Button onClick={()=>setMenu("workspaces")}>选择或新建工作区</Button></div>}</>}
+    {view==="workbench"&&<><MobileOverview approvals={data.approvals} threads={data.threads} workspaces={data.workspaces} refresh={reload} jump={jump} open={open} thread={thread}/>{workspace?<ChatPane onInspect={setInspected} preferences={preferences.prefs} key={workspace.id} workspace={workspace} thread={thread} events={live.thread===activeThread?live.events:noEvents} models={data.models} providers={data.providers} approvals={data.approvals.filter(a=>a.thread_id===activeThread)} onCreateThread={newThread} onRefresh={reload} onOpen={open} mobileApprovalId={data.approvals[0]?.id}/>:<div className="deck-empty"><FolderGit2/><h2>创建工作区</h2><Button onClick={()=>setMenu("workspaces")}>选择或新建工作区</Button></div>}</>}
     {view==="approvals"&&<section className="standalone-page"><h1>待审批 <small>{data.approvals.length}</small></h1>{data.approvals.length?data.approvals.map(a=><ApprovalCard key={a.id} approval={a} workspaceName={data.workspaces.find(w=>w.id===data.threads.find(t=>t.id===a.thread_id)?.workspace_id)?.name??""} onResolved={reload}/>):<div className="deck-empty"><ShieldCheck/><p>当前没有待审批操作</p></div>}</section>}
     {view==="more"&&<section className="standalone-page"><h1>更多</h1>{navigation.slice(2).map(n=><button className="menu-line" key={n.view} onClick={()=>go(n.view)}><n.icon size={18}/>{viewName[n.view]}<ArrowRight size={14}/></button>)}<hr/>{accountActions}</section>}
-    {view!=="workbench"&&view!=="approvals"&&view!=="more"&&<div className="admin-scroll"><AdminPages view={view} onChanged={reload} onDrawer={t=>open({kind:t.type,title:t.title,port:t.port,deploymentId:t.deploymentId})}/></div>}
-    </main><Panel workspace={workspace} profile={data.profile} tabs={tabs} selected={selected} select={setSelected} open={open} close={key=>setTabs(old=>key?old.filter(t=>tabKey(t)!==key):[])}/></div>
+    {view!=="workbench"&&view!=="approvals"&&view!=="more"&&<div className="admin-scroll">{view==="system"&&<PreferenceControls {...preferences} mode={theme.mode} onTheme={theme.select}/>}<AdminPages view={view} onChanged={reload} onDrawer={t=>open({kind:t.type,title:t.title,port:t.port,deploymentId:t.deploymentId})}/></div>}
+    </main>{view==="workbench"&&infoOpen&&!tabs.length&&<SessionInspector turn={inspected} close={toggleInfo} open={open}/>}<Panel workspace={workspace} profile={data.profile} tabs={tabs} selected={selected} select={setSelected} open={open} close={key=>setTabs(old=>key?old.filter(t=>tabKey(t)!==key):[])}/></div>
     <nav className="deck-bottom">{mobileNav.map(n=><button key={n.view} aria-current={(view===n.view||(n.view==="more"&&["providers","system","open-api"].includes(view)))?"page":undefined} onClick={()=>go(n.view)}><n.icon size={19}/>{n.label}{n.view==="approvals"&&count>0&&<i/>}</button>)}</nav>{toast}</div>;
 }
