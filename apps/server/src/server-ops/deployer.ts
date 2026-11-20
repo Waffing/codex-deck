@@ -304,7 +304,18 @@ export class Deployer {
     try {
       const content=path.join(release,"content");
       await workspaceDirectory(this.storageRoot,content,true);
-      if(!input.image) await this.snapshot(ws,input.entry && input.public_dir==="public" ? "." : input.public_dir,content);
+      if(!input.image) {
+        let source=input.public_dir;
+        if(input.entry && source==="public") {
+          // Default-directory deployments historically resolved entries from the workspace root.
+          const rootEntry=await openWorkspaceFile(ws,input.entry).catch(error=>{
+            if(error.statusCode===404) return null;
+            throw error;
+          });
+          if(rootEntry) { await rootEntry.close();source="."; }
+        }
+        await this.snapshot(ws,source,content);
+      }
       await this.launch(id,config,input,active,await workspaceDirectory(this.storageRoot,content));
       this.save(id,"staging",config);
       await this.prune(workspace).catch(()=>this.note("deployment_cleanup_failed",id,workspace));

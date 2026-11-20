@@ -121,7 +121,7 @@ async function exercise() {
 const container = process.env.CODEXDECK_SMOKE_CONTAINER;
 assert.ok(container && /^[a-z0-9][\w.-]*$/i.test(container),"Set CODEXDECK_SMOKE_CONTAINER to a test control container");
 const result = spawnSync("docker", ["exec","-i","--workdir","/app/apps/server","--env",
-  "CODEXDECK_REQUIRE_BROWSER="+(process.env.CODEXDECK_REQUIRE_BROWSER==="1"?"1":"0"),container,
+  "CODEXDECK_REQUIRE_BROWSER="+(process.env.CODEXDECK_REQUIRE_BROWSER==="1"?"1":"0"),"--env","DEBUG=pw:browser",container,
   "sh","-ec",'exec gosu "$PUID:$PGID" node --input-type=module'],
   {input:`await (${exercise.toString()})();`,stdio:["pipe","inherit","inherit"]});
 if(result.error) throw result.error;

@@ -51,8 +51,9 @@
 	],
 	"syscalls": [
 		{
-			"comment": "Allow create user namespaces",
+			"comment": "Chromium creates namespaces and uses chroot inside its user namespace.",
 			"names": [
+				"chroot",
 				"clone",
 				"setns",
 				"unshare"
@@ -61,6 +62,12 @@
 			"args": [],
 			"includes": {},
 			"excludes": {}
+		},
+		{
+			"names": ["clone3"],
+			"action": "SCMP_ACT_ERRNO",
+			"errnoRet": 38,
+			"comment": "Return ENOSYS so libc can use the filtered clone syscall."
 		},
 		{
 			"names": [
@@ -687,20 +694,6 @@
 			"includes": {
 				"caps": [
 					"CAP_SYS_BOOT"
-				]
-			},
-			"excludes": {}
-		},
-		{
-			"names": [
-				"chroot"
-			],
-			"action": "SCMP_ACT_ALLOW",
-			"args": [],
-			"comment": "",
-			"includes": {
-				"caps": [
-					"CAP_SYS_CHROOT"
 				]
 			},
 			"excludes": {}

@@ -179,6 +179,23 @@ test("starts a workspace Node HTTP entry and forwards GET, POST and WebSocket wi
   try {expect((await once(socket,"message"))[0].toString()).toBe("OK");} finally {socket.terminate();}
 },30000);
 
+test("stages entries in public and keeps existing workspace-root entries working",async()=>{
+  const pub=path.join(root,"public");
+  await mkdir(pub,{recursive:true});
+  const serve=(label:string)=>`require("node:http").createServer((req,res)=>res.end(${JSON.stringify(label)})).listen(+process.env.PORT,process.env.HOST)`;
+  const entry="serve-entry.cjs";
+  await writeFile(path.join(pub,entry),serve("public entry"));
+  async function stageAndRead() {
+    const response=await op("app_deploy_staging",{mode:"local",entry});
+    expect(response.status).toBe(200);
+    const staged=await response.json();
+    return (await fetch(origin+staged.preview_url,{headers:{cookie}})).text();
+  }
+  expect(await stageAndRead()).toBe("public entry");
+  await writeFile(path.join(root,entry),serve("workspace entry"));
+  expect(await stageAndRead()).toBe("workspace entry");
+},30000);
+
 test("exposes the seven tools through a real MCP stdio process and scoped HTTP callback",async()=>{
   const entry=fileURLToPath(new URL("../../../packages/ops-mcp/dist/index.js",import.meta.url));
   const child=spawn(process.execPath,[entry],{env:{SystemRoot:process.env.SystemRoot,CODEXDECK_OPS_URL:origin,CODEXDECK_OPS_TOKEN:token},stdio:["pipe","pipe","pipe"],windowsHide:true});
