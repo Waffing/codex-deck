@@ -6,6 +6,7 @@ import {formatFileSize} from "../files/Artifacts";
 import {previewSound} from "../layout/feedback";
 import {ArtifactModeControl} from "../chat/TurnFiles";
 import {NumberControl,SegmentedControl,ToggleSwitch} from "./Controls";
+import {requestInstall,useInstallState} from "../../lib/pwa";
 
 type Props={prefs:Prefs;update:(patch:Partial<Prefs>)=>void};
 const skins=[
@@ -17,6 +18,8 @@ function Group({title,icon,children}:{title:string;icon:ReactNode;children:React
   return <section className="ad-card settings-form workshop-group"><h2>{icon}{title}</h2>{children}</section>;
 }
 export function AppearanceWorkshop({prefs,update}:Props) {
+  const install=useInstallState();
+  const ios=/iP(?:ad|hone|od)/.test(navigator.userAgent) || navigator.platform==="MacIntel" && navigator.maxTouchPoints>1;
   const [ext,setExt]=useState(""),[error,setError]=useState("");
   const [dark,setDark]=useState(()=>window.matchMedia?.("(prefers-color-scheme: dark)").matches??false);
   useEffect(()=>{
@@ -62,6 +65,11 @@ export function AppearanceWorkshop({prefs,update}:Props) {
       <label>声音风格<SegmentedControl value={prefs.soundStyle} onValueChange={v=>update({soundStyle:v as Prefs["soundStyle"]})}><option value="wood">柔和木琴</option><option value="tick">极简滴答</option><option value="mute">静音</option></SegmentedControl></label>
       {([["soundComplete","任务完成"],["soundApproval","等待审批"],["soundError","任务报错"]] as const).map(([key,label])=><label key={key}>{label}<ToggleSwitch checked={prefs[key]} onCheckedChange={v=>update({[key]:v})}/></label>)}
       <button className="ad-button" disabled={prefs.soundStyle==="mute"} onClick={()=>void previewSound(prefs.soundStyle).catch(()=>setError("此浏览器当前无法播放声音。"))}>试听</button>
+    </Group>
+    <Group title="安装 CodexDeck" icon={<Layout size={16}/>}>
+      {install==="installed"?<p>已在独立应用窗口中打开。</p>:install==="available"?
+        <button className="ad-button" onClick={()=>void requestInstall().catch(()=>setError("安装提示未能打开，请使用浏览器菜单重试。"))}>安装为桌面或手机应用</button>:
+        <p>{ios?"在 Safari 中轻点分享，再选「添加到主屏幕」。":"使用 HTTPS 或本机地址打开后，可在支持安装的浏览器菜单中选择「安装应用」。"}</p>}
     </Group>
     <CacheCard/>{error&&<p role="alert">{error}</p>}
   </>;

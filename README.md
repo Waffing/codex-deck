@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/assets/banner.svg" alt="CodexDeck · 自托管 Codex 控制台" width="1280">
   <h1>CodexDeck</h1>
-  <p>自托管 Codex CLI 工作台。在浏览器里接入自己的模型，批准计划、审阅改动，验收后再部署。</p>
+  <p>自托管 Codex CLI 工作台。在浏览器里接入自己的模型、审阅代码、验证部署，把生成的文档和网页分享给读者。</p>
   <p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
   <p>
     <a href="LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/github/license/Waffing/codex-deck?style=flat-square"></a>
@@ -22,9 +22,22 @@
   </p>
 </div>
 
-## V1.4 工作流
+## V1.5 成品预览与分享
 
-主分支已包含 V1.4。要体验下列功能，可从源码运行工作台。Docker 一键安装跟随最新正式版，安装前可查看对应的发布说明。[从源码运行](#本地开发) · [最新正式版](https://github.com/Waffing/codex-deck/releases/latest)
+从 `main` 构建即可使用 V1.5。Docker 一键安装命令使用最新 GitHub Release 对应的镜像，具体功能以该标签的发布说明为准。[从源码运行](#本地开发) · [最新正式版](https://github.com/Waffing/codex-deck/releases/latest)
+
+<p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/artifact-hub.png" alt="成品资产箱按卡片展示不同会话生成的发布文档与表格" width="100%"></p>
+
+| 要做什么 | 在哪里操作 |
+| --- | --- |
+| 找回上次交付的文件 | 管理员打开 **成品资产箱**，按工作区、文件名或类型筛选，回到来源会话，也可把多个会话的文件打包成一个 ZIP。 |
+| 先看内容再下载 | 点击文件，在右侧抽屉查看 DOCX、PDF、XLS/XLSX、CSV、HTML、SVG、Markdown 或 Mermaid。表格可切换工作表并搜索。单文件预览上限为 32 MiB。 |
+| 从一句话找到历史对话 | 按 **Ctrl+K** 或 **⌘K** 搜索中英文关键词。SQLite FTS5 检索消息、成品名称与路径、部署记录。选择消息会滚动到命中的那一轮。 |
+| 把成品发给读者 | 点击 **公开分享**，生成固定到当前快照的只读链接。默认 7 天有效、免提取码、关闭原件下载。可设置提取码和阅读次数上限，也可在设置的 **临时访问管理 → 公开分享** 中续期或吊销。 |
+| 在桌面或手机上打开工作台 | 使用 HTTPS 或本机地址访问生产构建，在 **设置 → 外观与工作台** 查看安装入口。iOS Safari 可从分享菜单选择 **添加到主屏幕**。 |
+
+<details>
+<summary>编码工作流与项目密钥保险箱（V1.4）</summary>
 
 | 你要做什么 | 在工作台如何操作 |
 | --- | --- |
@@ -36,6 +49,8 @@
 | 给测试或部署提供环境变量 | 在 **工作区配置 → 环境变量保险箱** 导入项目 `.env`，按键分别授权质检或部署注入。保险箱加密保存值，Codex 对话只接收可用键名。 |
 
 自动质检默认关闭。启用后，命令在工作区副本中运行，默认离线。Docker 使用独立容器，Linux 原生安装需要 systemd 用户服务和 `/usr/bin/bwrap`。访客和 Open API 任务的自动质检使用无密钥环境，管理员复核工作区后可带所选密钥重跑。
+
+</details>
 
 ## 快速开始
 
@@ -116,7 +131,20 @@ python3 backup.py restore --from "$archive" --to ./recovery --target-data /data 
 
 ## 界面预览
 
-Playwright 在演示项目中拍摄以下界面，主分支通过 CI 后自动更新。 [截图更新记录](https://github.com/Waffing/codex-deck/commits/codexdeck-media/)
+Playwright 在演示项目中拍摄以下界面。主分支推送通过 CI 后，GitHub Actions 会把对应截图发布到媒体分支。[截图更新记录](https://github.com/Waffing/codex-deck/commits/codexdeck-media/)
+
+<table>
+  <tr>
+    <td width="50%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/document-viewer.png" alt="右侧文档抽屉打开多工作表的发布检查清单"></td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/global-search.png" alt="全局搜索面板高亮对话和成品文件中命中的关键词"></td>
+  </tr>
+  <tr><td>在抽屉中查看发布清单</td><td>从搜索结果回到历史对话</td></tr>
+</table>
+
+<p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/public-share.png" alt="读者在手机上打开的只读发布文档分享页" width="260"><br>手机上的成品分享页</p>
+
+<details>
+<summary>查看对话工作台、审批、跨模型复审和保险箱截图</summary>
 
 <p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/workbench.png" alt="桌面工作台中的已完成对话与产物预览" width="100%"></p>
 
@@ -135,6 +163,8 @@ Playwright 在演示项目中拍摄以下界面，主分支通过 CI 后自动�
   </tr>
   <tr><td align="center">桌面审批</td><td align="center">移动端审批</td></tr>
 </table>
+
+</details>
 
 ## 系统架构
 
@@ -195,6 +225,8 @@ Docker 模式下，控制平面通过独立内部网络上的 socket proxy 调�
 4. **预览代理的 SSRF 防护。** 代理只解析受管部署目标，检查预发布权限和端口归属，剥离浏览器凭证。浏览器验收限制请求访问部署本身的来源。
 5. **凭证脱敏。** `SecretMasker` 对日志、持久化线程事件和发送给客户端的事件遮罩可识别的凭证。
 6. **生产部署边界。** 生产环境默认禁用宿主机进程部署，受管业务应使用 Docker 或 Compose。只有明确隔离的开发机才应设置 `CODEXDECK_ALLOW_LOCAL_DEPLOYMENTS=true`。
+7. **文档预览与公开分享。** HTML 和 SVG 在启用 `allow-scripts` 的独立来源沙箱 iframe 中显示，文件响应带严格 CSP。外部读者通过已启用的公网入口和经验证的 HTTPS 访问分享页，阅读凭证只对对应分享有效。
+8. **PWA 静态缓存。** Service Worker 只缓存构建清单中的脚本、样式、字体和图标。API、WebSocket、分享内容、签名下载和预览请求由服务器处理。
 
 漏洞请按 [SECURITY.md](SECURITY.md) 私下报告。
 
@@ -247,6 +279,7 @@ pnpm test
 - [x] **V1.2 访问控制** · 公网入口、设备会话管理和限定工作区的访客链接。
 - [x] **V1.3 工作台验收** · 历史分页、本地缓存、即时发送和按工作区启用的隔离执行。
 - [x] **V1.4 质量门禁与保险箱** · 只读计划、自动质检和修复、跨模型复审、逐行批注、会话交接、项目密钥按用途注入。
+- [x] **V1.5 文档与交付** · 文档直览、跨会话资产箱、中英文全文检索、可吊销的成品分享和 PWA 安装。
 - [ ] **npm 分发** · 选定可用包名并发布 CLI。
 - [ ] **V2 规划** · 加强业务容器隔离、扩充供应商兼容性覆盖并改进部署恢复。
 

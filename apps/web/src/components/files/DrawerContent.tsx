@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import type { Artifact, Workspace } from "@codexdeck/shared";
 import { api, json } from "../../lib/api";
+import { DocumentViewer, richFormat } from "./DocumentViewer";
+import { ShareButton } from "./ShareButton";
 import { download, FileImage } from "./Artifacts";
 export type DrawerTab = {
   kind: "tree" | "file" | "diff" | "agents" | "logs" | "preview" | "image";
@@ -174,12 +176,25 @@ export function DrawerContent({
   workspace: Workspace;
   onOpen: (tab: DrawerTab) => void;
 }) {
-  return (
-    <DrawerBody
-      key={[workspace.id, tab.kind, tab.path, tab.deploymentId, tab.port, tab.artifact?.id].join("|")}
-      {...{ tab, workspace, onOpen }}
-    />
-  );
+  const identity = [workspace.id, tab.kind, tab.path, tab.deploymentId, tab.port, tab.artifact?.id].join("|");
+  const [editor, setEditor] = useState<string>();
+  const name = tab.artifact?.name || tab.path?.split("/").pop() || tab.title;
+  const rich = richFormat.test(name);
+  const comparison = tab.kind === "image" && (tab.comparison?.length ?? 0) > 1 && !/\.svg$/i.test(name);
+  if ((tab.kind === "file" || tab.kind === "image") && (rich || tab.artifact) && !comparison && editor !== identity) {
+    const url = tab.artifact ? "/api/artifacts/" + encodeURIComponent(tab.artifact.id) + "/content"
+      : "/api/workspaces/" + encodeURIComponent(workspace.id) + "/files/preview?path=" + encodeURIComponent(tab.path || "");
+    const editable = !rich || /\.(html?|svg|csv|md|markdown|mmd|mermaid)$/i.test(name);
+    return <DocumentViewer name={name} size={tab.artifact?.size_bytes ?? undefined} contentUrl={url}
+      downloadUrl={url + (tab.artifact ? "?" : "&") + "download=1"} actions={<>
+        {editable && tab.path && (!tab.artifact || tab.artifact.workspace_id === workspace.id) && <button onClick={() => setEditor(identity)}>编辑工作区文件</button>}
+        {tab.artifact && <ShareButton artifactId={tab.artifact.id} name={name} />}
+      </>} />;
+  }
+  return <>
+    {editor === identity && <button onClick={() => setEditor(undefined)}>返回文档预览</button>}
+    <DrawerBody key={identity} {...{ tab, workspace, onOpen }} />
+  </>;
 }
 function DrawerBody({
   tab,
@@ -296,6 +311,9 @@ function DrawerBody({
     return (
       <div className="cd-drawer-body cd-image-view">
         <div className="cd-image-actions">
+          <ShareButton artifactId={tab.artifact.id} name={tab.artifact.name}/>
+          <button onClick={() => void download({artifact_id:tab.artifact!.id}).catch(() => setError("下载失败"))}><Download size={15}/>下载</button>
+          {error && <span role="alert">{error}</span>}
           <button onClick={() => setZoom(!zoom)}>
             {zoom ? <ZoomOut size={16} /> : <ZoomIn size={16} />} {zoom ? "适应宽度" : "原始大小"}
           </button>
@@ -317,7 +335,8 @@ function DrawerBody({
                     : img.name}
               </figcaption>
               <div className={zoom ? "cd-image-scroll cd-zoom" : "cd-image-scroll"}>
-                <FileImage artifact={img} large />
+                {/\.svg$/i.test(img.name) ? <DocumentViewer name={img.name} size={img.size_bytes ?? undefined}
+                  contentUrl={"/api/artifacts/"+encodeURIComponent(img.id)+"/content"} /> : <FileImage artifact={img} large />}
               </div>
             </figure>
           ))}

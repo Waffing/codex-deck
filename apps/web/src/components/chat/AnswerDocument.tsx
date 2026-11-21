@@ -1,4 +1,5 @@
 import { memo, useRef, useState, type ComponentProps } from "react";
+import { MermaidDiagram } from "../files/MermaidDiagram";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -44,6 +45,7 @@ function CodeBlock({ children, node }: ComponentProps<"pre"> & { node?: HtmlNode
   const source = plain(code).replace(/\n$/, "");
   const classes = code?.properties?.className;
   const lang = Array.isArray(classes) ? String(classes.find(c => String(c).startsWith("language-")) ?? "").slice(9) : "";
+  if (lang === "mermaid") return <MermaidDiagram source={source}/>;
   const count = source.split("\n").length;
   return <figure className="md-code-block">
     <figcaption><span>{lang || "text"}</span><button type="button" aria-label="复制代码" onClick={async () => {

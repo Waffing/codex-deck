@@ -1,3 +1,4 @@
+import {publicShareRoute} from "../security/share-ingress.js";
 import type {FastifyInstance,FastifyReply,FastifyRequest} from "fastify";
 import {createRequireAdmin} from "../auth.js";
 import type {ServerContext} from "../app.js";
@@ -48,7 +49,7 @@ export function registerTempAccess(app:FastifyInstance,ctx:ServerContext) {
   type Id={Params:{id:string}};
   app.addHook("preHandler",async req=>{
     const route=req.routeOptions.url??"";
-    if(!guestCookie(req) || route==="/guest/:token" || route==="/api/guest/logout" ||
+    if(!guestCookie(req) || publicShareRoute(req) || route==="/guest/:token" || route==="/api/guest/logout" ||
       !/^\/(api|internal|ws|live|preview)\//.test(route)) return;
     const guest=getGuestSession(ctx,req);
     if(!guest) throw deny("Invitation expired, exhausted or revoked.");

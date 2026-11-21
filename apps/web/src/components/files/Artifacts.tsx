@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ArrowDownToLine, FileCode2, FileText, Image as ImageIcon, FileSpreadsheet, FileMusic, FileArchive, FileBarChart, FileBox } from "lucide-react";
 import type { Artifact } from "@codexdeck/shared";
 import { api, json } from "../../lib/api";
+import {ShareButton} from "./ShareButton";
 import type { DrawerTab } from "./DrawerContent";
 
 export async function signed(subject: { artifact_id: string } | { turn_id: string }) {
@@ -103,6 +104,7 @@ export function ArtifactChip({
       >
         <ArrowDownToLine size={14} />
       </button>
+      <ShareButton artifactId={item.id} name={item.name}/>
     </div>
   );
 }

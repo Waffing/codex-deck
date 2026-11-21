@@ -34,11 +34,11 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
           path: ${{ runner.temp }}/gallery
-      - name: Publish the five validated images
+      - name: Publish validated gallery images
         env:
           TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          for name in workbench approval mobile review vault; do
+          for name in workbench approval mobile review vault artifact-hub document-viewer global-search public-share; do
             image="$RUNNER_TEMP/gallery/$name.png"
             test -f "$image"
             test ! -L "$image"

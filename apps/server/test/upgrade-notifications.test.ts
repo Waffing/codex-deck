@@ -32,7 +32,7 @@ test("upgrades a populated V1 store twice, preserving artifacts and sealing lega
     db.prepare("INSERT INTO notification_channels VALUES('c','test','webhook',?,1,'old','old')").run(JSON.stringify({url}));
     runMigrations(db);
     runMigrations(db);
-    expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").pluck().all()).toEqual([1,2,3,4,5,6,7,8,9,10]);
+    expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").pluck().all()).toEqual([1,2,3,4,5,6,7,8,9,10,11]);
     expect(db.prepare("SELECT workspace_id FROM artifacts WHERE id='a'").pluck().get()).toBe("ws");
     expect(db.prepare("SELECT sequence FROM thread_events WHERE id='event'").pluck().get()).toBe(3);
     const ctx={native:db,orm:drizzle(db,{schema}),masterKey:randomBytes(32),masker:new SecretMasker(),gatewayConfig:parseGatewayConfig()};

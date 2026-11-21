@@ -5,6 +5,7 @@ export function useSkin(prefs:WorkbenchPreferences,dark:boolean) {
   useLayoutEffect(()=>{
     const root=document.documentElement;
     root.dataset.skin=dark?prefs.darkSkin:prefs.lightSkin;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content",getComputedStyle(root).getPropertyValue("--bg").trim() || (dark?"#171818":"#f5f6f8"));
     root.dataset.frosted=String(prefs.frostedSidebar);root.dataset.bodyFont=prefs.bodyFont;root.dataset.codeFont=prefs.codeFont;
     root.style.setProperty("--deck-scale",String(prefs.fontScale/100));
     if(prefs.accent) {

@@ -14,12 +14,16 @@ import { fileError, ignored, missing, resolveSafeWorkspacePath, saveWorkspaceFil
 import { readEditable, writeEditable } from "../files/editor.js";
 import { signDownload, validateDownload } from "../files/signed-url.js";
 import type { WorkspaceFiles } from "../files/workspace-files.js";
+import { registerDocumentRoutes } from "../files/document-preview.js";
 import { registerWorkspaceRoutes } from "./workspaces.js";
+import {checkedBatch,registerArtifactHub} from "./artifact-hub.js";
 
 export function registerFileRoutes(app: FastifyInstance, ctx: ServerContext, files: WorkspaceFiles) {
   type ById = { Params: { id: string } };
   const auth = scopedAccess(ctx);
   registerWorkspaceRoutes(app, ctx, files);
+  registerDocumentRoutes(app, ctx, files);
+  registerArtifactHub(app,ctx,files);
   app.register(multipart, { limits: { fileSize: 16 * 1024 * 1024, files: 1, fields: 0, parts: 1 } });
   app.addHook("onClose", async () => files.close());
   app.get<ById & {Querystring:{q?:string}}>("/api/workspaces/:id/files/search",auth,async req=>{
@@ -106,9 +110,10 @@ export function registerFileRoutes(app: FastifyInstance, ctx: ServerContext, fil
   });
   app.get<{ Params: { "*": string } }>("/api/dl/*", async (req, reply) => {
     const subject = validateDownload(req.params["*"], ctx.masterKey);
-    const artifacts = files.artifactsFor(subject);
     const guest=scopedGuest(req);
-    if(subject.guest_id && guest?.link.id!==subject.guest_id || guest && artifacts.some(a=>!guest.link.workspace_ids.includes(a.workspace_id)))
+    if(subject.kind==="batch" && guest)throw fileError(403,"This download requires an administrator link.");
+    const artifacts = subject.kind==="batch"?await checkedBatch(files,subject.ids):files.artifactsFor(subject);
+    if(subject.kind!=="batch" && subject.guest_id && guest?.link.id!==subject.guest_id || guest && artifacts.some(a=>!guest.link.workspace_ids.includes(a.workspace_id)))
       throw fileError(403,"Guest download unavailable.");
     reply.header("Cache-Control", "private, no-store").header("X-Content-Type-Options", "nosniff");
     if (subject.kind === "artifact") {
@@ -120,12 +125,13 @@ export function registerFileRoutes(app: FastifyInstance, ctx: ServerContext, fil
     }
     const zip = new yazl.ZipFile();
     const seen = new Set<string>();
-    for (const item of artifacts) {
-      if (seen.has(item.path)) continue;
-      seen.add(item.path);
+    for (const [index,item] of artifacts.entries()) {
+      const entry=subject.kind==="batch"?String(index+1).padStart(2,"0")+"/"+item.path:item.path;
+      if (seen.has(entry)) continue;
+      seen.add(entry);
       const handle = await files.openArtifact(item.id);
       await handle.close();
-      zip.addReadStreamLazy(item.path, {}, callback => {
+      zip.addReadStreamLazy(entry, {}, callback => {
         void files.openArtifact(item.id).then(handle => { callback(null, handle.createReadStream()); }, error => { zip.emit("error", error); });
       });
     }

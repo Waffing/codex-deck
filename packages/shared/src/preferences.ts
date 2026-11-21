@@ -3,7 +3,7 @@ import { automationLevelSchema } from "./files.js";
 
 export const defaultArtifactExtensions = [
   ".docx", ".doc", ".pdf", ".xlsx", ".xls", ".pptx", ".csv", ".png", ".jpg", ".jpeg", ".webp",
-  ".svg", ".gif", ".zip", ".tar.gz", ".7z", ".mp3", ".mp4", ".apk", ".dmg", ".exe",
+  ".svg", ".gif", ".zip", ".tar.gz", ".7z", ".mp3", ".mp4", ".apk", ".dmg", ".exe", ".html", ".htm", ".md", ".mmd",
 ];
 export const workbenchPreferencesSchema = z.strictObject({
   lightSkin: z.enum(["white","paper"]).default("white"),

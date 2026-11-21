@@ -1,6 +1,7 @@
+import {publicShareRoute} from "./share-ingress.js";
 import { createHash } from "node:crypto";
 import type { Socket } from "node:net";
-import type { FastifyInstance,FastifyReply } from "fastify";
+import type { FastifyInstance,FastifyReply,FastifyRequest } from "fastify";
 import type { SecurityConfig } from "@codexdeck/shared";
 import type { ServerContext } from "../app.js";
 import { authenticated } from "../auth.js";
@@ -17,7 +18,13 @@ function conceal(reply:FastifyReply,mode:SecurityConfig["disguise"]) {
   return reply.code(404).send("<html><head><title>404 Not Found</title></head><body><center><h1>404 Not Found</h1></center><hr><center>nginx</center></body></html>");
 }
 const digest=(value:string)=>createHash("sha256").update(value).digest("hex");
-export function registerPublicGate(app:FastifyInstance,ctx:ServerContext) {
+function invalidOrigin(req:FastifyRequest) {
+  const origin=req.headers.origin && URL.parse(req.headers.origin);
+  return req.headers["sec-fetch-site"]==="cross-site" || !!req.headers.origin &&
+    (!origin || origin.host!==req.headers.host || origin.protocol!==(verifiedHttps(req)?"https:":"http:"));
+}
+
+export function registerPublicGate(app:FastifyInstance,ctx:ServerContext,shareAssets:ReadonlySet<string>=new Set()) {
   ctx.masker.register(process.env.CODEXDECK_MANAGED_PROXY_TOKEN);
   readSecurityConfig(ctx.native);
   let verifiedBasic="";
@@ -27,6 +34,7 @@ export function registerPublicGate(app:FastifyInstance,ctx:ServerContext) {
   app.addHook("onClose",async()=>{unsubscribe();});
   app.addHook("onRequest",async(req,reply)=>{
     const config=readSecurityConfig(ctx.native);
+    if(config.entry_enabled || config.basic_enabled || config.ip_mode!=="off")reply.header("Cache-Control","private, no-store");
     const route=req.routeOptions.url??"",pathname=req.url.split("?")[0];
     const internal=route.startsWith("/internal/")||pathname.startsWith("/internal/")||route==="/api/auth/setup";
     if(internal) return directLocal(req) && !(route==="/api/auth/setup" && config.public_enabled)?undefined:conceal(reply,config.disguise);
@@ -35,7 +43,13 @@ export function registerPublicGate(app:FastifyInstance,ctx:ServerContext) {
     if(directLocal(req) && (route==="/api/health" || route==="/health" ||
       hostOperation && !req.headers.cookie && typeof req.headers["x-codexdeck-admin"]==="string")) return;
     const local=localPanel(req),ip=clientIp(req);
-    if((!local && (!config.public_enabled || !verifiedHttps(req))) || !ipAllowed(config,ip)) return conceal(reply,config.disguise);
+    if(!local && (!config.public_enabled || !verifiedHttps(req))) return conceal(reply,config.disguise);
+    const shareAsset=(req.method==="GET" || req.method==="HEAD") && route==="/*" && shareAssets.has(pathname);
+    if(publicShareRoute(req) || shareAsset) {
+      if(req.method==="POST" && invalidOrigin(req)) return reply.code(403).send({error:"Invalid request origin."});
+      return;
+    }
+    if(!ipAllowed(config,ip)) return conceal(reply,config.disguise);
     const entry=config.entry_enabled && req.method==="GET" && pathname===config.entry_path;
     const machine=route.startsWith("/api/v1/") || route==="/api/dl/*";
     const invite=/^\/guest\/[A-Za-z0-9_-]{43}$/.test(pathname) && ["GET","POST"].includes(req.method);
@@ -75,12 +89,8 @@ export function registerPublicGate(app:FastifyInstance,ctx:ServerContext) {
       return reply.header("set-cookie","cd_entry="+grant+"; Path=/; HttpOnly; SameSite=Strict; Max-Age="+ttl+(secureTransport(req)?"; Secure":""))
         .header("Referrer-Policy","no-referrer").header("cache-control","no-store").redirect("/");
     }
-    if(!["GET","HEAD","OPTIONS"].includes(req.method)) {
-      const origin=req.headers.origin && URL.parse(req.headers.origin);
-      const scheme=verifiedHttps(req)?"https:":"http:";
-      if(req.headers["sec-fetch-site"]==="cross-site" || req.headers.origin && (!origin || origin.host!==req.headers.host || origin.protocol!==scheme))
-        return reply.code(403).send({error:"Invalid request origin."});
-    }
+    if(!["GET","HEAD","OPTIONS"].includes(req.method) && invalidOrigin(req))
+      return reply.code(403).send({error:"Invalid request origin."});
     if(req.headers.upgrade || route==="/api/v1/tasks/:id/stream") {
       const socket=req.raw.socket;
       streams.add(socket);

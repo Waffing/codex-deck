@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import {harnessResponse,qualityJourney} from "./quality-harness.mjs";
 import {performanceJourney} from "./performance.mjs";
+import {hubPwaJourney} from "./hub-pwa.mjs";
+import {viewerJourney} from "./viewer-journey.mjs";
 import {securityCenterJourney} from "./security-center.mjs";
 import {modelLedgerJourney} from "./model-ledger.mjs";
 import { createServer, parseGatewayConfig } from "../../server/dist/app.js";
@@ -198,6 +200,15 @@ try {
   for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
     step="V1.4 计划、批注、复审、交接与保险箱 "+viewport.width;
     await qualityJourney({browser,context,origin,instrument,submit,shot,viewport});
+    step="V1.5 成品资产箱、文档预览与 PWA "+viewport.width;
+    const checks=await browser.newContext({viewport,storageState:await context.storageState()});
+    try {
+      const page=await checks.newPage();instrument(page);
+      const workspaces=await (await checks.request.get(origin+"/api/workspaces")).json();
+      const input={page,origin,workspaceId:workspaces.find(w=>w.name==="console-lab").id};
+      await hubPwaJourney(input);
+      await viewerJourney(input);
+    } finally {await checks.close();}
   }
   step="V1.3 缓存、上滑分页、输入帧与乐观发送";
   await performanceJourney(browser,context,origin,db.native,instrument);

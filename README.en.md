@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/assets/banner.svg" alt="CodexDeck, a self-hosted control plane for Codex" width="1280">
   <h1>CodexDeck</h1>
-  <p>A self-hosted workbench for Codex CLI. Connect your own models, approve a plan, review the diff and verify a deployment from your browser.</p>
+  <p>A self-hosted workbench for Codex CLI. Connect your own models, review code, verify deployments and share the documents or web pages Codex produces.</p>
   <p><a href="README.md">简体中文</a> · <strong>English</strong></p>
   <p>
     <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/Waffing/codex-deck?style=flat-square"></a>
@@ -22,9 +22,22 @@
   </p>
 </div>
 
-## V1.4 workflow
+## V1.5 artifact previews and sharing
 
-V1.4 is available on `main`. Run the workbench from source to try the features below. The one-line Docker installer follows the latest tagged release. Check its release notes when choosing an image. [Run from source](#development) · [Latest release](https://github.com/Waffing/codex-deck/releases/latest)
+Build the `main` branch to use V1.5. The one-line Docker installer uses the image from the latest GitHub Release. Check that tag's release notes for its feature set. [Run from source](#development) · [Latest release](https://github.com/Waffing/codex-deck/releases/latest)
+
+<p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/artifact-hub.png" alt="Artifact Hub showing release documents and spreadsheets from multiple conversations" width="100%"></p>
+
+| What you want to do | Where to do it |
+| --- | --- |
+| Find a previous deliverable | As an administrator, open **Artifact Hub** and filter by workspace, file name or type. Open the source conversation, or select files from several conversations for one ZIP download. |
+| Read a file before downloading | Click a file to preview DOCX, PDF, XLS/XLSX, CSV, HTML, SVG, Markdown or Mermaid in the side drawer. Switch sheets and search within a spreadsheet. The preview limit is 32 MiB per file. |
+| Find the conversation behind a phrase | Press **Ctrl+K** or **⌘K**. SQLite FTS5 searches messages, artifact names and paths, and deployment records in English and Chinese. Select a message to jump to the matching turn. |
+| Send a finished document to a reader | Choose **Public share** for a read-only link to that snapshot. Links default to seven days, an empty passcode and downloads off. Set a passcode or a view limit, then extend or revoke the link under **Settings → Temporary access → Public shares**. |
+| Open the workbench as an app | Visit a production build over HTTPS or localhost, then open **Settings → Appearance & workbench** for installation options. In iOS Safari, choose **Share → Add to Home Screen**. |
+
+<details>
+<summary>Coding workflow and workspace secret vault (V1.4)</summary>
 
 | What you want to do | Where to do it |
 | --- | --- |
@@ -36,6 +49,8 @@ V1.4 is available on `main`. Run the workbench from source to try the features b
 | Supply environment variables for tests or deployment | Import the project's `.env` in **Workspace settings → Environment vault**. Enable each key separately for verification or deployment. The vault encrypts values and gives the conversation only the available key names. |
 
 Automatic verification is opt-in. Checks run offline by default in a copy of the workspace. Docker runs each gate in a separate container. Native Linux installations need a systemd user manager and `/usr/bin/bwrap`. Guest and Open API checks run without vault credentials. An administrator can review the workspace and rerun checks with the selected credentials.
+
+</details>
 
 ## Quick Start
 
@@ -118,7 +133,20 @@ For key rotation, back up first, stop the service and supply the new random 32-b
 
 ## Screenshots
 
-Playwright captures these views using a demo project. The gallery refreshes after CI passes on the main branch. [Screenshot history](https://github.com/Waffing/codex-deck/commits/codexdeck-media/)
+Playwright captures these views using a demo project. After CI passes on a push to `main`, GitHub Actions publishes the corresponding screenshots to the media branch. [Screenshot history](https://github.com/Waffing/codex-deck/commits/codexdeck-media/)
+
+<table>
+  <tr>
+    <td width="50%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/document-viewer.png" alt="A multi-sheet release checklist open in the document drawer"></td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/global-search.png" alt="The search palette highlights matching words in conversations and artifacts"></td>
+  </tr>
+  <tr><td>Inspect a release checklist</td><td>Find a historical conversation</td></tr>
+</table>
+
+<p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/public-share.png" alt="A reader viewing a read-only release document on a phone" width="260"><br>A public share on mobile</p>
+
+<details>
+<summary>See the workbench, approvals, cross-model review and secret vault</summary>
 
 <p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/workbench.png" alt="A completed task and its artifact preview in the desktop workbench" width="100%"></p>
 
@@ -137,6 +165,8 @@ Playwright captures these views using a demo project. The gallery refreshes afte
   </tr>
   <tr><td align="center">Desktop approval</td><td align="center">Mobile approval</td></tr>
 </table>
+
+</details>
 
 ## Architecture
 
@@ -197,6 +227,8 @@ Run the provider probe for the actual model and endpoint before relying on strea
 4. **Preview SSRF controls.** The proxy resolves managed deployment targets, checks staging access and port ownership, and strips browser credentials. Browser verification restricts requests to the deployment origin.
 5. **Secret masking.** `SecretMasker` redacts recognized credentials from logs, persisted thread events and events sent to clients.
 6. **Production deployment boundary.** Host-process deployments are disabled in production by default. Use Docker or Compose for managed workloads. Enable `CODEXDECK_ALLOW_LOCAL_DEPLOYMENTS=true` only on an explicitly isolated development machine.
+7. **Document previews and public shares.** HTML and SVG render in an opaque-origin iframe with `sandbox="allow-scripts"` and a strict Content Security Policy on the file response. External readers reach shares through enabled public access over verified HTTPS. Each reading credential is scoped to one share.
+8. **PWA asset cache.** The service worker caches only build-listed scripts, styles, fonts and icons. API calls, WebSocket connections, public shares, signed downloads and previews go to the server.
 
 See [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
@@ -249,6 +281,7 @@ Run `pnpm dev:server` and `pnpm dev:web` in separate terminals. The API defaults
 - [x] **V1.2 access control** · Public access, device session management and workspace-scoped guest invitations.
 - [x] **V1.3 workbench validation** · Paged history, local caching, optimistic sends and opt-in isolated execution per workspace.
 - [x] **V1.4 quality gates and vault** · Read-only plans, verification and repair, cross-model review, line comments, thread handoffs and scoped workspace secrets.
+- [x] **V1.5 documents and delivery** · File previews, a cross-conversation Artifact Hub, Chinese and English full-text search, revocable public shares and PWA installation.
 - [ ] **npm distribution** · Choose an available package name and publish the CLI.
 - [ ] **V2 plans** · Strengthen workload isolation, expand provider compatibility coverage and improve deployment recovery.
 

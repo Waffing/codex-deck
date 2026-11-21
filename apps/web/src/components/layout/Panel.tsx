@@ -6,7 +6,7 @@ import {WorkspaceQuality} from "../settings/WorkspaceQuality";
 import {ReviewDiff} from "../files/ReviewDiff";
 import {Profile} from "./Profile";
 export type PanelTab=DrawerTab|{kind:"quality";title:string}|{kind:"profile";title:string};
-export const tabKey=(t:PanelTab)=>JSON.stringify([t.kind,"path" in t?t.path:undefined,"deploymentId" in t?t.deploymentId:undefined,"turnId" in t?t.turnId:undefined,t.title]);
+export const tabKey=(t:PanelTab)=>JSON.stringify([t.kind,"artifact" in t?t.artifact?.id:undefined,"path" in t?t.path:undefined,"deploymentId" in t?t.deploymentId:undefined,"turnId" in t?t.turnId:undefined,t.title]);
 export function Panel({tabs,selected,select,close,workspace,thread,models,onRefresh,profile,open}:{thread:Thread|null;models:Model[];onRefresh:()=>void;tabs:PanelTab[];selected:string;select:(key:string)=>void;close:(key?:string)=>void;workspace:Workspace|null;profile:ServerProfile|null;open:(t:PanelTab)=>void}){
   const [width,setWidth]=useState(()=>Number(localStorage.getItem("deck.panel"))||440);
   const tab=tabs.find(t=>tabKey(t)===selected)??tabs.at(-1);

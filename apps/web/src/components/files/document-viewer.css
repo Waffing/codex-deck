@@ -1,0 +1,31 @@
+.document-viewer { color:var(--text,#28342e); min-width:0; max-width:100%; }
+.document-viewer>header,.dv-tools { display:flex; align-items:center; gap:.55rem; flex-wrap:wrap; }
+.document-viewer>header { border-bottom:1px solid var(--border,#dbe1dd); padding:.75rem 1rem; }
+.document-viewer>header>strong { overflow-wrap:anywhere; flex:1; min-width:5rem; }
+.document-viewer small { color:var(--muted,#64736a); font-size:.76rem; }
+.document-viewer button,.document-viewer header>a,.dv-tools input,.dv-tools select { display:inline-flex; align-items:center; gap:.3rem; background:var(--surface,#f4f6f4); color:inherit; border:1px solid var(--border,#dbe1dd); border-radius:.4rem; padding:.3rem .55rem; font:inherit; font-size:.82rem; text-decoration:none; }
+.document-viewer button[aria-pressed=true] { background:var(--soft,#e5efe8); color:var(--accent,#167051); }
+.document-viewer button:disabled { opacity:.5; }
+.dv-content { padding:.9rem; min-width:0; }
+.dv-tools { margin-bottom:.65rem; }
+.dv-tools input { max-width:100%; flex:1; min-width:8rem; }
+.dv-prose { overflow-wrap:anywhere; line-height:1.65; }
+.dv-prose :is(h1,h2,h3,h4,p,ol,ul,blockquote) { margin:.7em 0; }
+.dv-prose h1 { font-size:1.6em; font-weight:650; }
+.dv-prose h2 { font-size:1.35em; font-weight:650; }
+.dv-prose h3 { font-size:1.15em; font-weight:650; }
+.dv-prose ul { list-style:disc inside; }
+.dv-prose ol { list-style:decimal inside; }
+.dv-prose img,.dv-image,.dv-pdf { display:block; max-width:100%; height:auto; margin:auto; }
+.dv-prose pre,.dv-source { white-space:pre-wrap; overflow-wrap:anywhere; padding:.7rem; background:var(--surface,#f4f6f4); font: .85rem/1.6 ui-monospace,monospace; }
+.dv-prose table,.dv-table-scroll table { border-collapse:collapse; font-size:.88rem; }
+.dv-prose td,.dv-prose th,.dv-table-scroll :is(th,td) { padding:.4rem .65rem; border:1px solid var(--border,#dbe1dd); text-align:start; }
+.dv-table-scroll { max-height:64vh; overflow:auto; margin:.5rem 0; }
+.dv-table-scroll table { width:max-content; min-width:100%; }
+.dv-table-scroll th { position:sticky; top:0; background:var(--surface,#f4f6f4); font-weight:600; }
+.dv-table-scroll td { max-width:36rem; overflow-wrap:anywhere; }
+.dv-viewport { max-width:100%; overflow:auto; min-height:14rem; background:#f6f7f5; }
+.dv-viewport iframe { display:block; border:0; height:min(65vh,44rem); margin:0 auto; }
+.dv-checker { background:repeating-conic-gradient(#dee3df 0 25%,#fff 0 50%) 0/16px 16px; }
+.dv-diagram { width:100%; border:0; display:block; }
+.dv-pdf { box-shadow:0 1px 6px #0002; }

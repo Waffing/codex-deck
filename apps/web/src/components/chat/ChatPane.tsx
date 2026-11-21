@@ -9,10 +9,12 @@ import {AnswerDocument} from "./AnswerDocument";
 import {Composer,type ComposerHandle} from "./Composer";
 import {queueMessage,deliver,discard,useOutbox} from "../../stores/outbox";
 import {ArtifactModeControl} from "./TurnFiles";
-import type {Approval,Model,Provider,Thread,ThreadEvent,Workspace} from "@codexdeck/shared";
+import {api} from "../../lib/api";
+import type {GlobalSearchHit,TurnPage,TurnSnapshot,Approval,Model,Provider,Thread,ThreadEvent,Workspace} from "@codexdeck/shared";
 import "./chat.css";
 export type ChatProps = {
   workspace: Workspace;
+  searchTurn?: GlobalSearchHit|null;
   thread: Thread | null;
   events: ThreadEvent[];
   approvals: Approval[];
@@ -31,18 +33,20 @@ export type ChatProps = {
 export function ChatPane(props:ChatProps){
   return <ChatBody key={props.workspace.id+":"+(props.thread?.id??"new")} {...props}/>;
 }
-function ChatBody({workspace,thread,events,approvals,models,providers,onCreateThread,onRefresh,onOpen,mobileApprovalId,onJumpThread,onHandoff,onSnapshot,preferences=defaultPreferences,onInspect}:ChatProps){
+function ChatBody({workspace,thread,searchTurn,events,approvals,models,providers,onCreateThread,onRefresh,onOpen,mobileApprovalId,onJumpThread,onHandoff,onSnapshot,preferences=defaultPreferences,onInspect}:ChatProps){
   const lifecycle=useRef(0);
   const terminal=events.reduce((n,e)=>["task_completed","task_failed","task_cancelled","context_compacted","artifacts_updated"].includes(e.type)?e.seq_id:n,lifecycle.current);
   // A fresh snapshot periodically folds long streams into a compact active turn.
   if(terminal>lifecycle.current || events.length>=512 && (events.at(-1)?.seq_id??0)-lifecycle.current>=256)lifecycle.current=Math.max(terminal,events.at(-1)?.seq_id??0);
   const marker=lifecycle.current;
   const page=useTurnPages(thread?.id,marker,onSnapshot);
+  const [located,setLocated]=useState<TurnSnapshot|null>(null);
   const turns=useMemo(()=>{
     const snapshots=new Map([...page.older,...page.tail.turns].map(t=>[t.id,t]));
+    if(located&&!snapshots.has(located.id))snapshots.set(located.id,located);
     if(page.tail.active_turn)snapshots.set(page.tail.active_turn.id,page.tail.active_turn);
     return collectSnapshots([...snapshots.values()].sort((a,b)=>a.turn_index-b.turn_index),events);
-  },[page.older,page.tail,events]);
+  },[page.older,page.tail,events,located]);
   const latest=turns.at(-1);
   const running=turns.some(t=>t.task.status==="running") || (!turns.length&&thread?.status==="running");
   const [narrow,setNarrow]=useState(()=>matchMedia("(max-width: 767px)").matches);
@@ -68,6 +72,31 @@ function ChatBody({workspace,thread,events,approvals,models,providers,onCreateTh
       anchor.current=null;
     }else if(follow.current){box.scrollTop=box.scrollHeight;}
   },[turns,outgoing.length]);
+  const target=searchTurn?.thread_id===thread?.id ? searchTurn : null;
+  const known=!!target && turns.some(t=>t.task.id===target.entity_id);
+  useEffect(()=>{
+    if(!target){setLocated(null);return;}
+    follow.current=false;
+    if(known || target.turn_index===null)return;
+    const abort=new AbortController();
+    void api<TurnPage>("/api/threads/"+target.thread_id+"/turns?before_turn_index="+(target.turn_index+1)+"&limit=1",{signal:abort.signal})
+      .then(response=>{
+        if(abort.signal.aborted)return;
+        const found=response.turns.find(t=>t.id===target.entity_id) ?? (response.active_turn?.id===target.entity_id?response.active_turn:null);
+        if(found)setLocated(found);else setError("目标轮次已不可用");
+      }).catch(cause=>{if(!abort.signal.aborted)setError((cause as Error).message);});
+    return ()=>abort.abort();
+  },[target,known]);
+  useLayoutEffect(()=>{
+    if(!target||!known)return;
+    const el=document.getElementById("turn-"+target.entity_id);
+    if(!el)return;
+    follow.current=false;
+    el.scrollIntoView({block:"center",behavior:"instant"});
+    el.classList.add("search-target");
+    const timer=setTimeout(()=>el.classList.remove("search-target"),2200);
+    return ()=>{clearTimeout(timer);el.classList.remove("search-target");};
+  },[target,known]);
   const pending=approvals.filter(a=>a.status==="pending"&&a.thread_id===thread?.id&&!(narrow&&a.id===mobileApprovalId));
   const submit=async (prompt:string,imageIds:string[],mode?:"plan"|"execute")=>{
     follow.current=true;

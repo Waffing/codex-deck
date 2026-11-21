@@ -281,7 +281,23 @@ export const auditLogs=sqliteTable("audit_logs",{
   id:integer("id").primaryKey(),event:text("event").notNull(),actor:text("actor").notNull(),ip:text("ip"),
   detailsJson:text("details_json").notNull(),createdAt:text("created_at").notNull(),
 });
+export const publicShares = sqliteTable("public_shares", {
+  id:text("id").primaryKey(), slug:text("slug").notNull().unique(),
+  workspaceId:text("workspace_id").notNull().references(()=>workspaces.id,{onDelete:"cascade"}),
+  artifactId:text("artifact_id").notNull().references(()=>artifacts.id,{onDelete:"cascade"}),
+  relPath:text("rel_path").notNull(), title:text("title").notNull(), shareType:text("share_type").notNull(),
+  contentSha256:text("content_sha256").notNull(), sizeBytes:integer("size_bytes").notNull(),
+  passcodeHash:text("passcode_hash"), expiresAt:text("expires_at").notNull(), maxViews:integer("max_views"),
+  viewCount:integer("view_count").notNull().default(0), allowDownload:integer("allow_download").notNull().default(0),
+  status:text("status").notNull().default("active"), createdAt:text("created_at").notNull(),
+});
+export const publicShareReads = sqliteTable("public_share_reads", {
+  sessionId:text("session_id").primaryKey(), shareId:text("share_id").notNull().references(()=>publicShares.id,{onDelete:"cascade"}),
+  expiresAt:integer("expires_at").notNull(),
+});
+
 export const schema = {
+  publicShares,publicShareReads,
   codeReviews,workspaceSecrets,
   tempAccessLinks,guestSessions,
   taskSubmissions,adminAudit,userSessions,loginBans,auditLogs,

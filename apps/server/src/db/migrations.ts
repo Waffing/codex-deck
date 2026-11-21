@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 import { guestMigration } from "../temp-access/migration.js";
+import {searchMigrationSql} from "./search-migration.js";
+import {shareMigrationSql} from "./share-migration.js";
 
 export const migrations = [
   {
@@ -268,6 +270,10 @@ export const migrations = [
       );
     `,
   },
+  {version:11,sql:shareMigrationSql+searchMigrationSql+`
+    CREATE INDEX IF NOT EXISTS artifacts_hub_time ON artifacts(created_at,id);
+    CREATE INDEX IF NOT EXISTS artifacts_hub_workspace ON artifacts(workspace_id,created_at,id);
+  `},
 ];
 
 export function runMigrations(database: Database.Database): void {

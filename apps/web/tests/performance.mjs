@@ -10,6 +10,29 @@ function findTurnRender(){
   }
 }
 
+export async function searchJourney(browser,context,origin,id,instrument){
+  for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
+    const searchContext=await browser.newContext({viewport,storageState:await context.storageState()});
+    try{
+      const search=await searchContext.newPage();instrument(search);
+      await search.goto(origin+"/console/services");
+      await search.locator(".deck-top").waitFor();
+      if(viewport.width<768)await search.getByRole("button",{name:"全局命令面板"}).click();
+      else await search.keyboard.press("Control+k");
+      await search.getByRole("textbox",{name:"搜索命令"}).fill("历史样本 57");
+      const match=search.locator(".search-options button").filter({has:search.locator("mark",{hasText:"历史样本 57"})});
+      const snapshot=search.waitForResponse(r=>r.url().includes("/api/threads/"+id+"/turns?before_turn_index=58&limit=1"));
+      await match.click();
+      assert.equal((await snapshot).status(),200);
+      const target=search.locator("article.search-target");
+      await target.getByRole("heading",{name:"记录 57",exact:true}).waitFor();
+      assert.ok(await target.evaluate(el=>{const rect=el.getBoundingClientRect();return rect.bottom>0&&rect.top<innerHeight;}));
+      assert.ok(await search.locator("article[data-turn]").count()<40);
+    }finally{await searchContext.close();}
+  }
+  console.log("PASS desktop and mobile Chinese full-text search opened the exact historical turn");
+}
+
 export async function performanceJourney(browser,context,origin,db,instrument){
   const c=await browser.newContext({viewport:{width:1440,height:900},storageState:await context.storageState()});
   const page=await c.newPage();instrument(page);
@@ -23,6 +46,7 @@ export async function performanceJourney(browser,context,origin,db,instrument){
       for(let i=1;i<=120;i++){const now=new Date(Date.now()-200000+i*1000).toISOString();
         put.run(randomUUID(),id,workspace,"历史样本 "+i,"### 记录 "+i+"\n\n"+("稳定正文 ".repeat(40)),now,now);}
     })();
+    await searchJourney(browser,context,origin,id,instrument);
     await page.addInitScript(({workspace,id})=>{localStorage.setItem("deck.workspace",workspace);localStorage.setItem("deck.thread",id);},{workspace,id});
     await page.goto(origin);
     await page.getByRole("heading",{name:"记录 120",exact:true}).waitFor();

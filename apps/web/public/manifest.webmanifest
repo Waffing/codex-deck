@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "CodexDeck",
+  "short_name": "CodexDeck",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#151b20",
+  "background_color": "#151b20",
+  "icons": [
+    {"src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "/icons/codexdeck.svg", "sizes": "any", "type": "image/svg+xml"}
+  ]
+}

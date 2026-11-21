@@ -42,7 +42,8 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
       route.compress = {threshold:1024,encodings:["br","gzip"]};
     }
   });
-  registerPublicGate(app,context);
+  const shareAssets=new Set<string>();
+  registerPublicGate(app,context,shareAssets);
   registerTempAccess(app,context);
   registerSecurityRoutes(app,context);
   app.addHook("onRequest",async(req,reply)=>{reply.header("X-Request-Id",req.id);});
@@ -50,7 +51,7 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
   const systemPorts = new Set([22, 80, 443]);
   if (systemPorts.has(context.gatewayConfig.port)) throw new Error("CodexDeck cannot listen on a protected system port.");
 
-  const health = async () => ({ status: "ok", version: process.env.CODEXDECK_VERSION ?? "1.4.0", uptime: Math.floor(process.uptime()) });
+  const health = async () => ({ status: "ok", version: process.env.CODEXDECK_VERSION ?? "1.5.0", uptime: Math.floor(process.uptime()) });
   app.get("/health", health);
   app.get("/api/health", health);
   registerStoredCredentials(context);
@@ -63,8 +64,8 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
   app.register(async providers => registerProviderRoutes(providers,context));
   registerGatewayRoutes(app, context);
   if (options) mountPhase2(app, context, options);
-  if (options?.webRoot) mountWeb(app,options.webRoot,options.workspaceRoot);
-  else if (process.env.NODE_ENV === "production") mountWeb(app,path.join(repositoryRoot,"apps/web/dist"));
+  if (options?.webRoot) mountWeb(app,options.webRoot,options.workspaceRoot,shareAssets);
+  else if (process.env.NODE_ENV === "production") mountWeb(app,path.join(repositoryRoot,"apps/web/dist"),repositoryRoot,shareAssets);
   app.setErrorHandler((error, request, reply) => {
     const status = (error as { statusCode?: number }).statusCode;
     const code = status && status >= 400 && status < 500 ? status : 500;

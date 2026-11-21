@@ -13,8 +13,10 @@ import type { OpsOptions } from "./server-ops/deployer.js";
 import { ThreadEvents, registerEventRoutes } from "./ws/events.js";
 import {registerSettingsRoutes} from "./settings/routes.js";
 import {registerEmergencyRoute} from "./security/emergency.js";
+import { registerSearchRoute } from "./routes/search.js";
 import { registerConsoleRoutes } from "./routes/console.js";
 import { registerUsageRoutes } from "./routes/usage.js";
+import { registerShares } from "./routes/public-shares.js";
 import { registerQualityReviews } from "./routes/quality-review.js";
 
 export type Phase2Options = Omit<ManagerOptions,"port"|"profile"> & Pick<OpsOptions,"portPool"|"proxyConfig"> & {managedWorkspaceDirectory?:string};
@@ -39,9 +41,11 @@ export function mountPhase2(app: FastifyInstance, ctx: ServerContext, options: P
     registerSettingsRoutes(service,ctx,manager,options.dataDirectory);
     registerFileRoutes(service,ctx,files);
     registerConsoleRoutes(service,ctx,files);
+    registerSearchRoute(service,ctx);
     registerUsageRoutes(service,ctx,notifications);
     registerThreadRoutes(service,ctx,manager);
     registerQualityReviews(service,ctx,files,manager);
+    registerShares(service,ctx,files);
     registerNotifications(service,ctx,notifications);
     registerOpenApi(service,ctx,files,manager,events);
     const ops = registerOps(service,ctx,files,events,manager,{...options,notifications});

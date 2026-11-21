@@ -87,6 +87,40 @@ it("rejects traversal, links outside, Git metadata and out-of-root writes, inclu
   ]);
 });
 
+it("serves only authenticated snapshots or bounded workspace documents with an opaque sandbox", async () => {
+  const original = "<!doctype html><h1>Snapshot</h1><script>document.title='Ready'</script>";
+  await writeFile(path.join(root, "sample.html"), original);
+  const item = await files.registerArtifact(workspace, "thread", null, "sample.html", "added");
+  await writeFile(path.join(root, "sample.html"), "<p>Updated</p>");
+  const route = "/api/artifacts/" + item.id + "/content";
+  expect((await app.inject({ url:route })).statusCode).toBe(401);
+  const snapshot = await app.inject({url:route,headers:{cookie,"sec-fetch-dest":"iframe"}});
+  const direct = await app.inject({url:route,headers:{cookie,"sec-fetch-dest":"document"}});
+  expect(direct.headers["content-type"]).toContain("text/plain");
+  expect(direct.headers["x-content-type-options"]).toBe("nosniff");
+  expect(snapshot.statusCode).toBe(200);
+  expect(snapshot.body).toBe(original);
+  expect(snapshot.headers["content-security-policy"]).toContain("sandbox allow-scripts;");
+  expect(snapshot.headers["content-security-policy"]).not.toContain("allow-same-origin");
+  expect(snapshot.headers["content-security-policy"]).toContain("connect-src 'none'");
+  expect(snapshot.headers["cache-control"]).toContain("no-store");
+  expect(snapshot.headers["x-content-type-options"]).toBe("nosniff");
+  expect(snapshot.headers["content-type"]).toContain("text/html");
+  const live = pathBase + "/files/preview?path=";
+  const credential = "sk-" + randomBytes(20).toString("hex");
+  await writeFile(path.join(root, "sample.svg"), `<svg xmlns="http://www.w3.org/2000/svg"><text>${credential}</text></svg>`);
+  const vector = await app.inject({ url:live+"sample.svg", headers:{cookie,"sec-fetch-dest":"iframe"} });
+  expect(vector.statusCode).toBe(200);
+  expect(vector.headers["content-type"]).toContain("image/svg+xml");
+  expect(vector.headers["content-security-policy"]).toBe(snapshot.headers["content-security-policy"]);
+  expect(vector.body).not.toContain(credential);
+  expect(vector.body).toContain("[REDACTED]");
+  expect((await app.inject({url:live+"sample.html",headers:{cookie}})).body).toBe("<p>Updated</p>");
+  expect((await app.inject({url:live+"..%2Fprivate.html",headers:{cookie}})).statusCode).toBe(403);
+  expect((await app.inject({url:live+".env",headers:{cookie}})).statusCode).toBe(415);
+  expect((await app.inject({url:route+"?download=1",headers:{cookie}})).headers["content-disposition"]).toContain("attachment");
+});
+
 it("keeps global instructions isolated and unregisters without erasing project files", async () => {
   for (const scope of ["project","global"]) {
     const url = pathBase+"/agents-md?scope="+scope;
@@ -233,6 +267,33 @@ function extractZip(bytes: Buffer) {
   }
   return result;
 }
+
+it("filters archived deliverables and bundles both snapshots of a same-name file across threads", async () => {
+  native.prepare("INSERT INTO threads(id,workspace_id,title,status,created_at,updated_at) VALUES('second',?,'other','ready','','')").run(workspace);
+  await writeFile(path.join(root,"日报.csv"),"version one");
+  const first=await files.registerArtifact(workspace,"thread",null,"日报.csv","added");
+  await writeFile(path.join(root,"日报.csv"),"version two");
+  const second=await files.registerArtifact(workspace,"second",null,"日报.csv","modified");
+  await writeFile(path.join(root,"main.ts"),"export {}");
+  await files.registerArtifact(workspace,"thread",null,"main.ts","added");
+  const hub="/api/artifacts/hub";
+  expect((await app.inject(hub)).statusCode).toBe(401);
+  const page=(await app.inject({url:hub+"?category=spreadsheet&q="+encodeURIComponent("日报")+"&limit=1",headers:{cookie}})).json();
+  expect(page.total).toBe(2);
+  expect(page.items).toHaveLength(1);
+  expect((await app.inject({url:hub+"?category=code",headers:{cookie}})).json().total).toBe(0);
+  expect((await app.inject({url:hub+"?category=code&mode=all",headers:{cookie}})).json().total).toBe(1);
+  const sign=()=>app.inject({url:hub+"/batch-sign",method:"POST",headers:{cookie},payload:{artifact_ids:[first.id,second.id]}});
+  const signed=await sign();
+  expect(signed.statusCode).toBe(200);
+  const url=signed.json().download_url;
+  const zip=await app.inject(url);
+  expect(zip.statusCode).toBe(200);
+  expect(Object.values(extractZip(zip.rawPayload))).toEqual(["version one","version two"]);
+  native.prepare("UPDATE artifacts SET path='../outside.csv' WHERE id=?").run(second.id);
+  expect((await sign()).statusCode).toBe(403);
+  expect((await app.inject(url)).statusCode).toBe(403);
+});
 
 it("creates an invisible pre-turn checkpoint, tracks changed files, streams a ZIP and restores the worktree without staging", async () => {
   const git = async (...args: string[]) => (await exec("git",["-c","core.autocrlf=false","-c","user.name=Test","-c","user.email=test@localhost",...args],{cwd:root,windowsHide:true})).stdout;

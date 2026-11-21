@@ -1,3 +1,4 @@
+import {PublicShares} from "./PublicShares";
 import {NumberControl,ToggleSwitch,SegmentedControl} from "./Controls";
 import {useEffect,useState} from "react";
 import type {TempAccessLink,Workspace} from "@codexdeck/shared";
@@ -16,6 +17,14 @@ export function Quotas({link}:{link:TempAccessLink}){
   return <div className="guest-quotas">{([["轮次",link.used_turns,link.max_turns],["Token",link.used_tokens,link.max_tokens],[link.currency,link.used_cost,link.max_cost]] as const).map(([label,used,cap])=><span key={label}>{label} {Number(used.toFixed(5))} / {cap??"不限"} {cap!=null&&<progress value={used} max={cap}/>}</span>)}{link.usage_unconfirmed&&<small>上游缺少本次用量，已暂停访问。核对账单后可追加额度恢复。</small>}</div>;
 }
 export function TemporaryAccess({workspaces}:{workspaces:Workspace[]}) {
+  const [tab,setTab]=useState<"guest"|"share">("guest");
+  return <><nav className="settings-tabs" aria-label="访问类型">
+    <button aria-current={tab==="guest"?"page":undefined} onClick={()=>setTab("guest")}>临时访问</button>
+    <button aria-current={tab==="share"?"page":undefined} onClick={()=>setTab("share")}>公开分享</button>
+  </nav>{tab==="guest"?<GuestInvitations workspaces={workspaces}/>:<PublicShares/>}</>;
+}
+
+function GuestInvitations({workspaces}:{workspaces:Workspace[]}) {
   const [links,setLinks]=useState<TempAccessLink[]>([]),[live,setLive]=useState<Live[]>([]),[audit,setAudit]=useState<Audit[]>([]);
   const [invite,setInvite]=useState(""),[editing,setEditing]=useState<TempAccessLink>(),[create,setCreate]=useState(false);
   const a=useAction();

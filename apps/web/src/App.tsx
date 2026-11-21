@@ -25,10 +25,11 @@ import {SettingsCenter} from "./components/settings/SettingsCenter";
 import {GuestWorkbench} from "./components/GuestWorkbench";
 import {SessionInspector} from "./components/layout/SessionInspector";
 import type {ChatTurn} from "./components/chat/Timeline";
-import type {ThreadEvent} from "@codexdeck/shared";
+import type {GlobalSearchHit,ThreadEvent} from "@codexdeck/shared";
 import {MobileOverview} from "./components/layout/MobileOverview";
+import {ArtifactHub} from "./components/files/ArtifactHub";
 import {useTheme,useSnapshot,readView,viewName,type View} from "./components/layout/session";
-const navigation=[{view:"workbench",icon:LayoutDashboard},{view:"services",icon:Box},{view:"providers",icon:Layers3},{view:"open-api",icon:KeyRound},{view:"system",icon:SlidersHorizontal}] as const;
+const navigation=[{view:"workbench",icon:LayoutDashboard},{view:"services",icon:Box},{view:"artifacts",icon:Files},{view:"providers",icon:Layers3},{view:"open-api",icon:KeyRound},{view:"system",icon:SlidersHorizontal}] as const;
 const mobileNav=[{view:"workbench",label:"工作台",icon:Terminal},{view:"approvals",label:"审批",icon:ShieldCheck},{view:"services",label:"服务",icon:Server},{view:"more",label:"更多",icon:Menu}] as const;
 const noEvents:ThreadEvent[]=[];
 
@@ -40,6 +41,7 @@ function AdminApp(){
   const [menu,setMenu]=useState<"commands"|"workspaces"|"account"|"threads"|"threadActions"|null>(null),[collapsed,setCollapsed]=useState(false);
   const [tabs,setTabs]=useState<PanelTab[]>([]),[selected,setSelected]=useState("");
   const [requesting,setRequesting]=useState(false);
+  const [searchTurn,setSearchTurn]=useState<GlobalSearchHit|null>(null);
   const [inspected,setInspected]=useState<ChatTurn>();
   const [infoOpen,setInfoOpen]=useState(()=>localStorage.getItem("deck.inspector")==="open");
   function toggleInfo(){setInfoOpen(!infoOpen);localStorage.setItem("deck.inspector",infoOpen?"closed":"open")}
@@ -90,7 +92,7 @@ function AdminApp(){
   function go(v:View){setView(v);setMenu(null);history.pushState(null,"",v==="workbench"?"/":"/console/"+v);}
   const open=useCallback((t:PanelTab)=>{const key=tabKey(t);setTabs(old=>old.some(entry=>tabKey(entry)===key)?old:[...old,t]);setSelected(key);setMenu(null);},[]);
   function choose(w:Workspace){setWs(w.id);setTh("");localStorage.setItem("deck.workspace",w.id);localStorage.removeItem("deck.thread");setTabs([]);go("workbench");void reload();}
-  function jump(t:Thread){if(t.workspace_id!==workspace?.id)setTabs([]);else if(t.id!==activeThread)setTabs(old=>old.filter(tab=>!("turnId" in tab&&tab.turnId)));setWs(t.workspace_id??"");setTh(t.id);localStorage.setItem("deck.workspace",t.workspace_id??"");localStorage.setItem("deck.thread",t.id);go("workbench");}
+  function jump(t:Thread){setSearchTurn(null);if(t.workspace_id!==workspace?.id)setTabs([]);else if(t.id!==activeThread)setTabs(old=>old.filter(tab=>!("turnId" in tab&&tab.turnId)));setWs(t.workspace_id??"");setTh(t.id);localStorage.setItem("deck.workspace",t.workspace_id??"");localStorage.setItem("deck.thread",t.id);go("workbench");}
   const creating=useRef(new Map<string,Promise<Thread>>());
   function newThread(){
     if(!workspace)return Promise.reject(new Error("请先创建工作区"));
@@ -107,6 +109,20 @@ function AdminApp(){
     const target=thread??await newThread();
     await api("/api/threads/"+target.id+(target.status==="running"?"/inject":"/messages"),json("POST",{prompt}));
     await reload();
+  }
+  function openSearchHit(hit:GlobalSearchHit){
+    if(hit.entity_type==="deployments"){go("services");return;}
+    if(hit.entity_type==="artifacts" && hit.artifact){
+      const artifact=hit.artifact;
+      const source=data.workspaces.find(w=>w.id===artifact.workspace_id);
+      if(!source){setError("来源工作区已不可用");return;}
+      if(workspace?.id!==source.id)choose(source);
+      open({kind:"file",title:artifact.name,path:artifact.path,artifact});
+      return;
+    }
+    const source=data.threads.find(t=>t.id===hit.thread_id);
+    if(!source){setError("来源会话已不可用");return;}
+    jump(source);setSearchTurn(hit);
   }
   function jumpId(id:string){const target=data.threads.find(t=>t.id===id);if(target)jump(target);else setError("来源会话已不可用");}
   async function handoff(){
@@ -134,7 +150,7 @@ function AdminApp(){
     <button className="health-pill" onClick={()=>open({kind:"profile",title:"服务器体检"})} aria-label="打开服务器体检" title={gatewayDetail}><i className={"status-dot "+(pulse?.gateway_healthy?"running":"idle")}/><span>网关{gatewayLabel}</span><i/><Activity size={13}/><span>CPU {pulse?.cpu_percent!=null?Math.round(pulse.cpu_percent)+"%":"—"}</span><span>内存 {pulse?Math.round((1-pulse.free_memory_bytes/pulse.total_memory_bytes)*100)+"%":"—"}</span><span>服务 {pulse?.running_services??"—"}</span></button>
     <div className="head-actions"><button className="command-trigger" onClick={()=>setMenu(menu==="commands"?null:"commands")} aria-label="全局命令面板"><Search size={14}/><span>搜索命令</span><kbd>⌘ K</kbd></button><button className={"deck-icon approvals-indicator "+(count?"has-pending":"")} onClick={jumpApproval} aria-label={"待审批 "+count}><Bell size={16}/>{count>0&&<b>{count}</b>}</button><button className="deck-icon" aria-label="切换主题" onClick={theme.toggle}>{theme.dark?<Sun size={16}/>:<Moon size={16}/>}</button><button className="account-trigger" title="管理员菜单" onClick={()=>setMenu(menu==="account"?null:"account")}>AD</button></div></header>
     {menu&&<button className="menu-dismiss" aria-label="收起菜单" onClick={()=>setMenu(null)}/>}
-    {menu==="commands"&&<CommandBar items={options} close={()=>setMenu(null)}/>}
+    {menu==="commands"&&<CommandBar items={options} onHit={openSearchHit} close={()=>setMenu(null)}/>}
     {menu==="workspaces"&&<WorkspaceMenu workspaces={data.workspaces} selected={workspace?.id??""} choose={choose} onSettings={()=>open({kind:"quality",title:"工作区配置"})}/>}
     {menu==="threadActions"&&<section className="deck-menu thread-action-menu"><button className="menu-line" disabled={requesting||!thread||thread.status==="running"} onClick={()=>act(handoff)}>生成交接单并开新会话</button></section>}
     {menu==="account"&&<section className="deck-menu account-menu"><div className="menu-caption">管理员</div>{accountActions}</section>}
@@ -148,10 +164,10 @@ function AdminApp(){
     {view==="workbench"&&<div className="drawer-actions">{([{kind:"tree",title:"文件树",I:Files},{kind:"diff",title:"Git Diff",I:GitCompareArrows},{kind:"agents",title:"AGENTS.md",I:FileCode2}] as const).map(({kind,title,I})=><button key={kind} title={title} aria-label={title} onClick={()=>open({kind,title})}><I size={14}/><span>{title}</span></button>)}<button className="inspect-toggle" title="会话信息" aria-label="会话信息" aria-expanded={infoOpen} onClick={toggleInfo}><CircleDot size={14}/><span>会话信息</span></button><button title="会话操作" aria-label="会话操作" aria-expanded={menu==="threadActions"} onClick={()=>setMenu(menu==="threadActions"?null:"threadActions")}><Ellipsis size={15}/></button><button className="mobile-thread" aria-label="选择会话" onClick={()=>setMenu("threads")}><MessageSquare size={16}/></button></div>}</div>
     {count>0&&view!=="approvals"&&<button className="pending-jump" onClick={jumpApproval}><ShieldCheck size={14}/>{count} 项操作等待审批 <ArrowRight size={14}/></button>}
     {live.state==="offline"&&<div className="ws-note"><WifiOff size={14}/>连接已断开，正在重连</div>}
-    {view==="workbench"&&<><MobileOverview approvals={data.approvals} threads={data.threads} workspaces={data.workspaces} refresh={reload} jump={jump} open={open} thread={thread}/>{workspace?<ChatPane onHandoff={()=>act(handoff)} onJumpThread={jumpId} onSnapshot={snapshotReady} onInspect={setInspected} preferences={preferences.prefs} key={workspace.id} workspace={workspace} thread={thread} events={live.thread===activeThread?live.events:noEvents} models={data.models} providers={data.providers} approvals={data.approvals.filter(a=>a.thread_id===activeThread)} onCreateThread={newThread} onRefresh={reload} onOpen={open} mobileApprovalId={data.approvals[0]?.id}/>:<div className="deck-empty"><FolderGit2/><h2>创建工作区</h2><Button onClick={()=>setMenu("workspaces")}>选择或新建工作区</Button></div>}</>}
+    {view==="workbench"&&<><MobileOverview approvals={data.approvals} threads={data.threads} workspaces={data.workspaces} refresh={reload} jump={jump} open={open} thread={thread}/>{workspace?<ChatPane searchTurn={searchTurn} onHandoff={()=>act(handoff)} onJumpThread={jumpId} onSnapshot={snapshotReady} onInspect={setInspected} preferences={preferences.prefs} key={workspace.id} workspace={workspace} thread={thread} events={live.thread===activeThread?live.events:noEvents} models={data.models} providers={data.providers} approvals={data.approvals.filter(a=>a.thread_id===activeThread)} onCreateThread={newThread} onRefresh={reload} onOpen={open} mobileApprovalId={data.approvals[0]?.id}/>:<div className="deck-empty"><FolderGit2/><h2>创建工作区</h2><Button onClick={()=>setMenu("workspaces")}>选择或新建工作区</Button></div>}</>}
     {view==="approvals"&&<section className="standalone-page"><h1>待审批 <small>{data.approvals.length}</small></h1>{data.approvals.length?data.approvals.map(a=><ApprovalCard key={a.id} approval={a} workspaceName={data.workspaces.find(w=>w.id===data.threads.find(t=>t.id===a.thread_id)?.workspace_id)?.name??""} onResolved={reload}/>):<div className="deck-empty"><ShieldCheck/><p>当前没有待审批操作</p></div>}</section>}
     {view==="more"&&<section className="standalone-page"><h1>更多</h1>{navigation.slice(2).map(n=><button className="menu-line" key={n.view} onClick={()=>go(n.view)}><n.icon size={18}/>{viewName[n.view]}<ArrowRight size={14}/></button>)}<hr/>{accountActions}</section>}
-    {view!=="workbench"&&view!=="approvals"&&view!=="more"&&<div className="admin-scroll">{view==="system"?<SettingsCenter {...preferences} workspaces={data.workspaces}/>:<AdminPages view={view} onChanged={reload} onDrawer={t=>open({kind:t.type,title:t.title,port:t.port,deploymentId:t.deploymentId})}/>}</div>}
+    {view!=="workbench"&&view!=="approvals"&&view!=="more"&&<div className="admin-scroll">{view==="artifacts"?<ArtifactHub workspaces={data.workspaces} open={open} jump={jumpId}/>:view==="system"?<SettingsCenter {...preferences} workspaces={data.workspaces}/>:<AdminPages view={view} onChanged={reload} onDrawer={t=>open({kind:t.type,title:t.title,port:t.port,deploymentId:t.deploymentId})}/>}</div>}
     </main>{view==="workbench"&&infoOpen&&!tabs.length&&<SessionInspector turn={inspected} close={toggleInfo} open={open}/>}<Panel workspace={workspace} thread={thread} models={data.models} onRefresh={reload} profile={data.profile} tabs={tabs} selected={selected} select={setSelected} open={open} close={key=>setTabs(old=>key?old.filter(t=>tabKey(t)!==key):[])}/></div>
     <nav className="deck-bottom">{mobileNav.map(n=><button key={n.view} aria-current={(view===n.view||(n.view==="more"&&["providers","system","open-api"].includes(view)))?"page":undefined} onClick={()=>go(n.view)}><n.icon size={19}/>{n.label}{n.view==="approvals"&&count>0&&<i/>}</button>)}</nav>{preferences.saved&&<div className="workshop-toast" role="status">已保存</div>}{toast}</div></AppearanceContext.Provider>;
 }

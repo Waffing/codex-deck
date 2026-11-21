@@ -1,0 +1,9 @@
+.search-options h3 {margin:.8rem .65rem .3rem;font-size:.72rem;font-weight:600;color:var(--muted);}
+.search-options .search-label {display:grid;gap:.18rem;min-width:0;flex:1;text-align:start;}
+.search-label > span,.search-label > small {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.search-label mark {background:color-mix(in srgb,currentColor 14%,transparent);color:inherit;font-weight:650;}
+@media(max-width:767px){
+  .deck .deck-top .command-trigger {display:inline-flex;justify-content:center;align-items:center;width:32px;height:32px;padding:0;}
+  .deck-top .command-trigger span,.deck-top .command-trigger kbd {display:none;}
+}
+.cd-turn.search-target {outline:2px solid var(--ring,currentColor);outline-offset:-3px;border-radius:10px;}

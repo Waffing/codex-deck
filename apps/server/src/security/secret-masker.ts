@@ -18,7 +18,7 @@ function protocolField(key:string,value:unknown) {
 }
 
 class LiteralSecrets {
-  private readonly knownSecrets = new Set<string>();
+  protected readonly knownSecrets = new Set<string>();
   private sortedSecrets?:string[];
 
   register(secret: string | null | undefined): void {
@@ -60,6 +60,18 @@ class LiteralSecrets {
 
 export class SecretMasker extends LiteralSecrets {
   readonly workspace = new LiteralSecrets();
+  private onNewLiteral?: (value: string) => void;
+
+  observeLiterals(observer?: (value: string) => void) {
+    this.onNewLiteral = observer;
+    if (observer) for (const value of this.knownSecrets) observer(value);
+  }
+
+  override register(value: string | null | undefined) {
+    if (!value || this.has(value)) return;
+    super.register(value);
+    this.onNewLiteral?.(value);
+  }
 
   maskString(value: string, protocol=false): string {
     let result=this.maskLiterals(value,protocol ? this.workspace : undefined);

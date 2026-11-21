@@ -173,11 +173,13 @@ export class WorkspaceFiles {
   async registerArtifact(workspaceId: string, threadId: string | null, turnId: string | null, relativePath: string, changeType: ChangeType): Promise<Artifact> {
     const root = await this.getRoot(workspaceId);
     const target = await resolveSafeWorkspacePath(root, relativePath);
-    const handle = await openWorkspaceFile(root, relativePath);
-    const directory = await ensureDirectory(this.dataDirectory, "artifact-blobs");
+    const dataRoot=await realpath(this.dataDirectory);
+    const directory = await ensureDirectory(dataRoot, "artifact-blobs");
+    if(directory!==path.join(dataRoot,"artifact-blobs"))throw fileError(403,"Invalid snapshot directory.");
     const temporary = await resolveSafeWorkspacePath(directory, "capture-" + randomUUID());
     const hash = createHash("sha256");
     let sizeBytes = 0;
+    const handle = await openWorkspaceFile(root, relativePath);
     try {
       const output = await open(temporary, "wx", 0o600);
       try {
@@ -190,7 +192,11 @@ export class WorkspaceFiles {
       throw error;
     } finally { await handle.close(); }
     const digest = hash.digest("hex");
-    try { await rename(temporary, await resolveSafeWorkspacePath(directory,digest)); }
+    try {
+      const destination=await resolveSafeWorkspacePath(directory,digest);
+      if(destination!==path.join(directory,digest))throw fileError(403,"Invalid snapshot path.");
+      await rename(temporary,destination);
+    }
     finally { await unlink(temporary).catch(e=>{if (!missing(e)) throw e;}); }
     if (threadId && !this.context.native.prepare("SELECT 1 FROM threads WHERE id=? AND workspace_id=?").get(threadId, workspaceId)) {
       throw fileError(403, "Thread does not belong to this workspace.");
@@ -210,17 +216,26 @@ export class WorkspaceFiles {
       for (const row of read.all(turnId) as {id:string;content_sha256:string}[]) {
         if (!/^[0-9a-f]{64}$/.test(row.content_sha256)) continue;
         try {
-          const file=await openWorkspaceFile(this.dataDirectory,"artifact-blobs/"+row.content_sha256);
+          const file=await this.openSnapshot(row.content_sha256);
           try {store.run((await file.stat()).size,row.id);} finally {await file.close();}
-        } catch(error) {if(!missing(error) && (error as {statusCode?:number}).statusCode!==404) throw error;}
+        } catch(error) {if((error as {statusCode?:number}).statusCode!==410) throw error;}
       }
     }
   }
 
   async openArtifact(id:string) {
     const digest = this.context.native.prepare("SELECT content_sha256 FROM artifacts WHERE id=?").pluck().get(id);
-    if (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)) throw fileError(410,"No archived version of this artifact is available.");
-    return openWorkspaceFile(this.dataDirectory,"artifact-blobs/" + digest);
+    return this.openSnapshot(digest);
+  }
+
+  async openSnapshot(digest:unknown) {
+    const gone=()=>fileError(410,"No archived version of this artifact is available.");
+    if(typeof digest!=="string" || !/^[0-9a-f]{64}$/.test(digest)) throw gone();
+    const root=await realpath(this.dataDirectory);
+    const relative="artifact-blobs/"+digest;
+    if(await resolveSafeWorkspacePath(root,relative)!==path.join(root,relative)) throw fileError(403,"Invalid snapshot path.");
+    try {return await openWorkspaceFile(path.join(root,"artifact-blobs"),digest);}
+    catch(error){if(missing(error)||(error as {statusCode?:number}).statusCode===404)throw gone();throw error;}
   }
 
   async beforeTurn(workspaceId: string, threadId: string, turnId: string): Promise<FileSnapshot> {

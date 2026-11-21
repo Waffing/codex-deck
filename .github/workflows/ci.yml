@@ -53,6 +53,9 @@ jobs:
           CODEXDECK_PUBLIC_PORT=26320 docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml -f deploy/docker-compose.public.yml config --quiet
       - name: Verify non-root native build and upgrade recovery
         run: sudo bash deploy/tests/installer.sh
+      - name: Capture the V1.5 README gallery from synthetic documents
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: node apps/web/tests/readme-gallery.mjs
       - name: Collect README screenshots
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         working-directory: apps/web/test-results
@@ -63,6 +66,7 @@ jobs:
           cp 04-approval-mobile.png   "$RUNNER_TEMP/gallery/mobile.png"
           cp 14-review-1440.png       "$RUNNER_TEMP/gallery/review.png"
           cp 14-vault-1440.png        "$RUNNER_TEMP/gallery/vault.png"
+          cp artifact-hub.png document-viewer.png global-search.png public-share.png "$RUNNER_TEMP/gallery/"
       - name: Upload README screenshots
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -106,3 +110,20 @@ jobs:
           if [[ "$CODEXDECK_REQUIRE_BROWSER" == 0 ]]; then
             docker exec -i --workdir /app/apps/server/dist --user 1000:1000 --env TMPDIR=/workspaces --env CODEXDECK_VERIFY_SMOKE=docker "$CODEXDECK_SMOKE_CONTAINER" node --input-type=module - < apps/server/tests/verify-sandbox.mjs
           fi
+      - name: Export tested Linux runtime for low-memory hosts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.playwright == false
+        run: |
+          container=$(docker create codexdeck:ci)
+          trap 'docker rm "$container" >/dev/null' EXIT
+          mkdir "$RUNNER_TEMP/runtime"
+          docker cp "$container:/app/." "$RUNNER_TEMP/runtime/"
+          tar -czf "$RUNNER_TEMP/runtime-linux-amd64.tar.gz" -C "$RUNNER_TEMP/runtime" .
+      - name: Upload tested runtime
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.playwright == false
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-linux-amd64
+          path: ${{ runner.temp }}/runtime-linux-amd64.tar.gz
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
