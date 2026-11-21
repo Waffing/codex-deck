@@ -37,7 +37,9 @@ export async function performanceJourney(browser,context,origin,db,instrument){
   const c=await browser.newContext({viewport:{width:1440,height:900},storageState:await context.storageState()});
   const page=await c.newPage();instrument(page);
   try{
-    const workspace=db.prepare("SELECT id FROM workspaces LIMIT 1").pluck().get();
+    const project=await c.request.post(origin+"/api/workspaces",{data:{name:"history-performance",automation_level:"semi"}});
+    assert.equal(project.status(),201);
+    const workspace=(await project.json()).id;
     const thread=await c.request.post(origin+"/api/threads",{data:{workspace_id:workspace,title:"分页验收"}});
     assert.equal(thread.status(),201);
     const id=(await thread.json()).id;
