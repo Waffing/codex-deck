@@ -149,6 +149,26 @@ test("aggregates UTC periods, excludes unknown cache denominators, exports safe 
   expect((await get("/api/usage/analytics?period=fortnight")).statusCode).toBe(400);
 });
 
+test("saves full access only when this host can run the isolated executor",async()=>{
+  const ready=(await get("/api/settings/executor")).json().available;
+  const workspace=(await post("/api/workspaces",{name:"executor-selection",automation_level:"semi"})).json();
+  const patch=await app.inject({method:"PATCH",url:"/api/workspaces/"+workspace.id,headers:{cookie},payload:{automation_level:"unrestricted"}});
+  expect(patch.statusCode).toBe(ready ? 200 : 409);
+  expect(db.native.prepare("SELECT automation_level FROM workspaces WHERE id=?").pluck().get(workspace.id)).toBe(ready ? "unrestricted" : "semi");
+  if(!ready){
+    const original=(await get("/api/settings/preferences")).json().automationLevel;
+    const defaults=await app.inject({method:"PATCH",url:"/api/settings/preferences",headers:{cookie},payload:{automationLevel:"unrestricted"}});
+    expect(defaults.statusCode).toBe(409);
+    expect((await get("/api/settings/preferences")).json().automationLevel).toBe(original);
+    for (const [route,extra] of [["/api/workspaces",{}],["/api/workspaces/clone",{url:"https://example.test/demo.git"}]] as const) {
+      const result=await post(route,{name:"full-access-disabled",automation_level:"unrestricted",...extra});
+      expect(result.statusCode).toBe(409);
+    }
+    expect(db.native.prepare("SELECT count(*) FROM workspaces WHERE name='full-access-disabled'").pluck().get()).toBe(0);
+  }
+  await app.inject({method:"DELETE",url:"/api/workspaces/"+workspace.id,headers:{cookie}});
+});
+
 test("shares workbench defaults with new workspaces and exports a consistent restricted SQLite snapshot",async()=>{
   expect((await app.inject("/api/settings/backup")).statusCode).toBe(401);
   const update=await app.inject({method:"PATCH",url:"/api/settings/preferences",headers:{cookie},payload:{automationLevel:"semi",approvalTimeoutSeconds:90,minimap:false}});

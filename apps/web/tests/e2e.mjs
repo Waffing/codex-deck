@@ -231,7 +231,7 @@ try {
       await hubPwaJourney(input);
       await viewerJourney(input);
       step="旗舰工作台与 API 指挥中心 "+viewport.width;
-      await flagshipJourney(page,origin,shot);
+      await flagshipJourney(page,origin,shot,db.native);
     } finally {await checks.close();}
   }
   step="V1.3 缓存、上滑分页、输入帧与乐观发送";

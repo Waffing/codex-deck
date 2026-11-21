@@ -11,8 +11,9 @@ import type {ChatProps} from "./ChatPane";
 import {useCompletions, type Choice} from "./completions";
 
 export type ComposerHandle={edit:(prompt:string)=>void};
+type ExecutorStatus={available:boolean;detail:string};
 type Props=Pick<ChatProps,"workspace"|"thread"|"models"|"providers"|"onCreateThread"|"onRefresh"|"onHandoff"|"onOpen"|"onCommandPage"|"onSelectThread"> & {
-  latest?:ChatTurn;hasTurns:boolean;running:boolean;preferences:ChatPreferences;onSend:(prompt:string,images:string[],mode?:"plan"|"execute")=>void;
+  latest?:ChatTurn;hasTurns:boolean;running:boolean;preferences:ChatPreferences;onSend:(prompt:string,images:string[],mode?:"plan"|"execute",keepDraft?:boolean)=>Promise<string|undefined>;
   refresh:()=>void;handle:RefObject<ComposerHandle|null>};
 export function Composer({workspace,thread,models,providers,onCreateThread,onRefresh,latest,hasTurns,running,preferences,onSend,refresh,handle,onHandoff,onCommandPage,onOpen,onSelectThread}:Props){
   const [mode,setMode]=useState<"plan"|"execute">(thread?.execution_mode??"execute");
@@ -25,6 +26,16 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
   }
   const [draft,setDraft]=useState(""),[paths,setPaths]=useState<string[]>([]),[images,setImages]=useState<Record<string,string>>({});
   const [working,setWorking]=useState(false),[uploading,setUploading]=useState(false),[drag,setDrag]=useState(false),[error,setError]=useState("");
+  const fullAccess=workspace.automation_level==="unrestricted";
+  const [executor,setExecutor]=useState<ExecutorStatus|null>(null);
+  const executorBlocked=fullAccess ? !executor?.available : executor?.available===false;
+  useEffect(()=>{
+    if(!fullAccess){setExecutor(null);return;}
+    let active=true;
+    api<ExecutorStatus>("/api/settings/executor").then(status=>{if(active)setExecutor(status);})
+      .catch(e=>{if(active)setExecutor({available:false,detail:(e as Error).message});});
+    return ()=>{active=false;};
+  },[fullAccess]);
   const warmed=useRef(false),upload=useRef<HTMLInputElement>(null);
   const input=useRef<HTMLTextAreaElement>(null);
   const contextControl=useRef<HTMLDivElement>(null);
@@ -79,7 +90,7 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
       if (upload.current) upload.current.value = "";
     }
   }
-  function send(message?:string){
+  async function send(message?:string){
     if((message??draft).trim()==="/compact"){void compactThread();return;}
     const imageIds=paths.filter(p=>images[p]).map(p=>images[p]!);
     const prompt=[message??draft,...paths.filter(p=>!images[p]).map(p=>"@"+p)].filter(x=>x.trim()).join("\n");
@@ -90,7 +101,15 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
         setDraft("");setPaths([]);setImages({});onRefresh();
       }).catch(e=>setError((e as Error).message)).finally(()=>setWorking(false));return;
     }
-    onSend(prompt,imageIds,mode);setDraft("");setPaths([]);setImages({});setCaret(0);complete.close();
+    if(executorBlocked)return;
+    if(fullAccess){
+      setWorking(true);
+      try{
+        const reason=await onSend(prompt,imageIds,mode,true);
+        if(reason){setExecutor({available:false,detail:reason});return;}
+      }finally{setWorking(false);}
+    }else void onSend(prompt,imageIds,mode);
+    setDraft("");setPaths([]);setImages({});setCaret(0);complete.close();
   }
   async function compactThread(){
     if(working)return;
@@ -142,8 +161,19 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
   }
   async function changePolicy(value:Workspace["automation_level"]){
     setWorking(true);setError("");
-    try{await api(`/api/workspaces/${workspace.id}`,json("PATCH",{automation_level:value}));onRefresh();}
-    catch(e){setError((e as Error).message);}finally{setWorking(false);}
+    try{
+      if(value==="unrestricted"){
+        const status=await api<ExecutorStatus>("/api/settings/executor/detect",json("POST",{}));
+        setExecutor(status);
+        if(!status.available)return;
+      }else setExecutor(null);
+      if(value!==workspace.automation_level)await api(`/api/workspaces/${workspace.id}`,json("PATCH",{automation_level:value}));
+      onRefresh();
+    }
+    catch(e){
+      if(value==="unrestricted")setExecutor({available:false,detail:(e as Error).message});
+      else setError((e as Error).message);
+    }finally{setWorking(false);}
   }
   async function interrupt() {
     if (!thread) return;
@@ -204,9 +234,9 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
           {complete.open && <div className="cd-suggestions" id="composer-options" role="listbox" aria-label={complete.kind==="@"?"工作区文件":"快捷命令"}>
             {complete.options.length?complete.options.map((v,i)=><button className={"cd-command-row"+(v.custom && !complete.options[i-1]?.custom?" cd-command-divider":"")} data-danger={v.value==="/delete" || undefined} id={`completion-${i}`} role="option" type="button" aria-label={v.command??v.label} title={v.description} aria-selected={i===complete.index} key={v.label+i} onMouseDown={e=>e.preventDefault()} onClick={()=>choose(v)}><v.Icon size={16}/><b>{v.label}</b>{v.description&&<span>{v.description}</span>}{v.value==="/compact"?<small>{percent==null?"占用未知":"已使用 "+percent+"%"}</small>:v.badge&&<small>{v.badge}</small>}</button>):<p>{complete.hint}</p>}
           </div>}
-          <textarea ref={input}
+          <textarea ref={input} readOnly={fullAccess && working}
             aria-label="任务指令"
-            onFocus={()=>{if(thread && !warmed.current){warmed.current=true;void api("/api/threads/"+thread.id+"/warmup",{method:"POST"}).catch(()=>{warmed.current=false;});}}}
+            onFocus={()=>{if(thread && !executorBlocked && !warmed.current){warmed.current=true;void api("/api/threads/"+thread.id+"/warmup",{method:"POST"}).catch(()=>{warmed.current=false;});}}}
             placeholder={running ? "补充指令，调整本轮执行方向…" : "输入任务指令，或拖入文件…"}
             value={draft}
             aria-controls={complete.open?"composer-options":undefined}
@@ -281,7 +311,7 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
                 className="cd-send"
                 type="submit"
                 aria-label={running ? "中途插话" : "发送消息"}
-                disabled={working || uploading || (!draft.trim() && !paths.length)}
+                disabled={working || uploading || (!running && executorBlocked) || (!draft.trim() && !paths.length)}
               >
                 {running && <span>插话</span>}
                 <ArrowUp size={17} />
@@ -289,6 +319,12 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
             </div>
           </div>
         </form>
+        {fullAccess && !executor && <div className="cd-context-notice" role="status">正在检测完全访问执行环境…</div>}
+        {executor?.available===false && <div className="cd-compose-error" role="alert">
+          <div><strong>完全访问暂不可用</strong><div>{executor.detail}</div>请查看「设置 → 执行环境」并重新检测，或选择其他权限。</div>
+          <button type="button" disabled={working} onClick={()=>void changePolicy("unrestricted")}>重新检测</button>
+          {!fullAccess&&<button type="button" onClick={()=>setExecutor(null)}>保留当前权限</button>}
+        </div>}
         {notice && <div className="cd-context-notice" role="status">{notice}<button aria-label="关闭压缩提示" onClick={()=>setNotice("")}><X size={13}/></button></div>}
         {error && (
           <div role="alert" className="cd-compose-error">

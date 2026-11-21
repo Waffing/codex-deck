@@ -8,7 +8,14 @@ const mounts=[{Type:"bind",Destination:"/workspaces",Source:"/srv/projects"}];
 it("resolves the running control image by digest and checks its executor label",async()=>{
   const cli=vi.fn(async(_file:string,args:string[])=>{
     if(args[0]==="inspect")return digest+" "+JSON.stringify(mounts);
-    if(args[1]==="ls" || args[0]==="run")return "";
+    if(args[1]==="ls")return "";
+    if(args[0]==="run"){
+      expect(args).toEqual(expect.arrayContaining(["--read-only","--cap-drop","ALL","--network","none","--entrypoint","node",digest]));
+      expect(args.at(-1)).toContain('execFileSync("codex"');
+      expect(args.at(-1)).toContain('execFileSync("git"');
+      expect(args.at(-1)).toContain("runner-entry.js");
+      return "";
+    }
     expect(args.at(-1)).toBe(digest);
     return digest+" 1";
   });
@@ -35,7 +42,22 @@ it("native mode needs no Docker and an unavailable container proxy falls back on
   expect((await resolveExecutor({...base,inContainer:false,native:true,configured:"irrelevant"},cli)).strategy).toBe("native");
   expect(cli.mock.calls.some(([file])=>file==="docker")).toBe(false);
   expect((await resolveExecutor(base,cli)).strategy).toBe("container_sandbox");
-  await expect(resolveExecutor(base,async()=>{throw new Error("denied");})).rejects.toThrow("bubblewrap");
+  await expect(resolveExecutor(base,async()=>{throw new Error("denied");})).rejects.toThrow("执行器未就绪");
+});
+
+it("runs the native capability check via the service-specific namespace launcher",async()=>{
+  vi.stubEnv("CODEXDECK_BWRAP_PATH","/opt/deck/bin/bwrap");
+  try {
+    const cli=vi.fn(async(file:string,args:string[])=>{
+      expect(file).toBe("/opt/deck/bin/bwrap");
+      expect(args).toContain("--unshare-all");
+      expect(args.at(-1)).toContain("tracking-entry.js");
+      expect(args.at(-1)).toContain('execFileSync("codex"');
+      return "";
+    });
+    expect((await resolveExecutor({...base,inContainer:false,native:true},cli)).strategy).toBe("native");
+    expect(cli).toHaveBeenCalledOnce();
+  } finally {vi.unstubAllEnvs();}
 });
 
 it("stores the administrator override in SQLite and permits returning to discovery",()=>{

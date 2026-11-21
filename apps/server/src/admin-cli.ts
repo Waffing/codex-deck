@@ -21,12 +21,15 @@ async function inputText() {
 export async function runAdmin(args:string[]) {
   const offline=args[0]==="--offline";
   if (offline) args=args.slice(1);
-  const [action,id]=args;
+  const [requested,id]=args;
+  const requireExecutor=requested==="require-executor";
+  const action=requireExecutor?"executor":requested;
   if (!action || action==="--help") {
-    console.log("codex-deck admin [--offline] security|security-set|security-reset|preferences|preferences-set|preferences-reset|defaults-reset|channels|channel-create|channel-update ID|channel-delete ID|reset-password|unban [IP]|two-factor-off|temp-create URL|temp-list|temp-revoke ID|temp-extend ID|tasks|kill THREAD. Supply passwords or JSON on stdin.");
+    console.log("codex-deck admin [--offline] security|security-set|security-reset|preferences|preferences-set|preferences-reset|defaults-reset|executor|require-executor|channels|channel-create|channel-update ID|channel-delete ID|reset-password|unban [IP]|two-factor-off|temp-create URL|temp-list|temp-revoke ID|temp-extend ID|tasks|kill THREAD. Supply passwords or JSON on stdin.");
     return;
   }
   if (args.length>2) throw new Error("Unexpected argument.");
+  if (requireExecutor && offline) throw new Error("Executor readiness requires a running server.");
   const data=await realpath(process.env.CODEXDECK_DATA_DIR || ".codexdeck");
   await access(await workspaceFile(data,path.join(data,"codexdeck.sqlite")));
   if (!process.env.CODEXDECK_MASTER_KEY) await access(await workspaceFile(data,path.join(data,"master.key")));
@@ -62,12 +65,15 @@ export async function runAdmin(args:string[]) {
     const headers:Record<string,string>={"x-codexdeck-admin":signAdminRequest(masterKey,method,route,body)};
     if (body) headers["content-type"]="application/json";
     const response=await fetch("http://127.0.0.1:"+gatewayConfig.port+route,{
-      method,headers,body:body?JSON.stringify(body):undefined,redirect:"error",signal:AbortSignal.timeout(15000),
+      method,headers,body:body?JSON.stringify(body):undefined,redirect:"error",signal:AbortSignal.timeout(action==="executor"?60000:15000),
     });
     if (!response.ok) throw new Error("Management request returned HTTP "+response.status+".");
     result=await response.json();
   }
   console.log(JSON.stringify(result,null,2));
+  if (requireExecutor && (!result || typeof result!=="object" || !("available" in result) || result.available!==true)) {
+    throw new Error("Full access executor readiness check failed.");
+  }
 }
 
 if (process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) {

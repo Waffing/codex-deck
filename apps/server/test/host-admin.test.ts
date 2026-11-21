@@ -47,6 +47,21 @@ it("binds the host credential to body, direct loopback peer, method and a single
   expect(reflected.json().minimap).toBe(true);
 });
 
+it("checks executor readiness on the live service before accepting an install",async()=>{
+  vi.stubEnv("CODEXDECK_MASTER_KEY",ctx.masterKey.toString("hex"));
+  vi.stubEnv("CODEXDECK_DATA_DIR",data);
+  const address=await app.listen({port:0,host:"127.0.0.1"});
+  vi.stubEnv("CODEXDECK_PORT",new URL(address).port);
+  const output=vi.spyOn(console,"log").mockImplementation(()=>{});
+  await expect(runAdmin(["--offline","require-executor"])).rejects.toThrow("running server");
+  await runAdmin(["executor"]);
+  const status=JSON.parse(output.mock.calls.at(-1)![0]);
+  expect(typeof status.available).toBe("boolean");
+  const check=runAdmin(["require-executor"]);
+  if(status.available) await expect(check).resolves.toBeUndefined();
+  else await expect(check).rejects.toThrow("readiness check failed");
+});
+
 it("dispatches real HTTPS to the public security policy even from localhost",async()=>{
   const gitOpenSSL=path.join(process.env.ProgramFiles??"", "Git","usr","bin","openssl.exe");
   const ssl=process.platform==="win32" && existsSync(gitOpenSSL)?gitOpenSSL:"openssl";

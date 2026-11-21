@@ -4,6 +4,7 @@ import type { ServerContext } from "../app.js";
 import { scopedAccess,scopedGuest } from "../temp-access/routes.js";
 import type { ThreadManager } from "../codex/manager.js";
 import {createRequireAdmin} from "../auth.js";
+import {requireExecutor} from "../codex/execution-environment.js";
 import {z} from "zod";
 
 type ById = { Params: { id: string } };
@@ -23,7 +24,15 @@ export function registerThreadRoutes(app: FastifyInstance, context: ServerContex
   app.post<ById>("/api/threads/:id/messages",auth,async (request,reply) => {
     const parsed = threadMessageSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({error:"Invalid message."});
-    return reply.code(202).send(manager.submit(request.params.id,parsed.data.prompt,undefined,parsed.data.image_ids,scopedGuest(request)?.link.id,parsed.data.client_msg_id,{mode:parsed.data.mode}));
+    const guest=scopedGuest(request);
+    const id=request.params.id;
+    if(!guest && context.native.prepare(`SELECT 1 FROM workspaces w JOIN threads t ON t.workspace_id=w.id
+      WHERE t.id=? AND w.automation_level='unrestricted'
+      AND NOT EXISTS (SELECT 1 FROM thread_turns WHERE thread_id=t.id AND client_msg_id=?)`)
+      .get(id,parsed.data.client_msg_id??null)) {
+      await requireExecutor(context.native);
+    }
+    return reply.code(202).send(manager.submit(id,parsed.data.prompt,undefined,parsed.data.image_ids,guest?.link.id,parsed.data.client_msg_id,{mode:parsed.data.mode}));
   });
   app.post<ById>("/api/threads/:id/warmup",auth,async(request,reply)=>{
     await manager.warmup(request.params.id);

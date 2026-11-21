@@ -10,7 +10,7 @@ import { adminAuthorized } from "../security/emergency.js";
 import { workspaceDirectory, workspaceFile } from "../security/paths.js";
 import {clientIp} from "../security/ingress.js";
 import {resetPanelDefaults} from "./defaults.js";
-import {executionStatus,saveExecutorImage} from "../codex/execution-environment.js";
+import {executionStatus,requireExecutor,saveExecutorImage} from "../codex/execution-environment.js";
 import { readPreferences, patchPreferences } from "./preferences.js";
 
 export function registerSettingsRoutes(app:FastifyInstance, ctx:ServerContext, manager:ThreadManager, dataDirectory:string) {
@@ -27,7 +27,9 @@ export function registerSettingsRoutes(app:FastifyInstance, ctx:ServerContext, m
     if (!body || typeof body !== "object" || Array.isArray(body) ||
       !workbenchPreferencesSchema.safeParse({...readPreferences(ctx.native),...body}).success)
       return reply.code(400).send({error:"Invalid preferences."});
-    return patchPreferences(ctx.native,body as Partial<WorkbenchPreferences>);
+    const patch=body as Partial<WorkbenchPreferences>;
+    if(patch.automationLevel==="unrestricted")await requireExecutor(ctx.native);
+    return patchPreferences(ctx.native,patch);
   });
   app.post("/api/settings/preferences/reset",admin,async()=>patchPreferences(ctx.native,workbenchPreferencesSchema.parse({})));
 

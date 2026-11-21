@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {composerJourney} from "./composer-journey.mjs";
 import {gatewayJourney} from "./gateway-center.mjs";
 
-export async function flagshipJourney(page,origin,shot){
+export async function flagshipJourney(page,origin,shot,db){
   const mobile=page.viewportSize().width<768;
   async function nav(label){
     if(mobile){await page.locator(".deck-bottom").getByRole("button",{name:"更多",exact:true}).click();await page.locator(".standalone-page").getByRole("button",{name:label,exact:true}).click();}
@@ -69,7 +69,7 @@ export async function flagshipJourney(page,origin,shot){
     await page.getByLabel("任务指令").click();
     await nav.waitFor({state:"hidden"});
   }
-  await composerJourney(page);
+  await composerJourney(page,db);
   for(const [skin,label] of [["white","极简纯白"],["paper","暖纸阅读"],["obsidian","曜石琥珀"],["pine","午夜松林"]]){
     await nav("设置");await page.getByRole("button",{name:label,exact:true}).click();
     await page.waitForFunction(s=>document.documentElement.dataset.skin===s,skin);

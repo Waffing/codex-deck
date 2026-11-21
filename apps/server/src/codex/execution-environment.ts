@@ -11,6 +11,21 @@ export type Mount = { Type: string; Source: string; Destination: string };
 type Runtime = { strategy:"docker"; id:string; image:string; mounts?:Mount[] } |
   { strategy:"native"|"container_sandbox"; id:null; image:null; mounts?:undefined };
 const imageReference = /^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$/;
+export function bubblewrapPath() {
+  const file=process.env.CODEXDECK_BWRAP_PATH || "/usr/bin/bwrap";
+  if(!path.posix.isAbsolute(file)) throw new Error("CODEXDECK_BWRAP_PATH 需要使用绝对路径。");
+  return file;
+}
+
+// Exercise the programs the first turn needs without mounting a project or issuing a model request.
+const checkRuntime = [
+  'const fs=require("node:fs"),{execFileSync}=require("node:child_process")',
+  'if(process.getuid()===0)process.exit(1)',
+  'fs.accessSync("/app/apps/server/dist/codex/runner-entry.js")',
+  'fs.accessSync("/app/apps/server/dist/files/tracking-entry.js")',
+  'execFileSync("git",["--version"])',
+  'execFileSync("codex",["--version"])',
+].join(";");
 
 export function savedExecutorImage(db?:Database.Database) {
   return db?.prepare("SELECT value FROM settings WHERE key='executor.image'").pluck().get() as string|undefined;
@@ -58,7 +73,8 @@ export async function resolveExecutor(options:{
           // Image inspection can succeed on a read-only proxy that denies container creation.
           try {
             await run("docker",["run","--rm","--pull","never","--network","none","--read-only","--cap-drop","ALL","--security-opt","no-new-privileges",
-              "--pids-limit","8","--memory","32m","--user","65534:65534","--entrypoint","/bin/true",id],{timeout:10000});
+              "--pids-limit","64","--memory","128m","--no-healthcheck","--tmpfs","/tmp:size=8m,mode=1777","--env","HOME=/tmp",
+              "--user",(process.getuid?.()??65534)+":"+(process.getgid?.()??65534),"--entrypoint","node",id,"-e",checkRuntime],{timeout:10000});
             return {strategy:"docker",id,image,mounts};
           } catch { break; }
         }
@@ -67,9 +83,11 @@ export async function resolveExecutor(options:{
     }
   }
   try {
-    await run("/usr/bin/bwrap",[...namespaceBase(),"--","/bin/true"]);
+    await run(bubblewrapPath(),[...await namespaceArgs(),"--","/run/deck-bin/node","-e",checkRuntime],{timeout:10000});
   } catch {
-    throw new Error("隔离执行环境不可用。请启用非 root bubblewrap 用户命名空间，或恢复专用 Docker 执行器。");
+    throw new Error(options.inContainer
+      ? "项目执行器未就绪。请检查 CodexDeck 专用执行镜像、代理连接及隔离环境内的 Codex CLI，然后重新检测。"
+      : "项目执行器未就绪。请检查服务账户的 bubblewrap 用户命名空间、Git 和 CODEX_BIN 配置，然后重新检测。");
   }
   return {strategy:options.inContainer?"container_sandbox":"native",image:null,id:null};
 }
@@ -81,7 +99,7 @@ export function executorRuntime(db?:Database.Database, refresh=false) {
     inContainer:!native && (process.env.CODEXDECK_INSTALL_MODE==="docker" || !!process.env.CODEXDECK_DEPLOYMENT_NETWORK || existsSync("/.dockerenv") || existsSync("/run/.containerenv")),
     configured:savedExecutorImage(db) || process.env.CODEXDECK_EXEC_IMAGE || process.env.CODEXDECK_EXECUTOR_IMAGE,
     controlImage:process.env.CODEXDECK_IMAGE,dockerHost:process.env.DOCKER_HOST};
-  const key=JSON.stringify(options);
+  const key=JSON.stringify([options,process.env.CODEXDECK_BWRAP_PATH,process.env.CODEX_BIN]);
   if(!refresh && lastProbe?.key===key && lastProbe.expires>Date.now()) return lastProbe.runtime;
   const runtime=resolveExecutor(options);
   lastProbe={key,expires:Date.now()+30_000,runtime};
@@ -97,6 +115,11 @@ export async function executionStatus(db:Database.Database,refresh=false) {
   } catch(e) {
     return {configured_image,available:false,strategy:"unavailable",image:null,image_id:null,detail:(e as Error).message};
   }
+}
+
+export async function requireExecutor(db:Database.Database) {
+  try { await executorRuntime(db); }
+  catch(e) { throw Object.assign(new Error((e as Error).message),{statusCode:409,code:"EXECUTOR_UNAVAILABLE"}); }
 }
 
 // Start with an empty root. In particular the control database, host homes, proc
@@ -127,7 +150,7 @@ export async function namespaceArgs() {
   }
   // Only shipped program files and dependencies; a source checkout may also
   // contain .env, a database, and unrelated workspaces alongside these paths.
-  for(const sub of ["apps/server/dist","packages/ops-mcp/dist","packages/ops-mcp/node_modules","packages/ops-mcp/package.json",
+  for(const sub of ["apps/server/dist","apps/server/node_modules","packages/ops-mcp/dist","packages/ops-mcp/node_modules","packages/ops-mcp/package.json",
     "packages/shared/dist","packages/shared/package.json","packages/shared/node_modules","node_modules"]) {
     const local=path.join(root,sub);
     if(existsSync(local)) args.push("--ro-bind",await realpath(local),"/app/"+sub);

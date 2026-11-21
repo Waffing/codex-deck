@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { promisify } from "node:util";
 import type Database from "better-sqlite3";
-import {executorRuntime,namespaceArgs} from "../codex/execution-environment.js";
+import {bubblewrapPath,executorRuntime,namespaceArgs} from "../codex/execution-environment.js";
 import { projectMountSource } from "../codex/isolated-runner.js";
 import { command } from "../server-ops/probe.js";
 import { fileError } from "./sandbox.js";
@@ -34,7 +34,7 @@ export async function isolatedTracking<K extends TrackingOperation>(root: string
     user: process.getuid!() + ":" + process.getgid!(), operation, turnId }) : [...await namespaceArgs(),write?"--bind":"--ro-bind",source,"/workspace","--chdir","/workspace","--","/run/deck-bin/node","/app/apps/server/dist/files/tracking-entry.js",operation,turnId];
   let stdout: string;
   try {
-    ({ stdout } = await exec(id?"docker":"/usr/bin/bwrap", args, { env: { PATH: process.env.PATH,...(id && {DOCKER_HOST:process.env.DOCKER_HOST}) },
+    ({ stdout } = await exec(id?"docker":bubblewrapPath(), args, { env: { PATH: process.env.PATH,...(id && {DOCKER_HOST:process.env.DOCKER_HOST}) },
       timeout: 120_000, maxBuffer: 32 * 1024 * 1024 }));
   } catch {
     // Killing the local CLI on timeout doesn't necessarily stop the container.

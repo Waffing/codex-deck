@@ -37,7 +37,9 @@ beforeAll(async()=>{
   base=await app.listen({host:"127.0.0.1",port:0});
   const setup=await req("POST","/api/auth/setup","",{password:"FixtureGuestApprovalPassword",setup_code:installationCode(db.native,ctx.masterKey)});
   expect(setup.statusCode).toBe(200);admin=cookieOf(setup);
-  a=(await req("POST","/api/workspaces",admin,{name:"visible",automation_level:"unrestricted"})).json().id;
+  a=(await req("POST","/api/workspaces",admin,{name:"visible"})).json().id;
+  // Guest access to an existing unrestricted workspace must still use guest permissions.
+  ctx.native.prepare("UPDATE workspaces SET automation_level='unrestricted' WHERE id=?").run(a);
   b=(await req("POST","/api/workspaces",admin,{name:"other"})).json().id;
   ta=(await req("POST","/api/threads",admin,{workspace_id:a})).json().id;
   tb=(await req("POST","/api/threads",admin,{workspace_id:b})).json().id;

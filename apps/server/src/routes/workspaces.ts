@@ -4,6 +4,7 @@ import type { ServerContext } from "../app.js";
 import { scopedAccess, scopedGuest } from "../temp-access/routes.js";
 import type { WorkspaceFiles } from "../files/workspace-files.js";
 import { fileError } from "../files/sandbox.js";
+import {requireExecutor} from "../codex/execution-environment.js";
 import {readPreferences} from "../settings/preferences.js";
 import { readEditable, writeEditable } from "../files/editor.js";
 import {verifyGateConfigSchema} from "@codexdeck/shared";
@@ -35,6 +36,7 @@ export function registerWorkspaceRoutes(app: FastifyInstance, ctx: ServerContext
   app.patch<ById>("/api/workspaces/:id",auth,async req=>{
     const p=workspaceCreateSchema.pick({automation_level:true}).required().strict().safeParse(req.body);
     if (!p.success || !(req.body && typeof req.body==="object" && "automation_level" in req.body)) throw fileError(400,"Invalid automation level.");
+    if (p.data.automation_level==="unrestricted") await requireExecutor(ctx.native);
     const row=ctx.native.prepare("UPDATE workspaces SET automation_level=?,updated_at=? WHERE id=? RETURNING *")
       .get(p.data.automation_level,new Date().toISOString(),req.params.id);
     if (!row) throw fileError(404,"Workspace not found.");
@@ -43,6 +45,7 @@ export function registerWorkspaceRoutes(app: FastifyInstance, ctx: ServerContext
   app.post("/api/workspaces", auth, async (req, reply) => {
     const p = workspaceCreateSchema.safeParse({automation_level:readPreferences(ctx.native).automationLevel,...(req.body as object)});
     if (!p.success) throw fileError(400, "Invalid workspace.");
+    if (p.data.automation_level==="unrestricted") await requireExecutor(ctx.native);
     return reply.code(201).send(await files.create(p.data.name, p.data.automation_level));
   });
   app.post("/api/workspaces/clone", auth, async (req, reply) => {
@@ -50,6 +53,7 @@ export function registerWorkspaceRoutes(app: FastifyInstance, ctx: ServerContext
     if (!p.success) throw fileError(400, "Invalid repository.");
     const url = new URL(p.data.url);
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw fileError(400, "Invalid repository URL.");
+    if (p.data.automation_level==="unrestricted") await requireExecutor(ctx.native);
     return reply.code(202).send(await files.create(p.data.name, p.data.automation_level, url));
   });
   app.delete<ById>("/api/workspaces/:id", auth, async (req, reply) => {

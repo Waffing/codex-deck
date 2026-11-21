@@ -53,7 +53,7 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
   const systemPorts = new Set([22, 80, 443]);
   if (systemPorts.has(context.gatewayConfig.port)) throw new Error("CodexDeck cannot listen on a protected system port.");
 
-  const health = async () => ({ status: "ok", version: process.env.CODEXDECK_VERSION ?? "1.5.0", uptime: Math.floor(process.uptime()) });
+  const health = async () => ({ status: "ok", version: process.env.CODEXDECK_VERSION ?? "1.5.1", uptime: Math.floor(process.uptime()) });
   app.get("/health", health);
   app.get("/api/health", health);
   registerStoredCredentials(context);
@@ -72,9 +72,10 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
   app.setErrorHandler((error, request, reply) => {
     const status = error instanceof ZodError ? 400 : (error as { statusCode?: number }).statusCode;
     const code = status && status >= 400 && status < 500 ? status : 500;
-    const publicMessage=error instanceof Error && !(error instanceof ZodError) && code<500 && !("code" in error) ? context.masker.maskString(error.message) : code<500 ? "Invalid request." : "Internal server error.";
+    const executorUnavailable=code===409 && error instanceof Error && "code" in error && error.code==="EXECUTOR_UNAVAILABLE";
+    const publicMessage=error instanceof Error && !(error instanceof ZodError) && code<500 && (!("code" in error) || executorUnavailable) ? context.masker.maskString(error.message) : code<500 ? "Invalid request." : "Internal server error.";
     if (code>=500) console.error(JSON.stringify({request_id:request.id,route:request.routeOptions.url,status:code}));
-    if (!reply.sent) void reply.code(code).send({ error:publicMessage, request_id:request.id });
+    if (!reply.sent) void reply.code(code).send({ error:publicMessage, request_id:request.id, ...(executorUnavailable && {code:"EXECUTOR_UNAVAILABLE"}) });
   });
   return app;
 }

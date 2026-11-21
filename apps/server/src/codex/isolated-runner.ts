@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 import {chmod, realpath} from "node:fs/promises";
 import {createServer, request} from "node:http";
 import type Database from "better-sqlite3";
-import {executorRuntime,namespaceArgs,type Mount} from "./execution-environment.js";
+import {bubblewrapPath,executorRuntime,namespaceArgs,type Mount} from "./execution-environment.js";
 import path from "node:path";
 import {once} from "node:events";
 import {enableNamespaceHttps} from "./namespace-network.js";
@@ -89,7 +89,7 @@ export async function isolatedRunner(options:{
   await once(relay,"listening");
   try {await chmod(socket,0o600);} catch(e){relay.close();throw e;}
   let closing:Promise<void>|undefined;
-  return {file:id?"docker":"/usr/bin/bwrap",args:id?args:ns,env:{PATH:process.env.PATH,...(id && {DOCKER_HOST:process.env.DOCKER_HOST}),
+  return {file:id?"docker":bubblewrapPath(),args:id?args:ns,env:{PATH:process.env.PATH,...(id && {DOCKER_HOST:process.env.DOCKER_HOST}),
     ...(httpsProxy && {HTTPS_PROXY:"http://127.0.0.1:3141",https_proxy:"http://127.0.0.1:3141",NO_PROXY:"localhost,127.0.0.1",no_proxy:"localhost,127.0.0.1"}),
     CODEXDECK_INTERNAL_TOKEN:options.leases.model,...(!options.readOnly && {CODEXDECK_OPS_TOKEN:options.leases.ops,CODEXDECK_OPS_URL:"http://127.0.0.1:3141/internal/ops"})},
     dispose:()=>closing??=(async()=>{

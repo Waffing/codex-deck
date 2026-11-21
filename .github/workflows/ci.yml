@@ -24,6 +24,11 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test
+      - name: Install the production Codex version for Linux smoke tests
+        run: |
+          version=$(sed -n 's/^ARG CODEX_VERSION=//p' deploy/Dockerfile)
+          npm install --prefix "$RUNNER_TEMP/codex-fixture" "@openai/codex@$version"
+          echo "CODEX_BIN=$RUNNER_TEMP/codex-fixture/node_modules/.bin/codex" >> "$GITHUB_ENV"
       - name: Verify native Linux quality gate
         run: |
           sudo apt-get update
@@ -32,14 +37,12 @@ jobs:
           CODEXDECK_VERIFY_SMOKE=native node apps/server/tests/verify-sandbox.mjs
       - name: Verify real Codex approvals and compaction recovery
         run: |
-          version=$(sed -n 's/^ARG CODEX_VERSION=//p' deploy/Dockerfile)
-          npm install --prefix "$RUNNER_TEMP/codex-fixture" "@openai/codex@$version"
-          CODEX_BIN="$RUNNER_TEMP/codex-fixture/node_modules/.bin/codex" node apps/server/tests/native-runner-smoke.mjs
-          CODEX_BIN="$RUNNER_TEMP/codex-fixture/node_modules/.bin/codex" CODEXDECK_REAL_CODEX=1 pnpm --filter @codexdeck/server exec vitest run test/real-bridge.test.ts test/compaction-real.test.ts
+          node apps/server/tests/native-runner-smoke.mjs
+          CODEXDECK_REAL_CODEX=1 pnpm --filter @codexdeck/server exec vitest run test/real-bridge.test.ts test/compaction-real.test.ts
       - name: Browser console journeys
         run: |
           pnpm --filter @codexdeck/web exec playwright-core install --with-deps chromium
-          CODEX_BIN="$RUNNER_TEMP/codex-fixture/node_modules/.bin/codex" pnpm e2e
+          pnpm e2e
       - run: python3 deploy/tests/test_backup.py
       - name: Install shellcheck
         run: |
@@ -110,10 +113,21 @@ jobs:
           export CODEXDECK_SMOKE_CONTAINER=$(docker compose "${files[@]}" ps -q codexdeck)
           docker exec "$CODEXDECK_SMOKE_CONTAINER" sh -c 'test "$(sed -n "s/^Uid:[[:space:]]*\([0-9]*\).*/\1/p" /proc/1/status)" = "$PUID"'
           node apps/server/tests/docker-deployment-smoke.mjs
-          if [[ "$CODEXDECK_REQUIRE_BROWSER" == 0 ]]; then node apps/server/tests/isolated-runner-smoke.mjs; fi
           if [[ "$CODEXDECK_REQUIRE_BROWSER" == 0 ]]; then
             docker exec -i --workdir /app/apps/server/dist --user 1000:1000 --env TMPDIR=/workspaces --env CODEXDECK_VERIFY_SMOKE=docker "$CODEXDECK_SMOKE_CONTAINER" node --input-type=module - < apps/server/tests/verify-sandbox.mjs
           fi
+      - name: Verify a first Docker install and its full access session
+        if: matrix.playwright == false
+        run: |
+          src="$RUNNER_TEMP/installer-src"
+          install_dir="$RUNNER_TEMP/clean-install"
+          git clone --no-tags --no-hardlinks "$GITHUB_WORKSPACE" "$src"
+          git -C "$src" tag v0.0.0 "$GITHUB_SHA"
+          trap 'if [[ -f "$install_dir/docker-compose.yml" && -f "$install_dir/.env" ]]; then docker compose -f "$install_dir/docker-compose.yml" --env-file "$install_dir/.env" down --volumes --remove-orphans; fi' EXIT
+          bash "$src/deploy/install.sh" --version v0.0.0 --yes --local-only --port 3150 --dir "$install_dir"
+          cdx executor detect | jq -e '.available and .strategy == "docker"'
+          export CODEXDECK_SMOKE_CONTAINER=$(docker compose -f "$install_dir/docker-compose.yml" --env-file "$install_dir/.env" ps -q codexdeck)
+          node apps/server/tests/isolated-runner-smoke.mjs
       - name: Export tested Linux runtime for low-memory hosts
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.playwright == false
         run: |

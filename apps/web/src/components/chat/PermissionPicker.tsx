@@ -30,7 +30,7 @@ export function PermissionPicker({value,disabled,onChange}:{value:Level;disabled
       setConfirm(true);return;
     }
     if(level==="unrestricted" && confirm && remember)localStorage.setItem("deck.full-consent","yes");
-    close();if(value!==level)onChange(level);
+    close();onChange(level);
   }
   function move(e:KeyboardEvent<HTMLDivElement>){
     if(e.key!=="ArrowUp" && e.key!=="ArrowDown")return;

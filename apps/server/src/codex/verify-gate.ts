@@ -8,7 +8,7 @@ import {verifyGateConfigSchema,type VerifyGateConfig,type VerifyGateResult} from
 import type {ServerContext} from "../app.js";
 import {fileError,openWorkspaceFile} from "../files/sandbox.js";
 import type {SecretMasker} from "../security/secret-masker.js";
-import {executorRuntime} from "./execution-environment.js";
+import {bubblewrapPath,executorRuntime} from "./execution-environment.js";
 import {projectMountSource} from "./isolated-runner.js";
 import {OutputMasker} from "./output-masker.js";
 
@@ -71,7 +71,7 @@ async function sandbox(opts:GateOptions) {
   const node=await realpath(process.execPath);
   const args=["--user","--wait","--pipe","--quiet","--collect","--unit="+unit,
     "-p","NoNewPrivileges=yes","-p","MemoryMax=768M","-p","MemorySwapMax=0","-p","TasksMax=128","-p","CPUQuota=100%",
-    "-p","RuntimeMaxSec="+(30+commandMs/1000*(opts.config.verify_commands.length+1)),"--","/usr/bin/bwrap","--unshare-all","--die-with-parent","--new-session",
+    "-p","RuntimeMaxSec="+(30+commandMs/1000*(opts.config.verify_commands.length+1)),"--",bubblewrapPath(),"--unshare-all","--die-with-parent","--new-session",
     ...(opts.config.verify_network_enabled?["--share-net","--ro-bind-try","/etc/resolv.conf","/etc/resolv.conf","--ro-bind-try","/etc/ssl/certs","/etc/ssl/certs"]:[]),
     "--clearenv","--setenv","PATH","/usr/local/bin:/usr/bin:/bin","--ro-bind","/usr","/usr","--ro-bind","/bin","/bin",
     "--ro-bind","/lib","/lib","--ro-bind-try","/lib64","/lib64","--proc","/proc","--dev","/dev","--tmpfs","/tmp","--ro-bind",worker,"/verify.mjs",

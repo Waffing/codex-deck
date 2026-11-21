@@ -100,10 +100,14 @@ function ChatBody({workspace,thread,searchTurn,events,approvals,models,providers
     return ()=>{clearTimeout(timer);el.classList.remove("search-target");};
   },[target,known]);
   const pending=approvals.filter(a=>a.status==="pending"&&a.thread_id===thread?.id&&!(narrow&&a.id===mobileApprovalId));
-  const submit=async (prompt:string,imageIds:string[],mode?:"plan"|"execute")=>{
+  const submit=async (prompt:string,imageIds:string[],mode?:"plan"|"execute",keepDraft=false)=>{
     follow.current=true;
     const message=queueMessage(workspace.id,thread?.id??null,prompt,imageIds,mode);
-    await deliver(message,onCreateThread,()=>{page.refresh();onRefresh();});
+    const reason=await deliver(message,onCreateThread,()=>{page.refresh();onRefresh();});
+    if(reason && keepDraft) {
+      if(composer.current) discard(new Set([message.id]));
+      return reason;
+    }
   };
   const earlier=async()=>{
     follow.current=false;

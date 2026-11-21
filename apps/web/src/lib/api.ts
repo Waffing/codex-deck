@@ -4,7 +4,7 @@ export async function api<T>(url:string,init?:RequestInit):Promise<T>{
     const body=await res.json().catch(()=>({}));
     const id=res.headers.get("x-request-id");
     const detail=typeof body.error==="string"?body.error:"请求失败（"+res.status+"）";
-    throw Object.assign(new Error(detail+(id?" · "+id:"")),{status:res.status});
+    throw Object.assign(new Error(detail+(id?" · "+id:"")),{status:res.status,code:body.code});
   }
   return res.status===204?undefined as T:await res.json() as T;
 }

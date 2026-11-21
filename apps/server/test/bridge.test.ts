@@ -90,6 +90,24 @@ afterEach(async () => {
   if (root) await rm(root,{recursive:true,force:true});
 });
 const poll = (assertion:()=>void) => vi.waitFor(assertion,{timeout:6000,interval:15});
+it("keeps accepted message IDs replayable and rejects new full-access turns when the executor is unavailable",async()=>{
+  const url="/api/threads/"+thread+"/messages";
+  const message={prompt:"hello",client_msg_id:randomUUID()};
+  const accepted=await post(url,message);
+  expect(accepted.statusCode).toBe(202);
+  await poll(()=>expect(status(accepted.json().task_id)).toBe("completed"));
+  ctx.native.prepare("UPDATE workspaces SET automation_level='unrestricted' WHERE id=?").run(workspace);
+  vi.stubEnv("CODEXDECK_INSTALL_MODE","native");
+  vi.stubEnv("CODEXDECK_BWRAP_PATH","/missing-test-executor/bwrap");
+  try {
+    expect((await post(url,message)).json().task_id).toBe(accepted.json().task_id);
+    expect((await post(url,{...message,prompt:"different"})).statusCode).toBe(409);
+    const rejected=await post(url,{prompt:"new message",client_msg_id:randomUUID()});
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.json().code).toBe("EXECUTOR_UNAVAILABLE");
+    expect(ctx.native.prepare("SELECT count(*) FROM tasks WHERE thread_id=?").pluck().get(thread)).toBe(1);
+  } finally {vi.unstubAllEnvs();}
+});
 it("runs a read-only plan, revises it and admits exactly one write turn after approval",async()=>{
   const base="/api/threads/"+thread;
   const first=await post(base+"/messages",{mode:"plan",prompt:"计划更新 result.txt"});

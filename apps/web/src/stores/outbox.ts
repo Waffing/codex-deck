@@ -26,5 +26,8 @@ export async function deliver(message:Outgoing,create:()=>Promise<Thread>,onRefr
     }));
     update(message.id,{taskId:result.task_id,state:"sent"});
     onRefresh();
-  }catch(e){update(message.id,{state:"failed",error:(e as Error).message});}
+  }catch(e){
+    update(message.id,{state:"failed",error:(e as Error).message});
+    if((e as {code?:string}).code==="EXECUTOR_UNAVAILABLE")return (e as Error).message;
+  }
 }

@@ -536,23 +536,28 @@ select_image() {
 
 docker_install() {
   ensure_docker
-  local previous="" profile=()
+  local previous="" running="" profile=()
   if [[ "$MANAGED_CADDY" == 1 && -f "$INSTALL_DIR/Caddyfile" ]] &&
      ! cmp -s "$INSTALL_DIR/Caddyfile" "$INSTALL_DIR/Caddyfile.template"; then
     fail "Custom Caddy configuration detected. Review and preserve the existing routes before upgrading managed Caddy."
   fi
-  if [ "$ACTION" = "upgrade" ] && [ -f "$INSTALL_DIR/.env" ]; then
+  if [[ -f "$INSTALL_DIR/.env" && -f "$INSTALL_DIR/docker-compose.yml" ]]; then
+    running="$(compose ps -q codexdeck)"
+    if [[ "$ACTION" == upgrade && -z "$running" ]]; then fail "Cannot upgrade without a running rollback candidate."; fi
+  fi
+  if [[ -n "$running" ]]; then
     previous="$(mktemp -d "$INSTALL_DIR/.previous-release.XXXXXX")"
     for file in .env docker-compose.yml Caddyfile docker-compose.public.yml docker-compose.playwright.yml chromium-seccomp.json; do
       if [ -f "$INSTALL_DIR/$file" ]; then cp -p -- "$INSTALL_DIR/$file" "$previous/"; fi
     done
     # Pin the rollback to the running image even if a mutable tag was installed previously.
-    local running digest
-    running="$(compose ps -q codexdeck)"
-    [ -n "$running" ] || fail "Cannot upgrade without a running rollback candidate."
+    local digest
     if [ "$DOCKER_SUDO" -eq 1 ]; then digest="$(sudo docker inspect -f '{{.Image}}' "$running")"; else digest="$(docker inspect -f '{{.Image}}' "$running")"; fi
     local recovery_tag="codexdeck-local:rollback-${digest#sha256:}"
     if [ "$DOCKER_SUDO" -eq 1 ]; then sudo docker image tag "$digest" "$recovery_tag"; else docker image tag "$digest" "$recovery_tag"; fi
+    if [[ "$(native_setting "$previous/.env" CODEXDECK_EXEC_IMAGE)" == "$(native_setting "$previous/.env" CODEXDECK_IMAGE)" ]]; then
+      update_env_key "$previous/.env" CODEXDECK_EXEC_IMAGE "$recovery_tag"
+    fi
     update_env_key "$previous/.env" CODEXDECK_IMAGE "$recovery_tag"
   fi
   fetch_deploy_file docker-compose.yml "$INSTALL_DIR/docker-compose.yml"
@@ -584,9 +589,6 @@ docker_install() {
     old_executor="$(sed -n 's/^CODEXDECK_EXEC_IMAGE=//p' "$INSTALL_DIR/.env" | tr -d "\"'")"
     if [[ "$old_executor" != "$old_control" ]]; then EXEC_IMAGE="$old_executor"; fi
   fi
-  if [[ -z "$EXEC_IMAGE" && "$EXISTING_INSTALL" == 0 && "$ACTION" == install ]]; then
-    prompt_value "完全访问执行镜像" "$IMAGE"; EXEC_IMAGE="$REPLY"
-  fi
   EXEC_IMAGE="${EXEC_IMAGE:-$IMAGE}"
   [[ "$EXEC_IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$ ]] || fail "Invalid CODEXDECK_EXEC_IMAGE."
   local current_uid current_gid
@@ -611,7 +613,10 @@ docker_install() {
   fi
   chmod 0600 "$INSTALL_DIR/.env"
   if [[ "$MANAGED_CADDY" == 1 && "$PUBLIC" != false ]]; then profile=(--profile https); fi
-  if { [ "$ACTION" != "upgrade" ] || compose "${profile[@]}" pull; } && compose "${profile[@]}" up -d && wait_for_health; then
+  # Expand the mapped service UID and GID inside the running container.
+  # shellcheck disable=SC2016
+  if { [ "$ACTION" != "upgrade" ] || compose "${profile[@]}" pull; } && compose "${profile[@]}" up -d && wait_for_health &&
+     compose exec -T codexdeck sh -ec 'exec gosu "$PUID:$PGID" node /app/apps/server/dist/admin-cli.js require-executor'; then
     if [ -n "$previous" ]; then rm -f -- "$previous/.env"; fi
     return 0
   fi
@@ -630,14 +635,14 @@ docker_install() {
     rm -f -- "$previous/.env"
     fail "Upgrade failed. The previous image is healthy again."
   fi
-  fail "Installation failed its health check."
+  fail "Installation did not pass service and full access checks. Verify that the shipped executor image is available locally and the CodexDeck socket proxy is healthy."
 }
 
 wait_for_health() {
   local attempt
   for ((attempt=1; attempt<=45; attempt++)); do
     if compose exec -T codexdeck curl -fsS --max-time 3 http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
-      printf '%s\n' "CodexDeck is ready."
+      printf '%s\n' "CodexDeck HTTP health check passed."
       return 0
     fi
     sleep 2
@@ -663,6 +668,15 @@ native_install() {
   command -v corepack >/dev/null 2>&1 || fail "Native installation requires Corepack."
   command -v codex >/dev/null 2>&1 || fail "Install the OpenAI Codex CLI and retry native installation."
   command -v git >/dev/null 2>&1 || fail "Native installation requires Git."
+  if [[ ! -x /usr/bin/bwrap ]]; then
+    note "Installing bubblewrap for the non-root full access executor."
+    if command -v apt-get >/dev/null 2>&1; then
+      as_root apt-get update && as_root apt-get install --yes --no-install-recommends bubblewrap
+    elif command -v dnf >/dev/null 2>&1; then as_root dnf install -y bubblewrap
+    elif command -v yum >/dev/null 2>&1; then as_root yum install -y bubblewrap
+    fi
+    [[ -x /usr/bin/bwrap ]] || fail "Native full access requires /usr/bin/bwrap. Install bubblewrap or choose the default Docker installer."
+  fi
   if [ "$ACTION" != "upgrade" ] || [ "$PORT_SET" -eq 1 ]; then check_port; fi
   validate_domain
   local source data_dir="$INSTALL_DIR/source/data" repo service_user node_bin codex_bin service_file env_dir path_value
@@ -790,7 +804,10 @@ WantedBy=multi-user.target
 EOF
   as_root systemctl daemon-reload
   as_root systemctl enable codexdeck
-  if as_root systemctl restart codexdeck && wait_for_native_health; then
+  if as_root systemctl restart codexdeck && wait_for_native_health &&
+     as_root systemd-run --quiet --pipe --wait --collect --uid="$service_user" \
+       --property="EnvironmentFile=$env_dir/codexdeck.env" --setenv=NODE_ENV=production \
+       "$node_bin" "$source/apps/server/dist/admin-cli.js" require-executor; then
     if [ -n "$old_unit" ]; then as_root rm -f -- "$old_unit"; fi
     if [ -n "$old_env" ]; then as_root rm -f -- "$old_env"; fi
     as_root install -m 0755 "$source/deploy/install.sh" "$INSTALL_DIR/install.sh"
@@ -810,7 +827,7 @@ EOF
       fail "Previous native release failed its health check."
     fi
     fail "Upgrade failed. The previous native release is healthy again."
-  else fail "Native service failed its health check."; fi
+  else fail "Native installation did not pass service and full access checks. If this host restricts unprivileged namespaces, use the default Docker installer in a separate directory."; fi
 }
 
 update_systemd_env() {
@@ -838,7 +855,7 @@ wait_for_native_health() {
   local attempt
   for ((attempt=1; attempt<=45; attempt++)); do
     if curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
-      printf '%s\n' "CodexDeck is ready."
+      printf '%s\n' "CodexDeck HTTP health check passed."
       return 0
     fi
     sleep 2

@@ -22,11 +22,11 @@ export async function assertMobileComposerRow(page,running) {
 }
 
 // Starts and ends on an authenticated workbench with an idle project.
-export async function composerJourney(page) {
+export async function composerJourney(page, db) {
   const origin = new URL(page.url()).origin;
   const profile = await (await page.request.get(origin+"/api/settings/executor")).json();
   if (process.env.CI && process.env.CODEX_BIN) assert.ok(profile.available, "CI native executor unavailable");
-  if (profile.available) {
+  {
     // Isolation history belongs to a project. Other journeys need their own scripted Codex sessions.
     const project = await page.request.post(origin+"/api/workspaces",{data:{name:"executor-"+page.viewportSize().width}});
     assert.equal(project.status(),201);
@@ -42,6 +42,8 @@ export async function composerJourney(page) {
   }
   const box=page.getByRole("textbox",{name:"任务指令"});
   const trigger=page.getByRole("button",{name:/^工作区权限：/});
+  const draft = "验证当前执行工作区";
+  await box.fill(draft);
   await trigger.click();
   const sheet=page.getByRole("dialog",{name:"应如何批准 Codex 操作？"});
   assert.equal(await sheet.getByRole("radio").count(),3);
@@ -54,16 +56,45 @@ export async function composerJourney(page) {
   }
   await sheet.getByRole("radio",{name:/完全访问权限/}).click();
   const confirm=sheet.getByRole("button",{name:"确认启用"});
-  if(await confirm.isVisible()){
-    const updated=page.waitForResponse(r=>r.request().method()==="PATCH" && /\/api\/workspaces\/[^/]+$/.test(r.url()));
-    await confirm.click();assert.equal((await updated).status(),200);
-  }
-  await page.getByRole("button",{name:"工作区权限：完全访问权限"}).waitFor();
-  if(mobile)await assertMobileComposerRow(page,false);
+  if(await confirm.isVisible())await confirm.click();
   if(profile.available){
-    await box.fill("验证当前执行工作区");await page.getByRole("button",{name:"发送消息",exact:true}).click();
+    await page.getByRole("button",{name:"工作区权限：完全访问权限"}).waitFor();
+    if(mobile)await assertMobileComposerRow(page,false);
+    assert.equal(await box.inputValue(),draft);await page.getByRole("button",{name:"发送消息",exact:true}).click();
     const task=page.locator("[data-turn]").filter({hasText:"验证当前执行工作区"}).last();
     await task.getByRole("button",{name:/运行完成/}).waitFor({timeout:90000});
+  }else{
+    const warning=page.getByRole("alert").filter({hasText:"完全访问暂不可用"});
+    await warning.waitFor();
+    const workspace=await page.evaluate(()=>localStorage.getItem("deck.workspace"));
+    const stored=()=>db.prepare("SELECT automation_level FROM workspaces WHERE id=?").pluck().get(workspace);
+    assert.notEqual(stored(),"unrestricted");
+    assert.equal(await box.inputValue(),draft);
+    assert.ok(await page.getByRole("button",{name:"发送消息",exact:true}).isDisabled());
+    const retry=page.waitForResponse(r=>r.url().endsWith("/api/settings/executor/detect"));
+    await warning.getByRole("button",{name:"重新检测"}).click();
+    assert.equal((await (await retry).json()).available,false);
+    await warning.getByRole("button",{name:"保留当前权限"}).click();
+    assert.equal(await box.inputValue(),draft);
+    // Open an older database with full access already selected but no usable executor.
+    db.prepare("UPDATE workspaces SET automation_level='unrestricted' WHERE id=?").run(workspace);
+    let releaseProbe;
+    const probeHeld=new Promise(resolve=>{releaseProbe=resolve;});
+    const checkStatus=route=>probeHeld.then(()=>route.continue());
+    await page.route("**/api/settings/executor",checkStatus);
+    const send=page.getByRole("button",{name:"发送消息",exact:true});
+    try{
+      await page.reload({waitUntil:"domcontentloaded"});
+      await page.getByText("正在检测完全访问执行环境…",{exact:true}).waitFor();
+      await box.fill(draft);
+      assert.ok(await send.isDisabled());
+    }finally{releaseProbe();}
+    await warning.waitFor();
+    await page.unroute("**/api/settings/executor",checkStatus);
+    await box.press("Enter");
+    assert.ok(await send.isDisabled());
+    assert.equal(await box.inputValue(),draft);
+    assert.equal(db.prepare("SELECT count(*) FROM tasks WHERE workspace_id=?").pluck().get(workspace),0);
   }
   await trigger.click();await sheet.getByRole("radio",{name:/帮我批准/}).click();
   await page.getByRole("button",{name:"工作区权限：帮我批准"}).waitFor();

@@ -37,9 +37,9 @@ Codex CLI, Claude Code and OpenAI-compatible clients can share one gateway. Open
 | Control usage | Set model allowlists, requests and tokens per minute, and daily or monthly budgets on client keys. Provider budgets can alert or block. Provider cards show recent request outcomes and circuit state. |
 | Manage the workbench | Open MCP, Skills, plugins, prompts, authorization or usage from the sidebar. Type `/` in the composer, use the arrow keys to select a command and press Enter. |
 
-**Full-access execution.** Select **Full access** in the composer to run commands in the project's isolated environment. The Docker installer records `CODEXDECK_EXEC_IMAGE`. Existing installations can discover the running control image. In **Settings → Execution environment**, inspect the strategy, run detection or select an installed compatible image. The equivalent host commands are `cdx executor detect`, `cdx executor set IMAGE` and `cdx executor auto`.
+**Full-access execution.** The Docker installer selects the matching executor image and checks that the service account can start an isolated environment and run Codex CLI and Git. After sign-in, select **Full access** in the composer to run project commands without individual approvals. If the executor later becomes unavailable, the composer keeps your draft and offers a retry. Administrators can also check **Settings → Execution environment** or run `cdx executor detect` over SSH.
 
-Native Linux and in-container fallback require a non-root service user, `/usr/bin/bwrap` and a kernel that permits unprivileged user namespaces. Each fallback mounts the project inside separate PID, filesystem and network namespaces. Proxy-aware commands can connect to public HTTPS destinations on port 443. The settings panel reports unavailable kernel capabilities.
+Native Linux and in-container fallback require a non-root service account, bubblewrap and a host policy that permits its launcher to create user namespaces. The service uses `/usr/bin/bwrap` by default. Set `CODEXDECK_BWRAP_PATH` to the absolute path of a service-specific launcher if needed. The project runs in separate PID, filesystem and network namespaces. Proxy-aware commands can connect to public HTTPS destinations on port 443.
 
 ## V1.5 artifact previews and sharing
 
