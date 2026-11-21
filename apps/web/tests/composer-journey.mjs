@@ -23,6 +23,23 @@ export async function assertMobileComposerRow(page,running) {
 
 // Starts and ends on an authenticated workbench with an idle project.
 export async function composerJourney(page) {
+  const origin = new URL(page.url()).origin;
+  const profile = await (await page.request.get(origin+"/api/settings/executor")).json();
+  if (process.env.CI && process.env.CODEX_BIN) assert.ok(profile.available, "CI native executor unavailable");
+  if (profile.available) {
+    // Isolation history belongs to a project. Other journeys need their own scripted Codex sessions.
+    const project = await page.request.post(origin+"/api/workspaces",{data:{name:"executor-"+page.viewportSize().width}});
+    assert.equal(project.status(),201);
+    const workspace = await project.json();
+    const created = await page.request.post(origin+"/api/threads",{data:{workspace_id:workspace.id}});
+    assert.equal(created.status(),201);
+    const thread = await created.json();
+    await page.evaluate(({workspace,thread})=>{
+      localStorage.setItem("deck.workspace",workspace);localStorage.setItem("deck.thread",thread);
+    },{workspace:workspace.id,thread:thread.id});
+    await page.reload();
+    await page.locator(".workspace-switch").getByText(workspace.name).waitFor();
+  }
   const box=page.getByRole("textbox",{name:"任务指令"});
   const trigger=page.getByRole("button",{name:/^工作区权限：/});
   await trigger.click();
@@ -43,7 +60,6 @@ export async function composerJourney(page) {
   }
   await page.getByRole("button",{name:"工作区权限：完全访问权限"}).waitFor();
   if(mobile)await assertMobileComposerRow(page,false);
-  const profile=await (await page.request.get(new URL("/api/settings/executor",page.url()).href)).json();
   if(profile.available){
     await box.fill("验证当前执行工作区");await page.getByRole("button",{name:"发送消息",exact:true}).click();
     const task=page.locator("[data-turn]").filter({hasText:"验证当前执行工作区"}).last();

@@ -49,18 +49,33 @@ const mock = httpServer(async (req,res) => {
       usage:{input_tokens:540,output_tokens:18},
     }));
   }
-  if(body.stream && body.model==="lab/library" && native) {
-    const sample=body.max_output_tokens;
+  if (body.stream && native) {
+    const benchmark = body.model === "lab/library" && [1, 32].includes(body.max_output_tokens);
+    const measureSpeed = benchmark && body.max_output_tokens > 1;
+    const first = benchmark ? "1" : "OK";
+    const message = {id:"msg_fixture",type:"message",status:"completed",role:"assistant",
+      content:[{type:"output_text",text:first+(measureSpeed?" 2 3":""),annotations:[]}]};
+    const outputTokens = measureSpeed ? 3 : 1;
+    const response = {id:"resp_fixture",object:"response",model:body.model,created_at:1,status:"completed",output:[message],
+      usage:{input_tokens:8,output_tokens:outputTokens,total_tokens:8+outputTokens,input_tokens_details:{cached_tokens:2}}};
     res.writeHead(200,{"content-type":"text/event-stream"});
-    const send=event=>res.write(`data: ${JSON.stringify(event)}\n\n`);
-    send({type:"response.output_text.delta",delta:"1"});
-    if(sample>1) {await new Promise(resolve=>setTimeout(resolve,45));send({type:"response.output_text.delta",delta:" 2 3"});}
-    send({type:"response.completed",response:{usage:{input_tokens:8,output_tokens:sample>1?3:1,input_tokens_details:{cached_tokens:2}}}});
+    let sequence = 0;
+    const send = frame => res.write("event: "+frame.type+"\ndata: "+JSON.stringify({...frame,sequence_number:sequence++})+"\n\n");
+    send({type:"response.created",response:{...response,status:"in_progress",output:[]}});
+    send({type:"response.output_item.added",output_index:0,item:{...message,status:"in_progress",content:[]}});
+    const position = {output_index:0,content_index:0,item_id:message.id};
+    send({type:"response.content_part.added",...position,part:{...message.content[0],text:""}});
+    send({type:"response.output_text.delta",...position,delta:first});
+    if (measureSpeed) {
+      await new Promise(resolve=>setTimeout(resolve,45));
+      send({type:"response.output_text.delta",...position,delta:" 2 3"});
+    }
+    send({type:"response.output_item.done",output_index:0,item:message});
+    send({type:"response.completed",response});
     return res.end();
   }
   if(body.stream) {
-    const delta = native ? {type:"response.output_text.delta",delta:"OK"} : {choices:[{delta:{content:"OK"}}]};
-    return res.writeHead(200,{"Content-Type":"text/event-stream"}).end("data: "+JSON.stringify(delta)+"\n\n");
+    return res.writeHead(200,{"Content-Type":"text/event-stream"}).end("data: "+JSON.stringify({choices:[{delta:{content:"OK"}}]})+"\n\n");
   }
   const result = native ? {output:body.tools ? [{type:"function_call",name:"ping",arguments:"{}"}] : [{content:[{text:"red"}]}]} : {choices:[{message:{content:"red"}}]};
   res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify(result));
