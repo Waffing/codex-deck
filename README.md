@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/assets/banner.svg" alt="CodexDeck · 自托管 Codex 控制台" width="1280">
   <h1>CodexDeck</h1>
-  <p>面向 Codex CLI 的自托管 Web 控制台，集成兼容 OpenAI 的模型网关、远程审批和部署验收。</p>
+  <p>自托管 Codex CLI 工作台。在浏览器里接入自己的模型，批准计划、审阅改动，验收后再部署。</p>
   <p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
   <p>
     <a href="LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/github/license/Waffing/codex-deck?style=flat-square"></a>
@@ -13,6 +13,7 @@
   </p>
   <p>
     <a href="#核心功能">核心功能</a> ·
+    <a href="#界面预览">界面预览</a> ·
     <a href="#快速开始">快速开始</a> ·
     <a href="#系统架构">系统架构</a> ·
     <a href="#安全模型">安全模型</a> ·
@@ -21,18 +22,20 @@
   </p>
 </div>
 
-## V1.3 工作台
+## V1.4 工作流
 
-V1.3 已通过候选版验收，可从下方的已验证源码试用。Docker 一键安装使用顶部 **Release** 徽章所示的正式版。
+主分支已包含 V1.4。要体验下列功能，可从源码运行工作台。Docker 一键安装跟随最新正式版，安装前可查看对应的发布说明。[从源码运行](#本地开发) · [最新正式版](https://github.com/Waffing/codex-deck/releases/latest)
 
-| 使用场景 | 操作与效果 |
+| 你要做什么 | 在工作台如何操作 |
 | --- | --- |
-| 继续昨天的长对话 | 首屏先显示最近 12 轮，上滑再加载更早记录。管理员可使用本地缓存，访客记录只在页面内存中保留。 |
-| 网络慢时发送任务 | 按回车即可看到提问和等待指示。发送失败可在原消息旁重试，同一条提问只创建一个任务。 |
-| 在自己的项目中免审执行 | 在对话输入框选择 **工作区权限 → 完全访问**，下一轮起管理员可直接运行命令、测试和已启用的部署操作。需要 Linux 非 root 控制面和可用的 Docker 隔离执行器。访客和 Open API 任务沿用各自的审批策略。 |
-| 只看交付结果 | 默认优先展示文档、图片、压缩包等成品。源码归入本轮改动，可展开查看。四套皮肤可选，默认只为新审批和报错播放提示音。 |
+| 先定计划再改代码 | 在输入框打开 **Plan 模式**。Codex 在只读环境中规划，你可以提交修改意见，也可以批准计划开始编码。 |
+| 改完自动运行项目检查 | 在 **工作区配置 → 质检门禁** 中识别或填写命令，如 `pnpm typecheck` 和 `pnpm test`。自愈上限可设为 0 至 5 次，运行时可中止或查看脱敏日志。 |
+| 请另一个模型审查改动 | 在 **Git Diff** 中选择复审模型。按严重度和文件行号查看问题，勾选后可发回 Codex 修复。 |
+| 指出某一行应该怎样改 | 点击新增行或删除行旁的 **+**，跨文件留下意见，再一次发送所有批注。 |
+| 把未完工作交给新会话 | 在会话菜单选择 **生成交接单并开新会话**。新会话携带目标、改动文件、约束和待办，可返回来源会话查阅细节。 |
+| 给测试或部署提供环境变量 | 在 **工作区配置 → 环境变量保险箱** 导入项目 `.env`，按键分别授权质检或部署注入。保险箱加密保存值，Codex 对话只接收可用键名。 |
 
-浏览器验收在 120 轮对话中连续输入 40 次，已完成回合重渲染 0 次。真实 Codex 在隔离容器中完成了测试、预发布、上线和回滚。[V1.3 验收记录](https://github.com/Waffing/codex-deck/actions/runs/44880378042) · [已验证源码](https://github.com/Waffing/codex-deck/tree/c392f5d0341d4dd0b8d8f6dda3936e78106fb69e)
+自动质检默认关闭。启用后，命令在工作区副本中运行，默认离线。Docker 使用独立容器，Linux 原生安装需要 systemd 用户服务和 `/usr/bin/bwrap`。访客和 Open API 任务的自动质检使用无密钥环境，管理员复核工作区后可带所选密钥重跑。
 
 ## 快速开始
 
@@ -111,26 +114,27 @@ python3 backup.py restore --from "$archive" --to ./recovery --target-data /data 
 | 部署后先验收再确认上线 | Server Probe 检查可用运行时。部署至预发布、检查 HTTP 和日志，按需启用 Playwright，并在发布验收失败时回滚。 |
 | 离开电脑后继续审批 | 响应式控制台可在手机上查看任务、审批、日志和服务预览。 |
 
-<p align="center">
-  <img src="docs/assets/workbench.png" alt="桌面工作台，展示已完成任务和产物预览" width="100%">
-</p>
+## 界面预览
+
+Playwright 在演示项目中拍摄以下界面，主分支通过 CI 后自动更新。 [截图更新记录](https://github.com/Waffing/codex-deck/commits/codexdeck-media/)
+
+<p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/workbench.png" alt="桌面工作台中的已完成对话与产物预览" width="100%"></p>
 
 <table>
   <tr>
-    <td align="center"><img src="docs/assets/approval.png" alt="桌面工作台中的待审批卡片" width="720"></td>
-    <td align="center"><img src="docs/assets/mobile.png" alt="手机上的预发布待审批卡片" width="195"></td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/review.png" alt="Git Diff 抽屉中的跨模型审查发现与代码行"></td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/vault.png" alt="环境变量保险箱中的键名、脱敏值和注入设置"></td>
+  </tr>
+  <tr><td>跨模型 Diff 复审</td><td>项目环境变量保险箱</td></tr>
+</table>
+
+<table>
+  <tr>
+    <td align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/approval.png" alt="桌面工作台中的内嵌审批卡" width="720"></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/mobile.png" alt="手机浏览器中的待审批卡片" width="195"></td>
   </tr>
   <tr><td align="center">桌面审批</td><td align="center">移动端审批</td></tr>
 </table>
-
-*截图来自使用合成测试数据的本地控制台。*
-
-### 使用 V1.4 质量门禁
-
-1. 在输入框打开 **Plan 模式**。查看计划中的文件与验收步骤，选择批准或提交修改意见。批准后才会开始编码。
-2. 在 **工作区配置 → 质检门禁** 中识别或填写项目命令，设置最多 0 至 5 次自愈。质检默认关闭，启用后在工作区副本中运行，默认离线。Docker 安装使用独立容器，Linux 原生安装需要可用的 systemd 用户服务和 `/usr/bin/bwrap`。
-3. 在 **环境变量保险箱** 粘贴项目的 `.env`，按用途勾选质检或部署注入。外部任务的自动质检使用无密钥环境。管理员审阅工作区并显式重跑后可以使用已勾选的凭证。
-4. 在 **Git Diff** 中逐行批注，或选择另一个模型复审。勾选的问题可合并发送给 Codex。要在干净的上下文继续，打开会话菜单生成架构交接单。
 
 ## 系统架构
 
@@ -242,6 +246,7 @@ pnpm test
 - [x] **V1.1 模型与账本** · 多 Key 轮询、模型测速、上下文压缩和按回合统计用量。
 - [x] **V1.2 访问控制** · 公网入口、设备会话管理和限定工作区的访客链接。
 - [x] **V1.3 工作台验收** · 历史分页、本地缓存、即时发送和按工作区启用的隔离执行。
+- [x] **V1.4 质量门禁与保险箱** · 只读计划、自动质检和修复、跨模型复审、逐行批注、会话交接、项目密钥按用途注入。
 - [ ] **npm 分发** · 选定可用包名并发布 CLI。
 - [ ] **V2 规划** · 加强业务容器隔离、扩充供应商兼容性覆盖并改进部署恢复。
 

@@ -1,0 +1,56 @@
+name: Refresh README screenshots
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_sha == github.sha
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    concurrency:
+      group: readme-screenshots
+      cancel-in-progress: false
+    steps:
+      - name: Check out the media branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: codexdeck-media
+      - name: Download the gallery from the tested commit
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: readme-gallery
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/gallery
+      - name: Publish the five validated images
+        env:
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          for name in workbench approval mobile review vault; do
+            image="$RUNNER_TEMP/gallery/$name.png"
+            test -f "$image"
+            test ! -L "$image"
+            test "$(file --brief --mime-type "$image")" = image/png
+            install -m 644 -- "$image" "docs/assets/$name.png"
+            git add -- "docs/assets/$name.png"
+          done
+          if git diff --cached --quiet; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "docs: refresh screenshots for $TESTED_SHA"
+          current=$(git ls-remote --exit-code origin refs/heads/main)
+          if [[ "${current%%$'\t'*}" == "$TESTED_SHA" ]]; then
+            git push origin HEAD:refs/heads/codexdeck-media
+          fi

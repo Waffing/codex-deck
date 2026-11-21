@@ -53,6 +53,25 @@ jobs:
           CODEXDECK_PUBLIC_PORT=26320 docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml -f deploy/docker-compose.public.yml config --quiet
       - name: Verify non-root native build and upgrade recovery
         run: sudo bash deploy/tests/installer.sh
+      - name: Collect README screenshots
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        working-directory: apps/web/test-results
+        run: |
+          mkdir "$RUNNER_TEMP/gallery"
+          cp 03-workbench-desktop.png "$RUNNER_TEMP/gallery/workbench.png"
+          cp 02-approval-desktop.png  "$RUNNER_TEMP/gallery/approval.png"
+          cp 04-approval-mobile.png   "$RUNNER_TEMP/gallery/mobile.png"
+          cp 14-review-1440.png       "$RUNNER_TEMP/gallery/review.png"
+          cp 14-vault-1440.png        "$RUNNER_TEMP/gallery/vault.png"
+      - name: Upload README screenshots
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: readme-gallery
+          path: ${{ runner.temp }}/gallery/*.png
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
 
   image-smoke:
     runs-on: ubuntu-latest

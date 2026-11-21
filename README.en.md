@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/assets/banner.svg" alt="CodexDeck, a self-hosted control plane for Codex" width="1280">
   <h1>CodexDeck</h1>
-  <p>A self-hosted web cockpit for Codex CLI with an OpenAI-compatible model gateway, remote approvals, and verified deployments.</p>
+  <p>A self-hosted workbench for Codex CLI. Connect your own models, approve a plan, review the diff and verify a deployment from your browser.</p>
   <p><a href="README.md">简体中文</a> · <strong>English</strong></p>
   <p>
     <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/Waffing/codex-deck?style=flat-square"></a>
@@ -13,6 +13,7 @@
   </p>
   <p>
     <a href="#features">Features</a> ·
+    <a href="#screenshots">Screenshots</a> ·
     <a href="#quick-start">Quick Start</a> ·
     <a href="#architecture">Architecture</a> ·
     <a href="#security">Security</a> ·
@@ -21,18 +22,20 @@
   </p>
 </div>
 
-## V1.3 workbench
+## V1.4 workflow
 
-The V1.3 candidate passed its acceptance tests. Use the tested source linked below to try it. The one-line Docker installer follows the official version shown in the **Release** badge above.
+V1.4 is available on `main`. Run the workbench from source to try the features below. The one-line Docker installer follows the latest tagged release. Check its release notes when choosing an image. [Run from source](#development) · [Latest release](https://github.com/Waffing/codex-deck/releases/latest)
 
-| When you want to… | What happens |
+| What you want to do | Where to do it |
 | --- | --- |
-| Pick up a long conversation | Open the latest 12 turns and scroll up for earlier ones. Administrators can cache recent conversations locally. Guest history stays in page memory. |
-| Send a task on a slow connection | Press Enter to see your message and its pending indicator immediately. Retry a failed send from the same message without creating a second task. |
-| Run your own project without approval prompts | Select **工作区权限 → 完全访问** (Workspace permissions → Full access) in the composer. From the next turn, administrator commands, tests and enabled deployment actions run in a dedicated container. This requires a non-root Linux controller and a working Docker executor. Guests and Open API callers keep their own approval policies. |
-| Find the deliverable | Documents, images and archives appear below the reply. Expand the turn’s changed files for source code. Choose from four skins. By default, only new approvals and errors play a sound. |
+| Agree on a plan before editing | Switch on **Plan** in the composer. Codex plans in a read-only environment. Request a revision or approve the plan to start coding. |
+| Run project checks after a change | In **Workspace settings → Quality gate**, detect or enter commands such as `pnpm typecheck` and `pnpm test`. Set a repair limit from 0 to 5, inspect the redacted logs or interrupt a run. |
+| Get a second model's review | Select a reviewer in **Git Diff**. Each finding has a severity and a file and line number. Send selected findings back to Codex for repair. |
+| Tell Codex how a specific line should change | Click **+** beside an added or deleted line. Collect comments across files and send them together. |
+| Continue in a fresh conversation | Choose **Generate handoff and start a new thread** in the thread menu. The new thread opens with the goals, changed files, constraints and remaining work, plus a link back to the source thread. |
+| Supply environment variables for tests or deployment | Import the project's `.env` in **Workspace settings → Environment vault**. Enable each key separately for verification or deployment. The vault encrypts values and gives the conversation only the available key names. |
 
-In the browser test, 40 inputs in a 120-turn conversation triggered zero re-renders of completed turns. In the Docker test, Codex ran project tests, staged and promoted releases, and performed a rollback. [V1.3 test run](https://github.com/Waffing/codex-deck/actions/runs/44880378042) · [Tested source](https://github.com/Waffing/codex-deck/tree/c392f5d0341d4dd0b8d8f6dda3936e78106fb69e)
+Automatic verification is opt-in. Checks run offline by default in a copy of the workspace. Docker runs each gate in a separate container. Native Linux installations need a systemd user manager and `/usr/bin/bwrap`. Guest and Open API checks run without vault credentials. An administrator can review the workspace and rerun checks with the selected credentials.
 
 ## Quick Start
 
@@ -113,26 +116,27 @@ For key rotation, back up first, stop the service and supply the new random 32-b
 | Verify deployments before committing to a release | Server Probe checks available runtimes. Stage a deployment, verify HTTP and logs, optionally run Playwright checks, then promote with rollback on verification failure. |
 | Approve work away from your desk | The responsive console shows tasks, approvals, logs and service previews on a phone. |
 
-<p align="center">
-  <img src="docs/assets/workbench.png" alt="Desktop CodexDeck workbench with a completed task and an artifact preview" width="100%">
-</p>
+## Screenshots
+
+Playwright captures these views using a demo project. The gallery refreshes after CI passes on the main branch. [Screenshot history](https://github.com/Waffing/codex-deck/commits/codexdeck-media/)
+
+<p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/workbench.png" alt="A completed task and its artifact preview in the desktop workbench" width="100%"></p>
 
 <table>
   <tr>
-    <td align="center"><img src="docs/assets/approval.png" alt="Inline desktop approval card awaiting a decision" width="720"></td>
-    <td align="center"><img src="docs/assets/mobile.png" alt="Mobile CodexDeck console with a pending deployment approval" width="195"></td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/review.png" alt="Cross-model findings and changed lines in the Git Diff drawer"></td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/vault.png" alt="Workspace vault with key names, masked values and injection settings"></td>
+  </tr>
+  <tr><td>Cross-model diff review</td><td>Workspace environment vault</td></tr>
+</table>
+
+<table>
+  <tr>
+    <td align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/approval.png" alt="An inline approval request in the desktop workbench" width="720"></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/mobile.png" alt="A pending approval on a phone" width="195"></td>
   </tr>
   <tr><td align="center">Desktop approval</td><td align="center">Mobile approval</td></tr>
 </table>
-
-*Screenshots show the local console with synthetic test data.*
-
-### Using the V1.4 quality gates
-
-1. Select **Plan** in the composer. Review the proposed files and checks, then approve the plan to start coding or request a revision.
-2. Open workspace settings to detect or enter verification commands and choose a repair limit from 0 to 5. Verification is opt-in and runs offline by default in a copy of the workspace. Docker installations run each gate in a separate container. Native Linux installations need a running systemd user manager and `/usr/bin/bwrap`.
-3. Import the project's `.env` into the workspace vault and select which values verification or deployment may use. Automatic checks for external tasks use a credential-free environment. An administrator can review the workspace and explicitly rerun checks with the selected credentials.
-4. Annotate changed lines in **Git Diff** or select a different model to review the patch. Send selected findings back to Codex together. Use the thread menu to start a fresh conversation with an architecture handoff.
 
 ## Architecture
 
@@ -244,6 +248,7 @@ Run `pnpm dev:server` and `pnpm dev:web` in separate terminals. The API defaults
 - [x] **V1.1 models and usage** · Multi-key rotation, model benchmarks, context compaction and per-turn usage.
 - [x] **V1.2 access control** · Public access, device session management and workspace-scoped guest invitations.
 - [x] **V1.3 workbench validation** · Paged history, local caching, optimistic sends and opt-in isolated execution per workspace.
+- [x] **V1.4 quality gates and vault** · Read-only plans, verification and repair, cross-model review, line comments, thread handoffs and scoped workspace secrets.
 - [ ] **npm distribution** · Choose an available package name and publish the CLI.
 - [ ] **V2 plans** · Strengthen workload isolation, expand provider compatibility coverage and improve deployment recovery.
 

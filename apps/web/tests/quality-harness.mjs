@@ -6,7 +6,7 @@ import path from "node:path";
 
 export function harnessResponse(instructions){
   if(instructions?.startsWith("Review the supplied Git patch"))return JSON.stringify({
-    summary:"检查两处配置变更。",findings:[{id:"fixture-finding",severity:"warning",category:"maintainability",file:"alpha.txt",line:1,title:"记录变更目的",detail:"更新前请说明取值来源。",fix_hint:"添加说明。"}]
+    summary:"默认请求超时已从 3 秒调整为 30 秒，测试期望值已同步。",findings:[{id:"fixture-finding",severity:"warning",category:"maintainability",file:"timeout.ts",line:1,title:"核对预发布超时预算",detail:"接口会等待最多 30 秒。请核对上层代理的请求时限。",fix_hint:"记录超时预算，并覆盖超时分支。"}]
   });
   if(instructions?.includes("Format the architecture handoff in Markdown"))return "## 架构目标\n维护工作区配置。\n\n## 待办\n复查改动。";
 }
@@ -21,20 +21,27 @@ export async function qualityJourney({browser,context,origin,instrument,submit,s
     const sent=page.waitForResponse(r=>r.url().endsWith("/review-feedback")&&r.request().method()==="POST");
     await click();const response=await sent;
     assert.ok(response.ok(),"feedback HTTP "+response.status());
-    await page.waitForFunction(async id=>{
-      const res=await fetch("/api/threads/"+id+"/turns");const state=await res.json();return !state.active_turn&&state.turns.at(-1)?.status==="completed";
-    },thread.id);
+    const submitted=await response.json();
+    await page.waitForFunction(async ({threadId,turnId})=>{
+      const res=await fetch("/api/threads/"+threadId+"/turns");
+      const state=await res.json();
+      return state.turns.some(turn=>turn.id===turnId&&turn.status==="completed");
+    },{threadId:thread.id,turnId:submitted.task_id});
     return response.request().postDataJSON();
   }
-  const workspace=await post("/api/workspaces",{name:"quality-"+viewport.width,automation_level:"semi"});
+  const workspace=await post("/api/workspaces",{name:viewport.width<768?"release-mobile":"release-console",automation_level:"semi"});
   const models=await (await request.get(origin+"/api/models")).json();
-  const thread=await post("/api/threads",{workspace_id:workspace.id,title:"质量回归",model_alias:models[0].alias});
+  const thread=await post("/api/threads",{workspace_id:workspace.id,title:"预发布超时配置",model_alias:models[0].alias});
   try{
     const git=(...args)=>execFileSync("git",args,{cwd:workspace.path,stdio:"pipe",windowsHide:true});
     git("init","-q");git("config","user.name","Fixture");git("config","user.email","fixture@example.test");
-    for(const file of ["alpha.txt","beta.txt"])await writeFile(path.join(workspace.path,file),"previous\n");
+    const setTimeoutFixture=async milliseconds=>{
+      await writeFile(path.join(workspace.path,"timeout.ts"),"export const timeoutMs = "+milliseconds+";\n");
+      await writeFile(path.join(workspace.path,"timeout.test.ts"),"expect(timeoutMs).toBe("+milliseconds+");\n");
+    };
+    await setTimeoutFixture(3000);
     await writeFile(path.join(workspace.path,"package.json"),JSON.stringify({scripts:{test:"node --test"}}));
-    git("add","--","alpha.txt","beta.txt","package.json");git("commit","-qm","Fixture baseline");
+    git("add","--","timeout.ts","timeout.test.ts","package.json");git("commit","-qm","Fixture baseline");
     await page.goto(origin);
     await page.evaluate(({workspace,thread})=>{localStorage.setItem("deck.workspace",workspace);localStorage.setItem("deck.thread",thread);},{workspace:workspace.id,thread:thread.id});
     await page.reload();
@@ -66,7 +73,7 @@ export async function qualityJourney({browser,context,origin,instrument,submit,s
 
     const plan=page.getByRole("button",{name:"Plan 模式"});
     await plan.click();await page.waitForFunction(()=>document.querySelector(".plan-switch")?.getAttribute("aria-pressed")==="true");
-    await submit(page,"规划 alpha 和 beta 配置调整");
+    await submit(page,"规划预发布请求的超时时间，并同步回归测试");
     const card=page.getByRole("article",{name:"计划确认"});
     await card.getByRole("button",{name:"提修改意见重拟"}).click();
     await card.getByLabel("计划修改意见").fill("补充回归测试步骤");
@@ -76,22 +83,22 @@ export async function qualityJourney({browser,context,origin,instrument,submit,s
     await page.getByText("first complete",{exact:true}).waitFor();
     await card.waitFor({state:"hidden"});
 
-    for(const file of ["alpha.txt","beta.txt"])await writeFile(path.join(workspace.path,file),"updated\n");
+    await setTimeoutFixture(30000);
     await page.getByRole("button",{name:"Git Diff",exact:true}).click();
-    for(const [file,side] of [["alpha.txt","new"],["beta.txt","old"]]){
+    for(const [file,side] of [["timeout.ts","new"],["timeout.test.ts","old"]]){
       await drawer.getByRole("button",{name:"批注 "+file+":1 "+side}).click();
       await drawer.getByLabel("行级批注").fill("核对 "+file);
       await drawer.getByRole("button",{name:"保存批注"}).click();
     }
     await drawer.getByText("已标注 2 处批注",{exact:true}).waitFor();
-    const payload=await checkFeedback(()=>drawer.getByRole("button",{name:"汇总发给 Codex 修改"}).click());
-    assert.deepEqual(payload.annotations.map(a=>[a.file,a.line,a.side]),[["alpha.txt",1,"new"],["beta.txt",1,"old"]]);
     await drawer.getByLabel("复审模型").selectOption(reviewer);
     await drawer.getByRole("button",{name:"AI 跨模型复审"}).click();
-    const finding=drawer.getByRole("checkbox",{name:/记录变更目的/});
+    const finding=drawer.getByRole("checkbox",{name:/核对预发布超时预算/});
     await finding.check();
-    await drawer.getByRole("button",{name:"alpha.txt:1",exact:true}).click();
+    await drawer.getByRole("button",{name:"timeout.ts:1",exact:true}).click();
     await shot(page,"14-review-"+viewport.width);
+    const payload=await checkFeedback(()=>drawer.getByRole("button",{name:"汇总发给 Codex 修改"}).click());
+    assert.deepEqual(payload.annotations.map(a=>[a.file,a.line,a.side]),[["timeout.ts",1,"new"],["timeout.test.ts",1,"old"]]);
     const findings=await checkFeedback(()=>drawer.getByRole("button",{name:"将选中问题发回 Codex 修复"}).click());
     assert.equal(findings.finding_ids.length,1);
     await drawer.getByRole("button",{name:"关闭抽屉"}).click();

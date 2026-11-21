@@ -114,7 +114,10 @@ async function receive(msg) {
   if (id === approvalId) {
     notify("fixture/approval",{decision:msg.result?.decision});
     if (consoleItem && ["accept","acceptForSession"].includes(msg.result?.decision)) {
-      await writeFile(join(process.cwd(),"result.txt"),"CodexDeck test artifact\n");
+      await writeFile(join(process.cwd(),"result.txt"),[
+        "工作区验收摘要", "", "版本控制", "  git status · 工作树干净", "",
+        "交付文件", "  report.docx   验收报告", "  result.txt    交付清单", "  Dockerfile    容器入口", "",
+      ].join("\n"));
       await writeFile(join(process.cwd(),"report.docx"),"Fixture for artifact metadata");
       await writeFile(join(process.cwd(),"Dockerfile"),"FROM scratch\n");
       notify("item/completed",{turnId,item:{...consoleItem,status:"completed",exitCode:0,aggregatedOutput:"working tree clean"}});

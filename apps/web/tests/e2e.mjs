@@ -151,7 +151,9 @@ try {
   await fileMode.getByRole("radio",{name:"全部文件"}).click();
   await files.getByText("Dockerfile",{exact:true}).waitFor();
   await desktop.getByRole("button",{name:/^result\.txt/}).click();
-  await desktop.locator(".deck-drawer").getByText("CodexDeck test artifact",{exact:true}).waitFor();
+  await desktop.locator(".deck-drawer").getByText(/git status · 工作树干净/).waitFor();
+  await changed.locator("summary").click();
+  await changed.getByText("Dockerfile",{exact:true}).waitFor();
   await shot(desktop,"03-workbench-desktop");
 
   step="刷新续传与单端口路由";
