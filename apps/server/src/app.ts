@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import compress from "@fastify/compress";
 import type Database from "better-sqlite3";
 import { gatewayConfigSchema, type GatewayConfig } from "@codexdeck/shared";
 import type { CodexDeckDatabase } from "./db/index.js";
@@ -33,6 +34,13 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
   const expectedKey = context.native.prepare("SELECT value FROM settings WHERE key='crypto.key-check'").pluck().get();
   if (expectedKey != null && expectedKey !== rotationProof(context.masterKey)) throw new Error("The configured master key does not match the rotated database.");
   const app = Fastify({ logger: false, genReqId:()=>randomUUID(),bodyLimit: 2 * 1024 * 1024, trustProxy: false });
+  app.register(compress, {global:false, globalDecompression:false, encodings:["br","gzip"]});
+  app.addHook("onRoute", route => {
+    if (route.method==="GET" && route.url.startsWith("/api/") &&
+      !/^\/api\/(?:v1\/|dl\/|auth\/|security\/|temp-access|system\/backup)/.test(route.url)) {
+      route.compress = {threshold:1024};
+    }
+  });
   registerPublicGate(app,context);
   registerTempAccess(app,context);
   registerSecurityRoutes(app,context);
@@ -41,7 +49,7 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
   const systemPorts = new Set([22, 80, 443]);
   if (systemPorts.has(context.gatewayConfig.port)) throw new Error("CodexDeck cannot listen on a protected system port.");
 
-  const health = async () => ({ status: "ok", version: process.env.CODEXDECK_VERSION ?? "1.2.0", uptime: Math.floor(process.uptime()) });
+  const health = async () => ({ status: "ok", version: process.env.CODEXDECK_VERSION ?? "1.3.0", uptime: Math.floor(process.uptime()) });
   app.get("/health", health);
   app.get("/api/health", health);
   registerStoredCredentials(context);

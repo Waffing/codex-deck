@@ -77,3 +77,4 @@ jobs:
           export CODEXDECK_SMOKE_CONTAINER=$(docker compose "${files[@]}" ps -q codexdeck)
           docker exec "$CODEXDECK_SMOKE_CONTAINER" sh -c 'test "$(sed -n "s/^Uid:[[:space:]]*\([0-9]*\).*/\1/p" /proc/1/status)" = "$PUID"'
           node apps/server/tests/docker-deployment-smoke.mjs
+          if [[ "$CODEXDECK_REQUIRE_BROWSER" == 0 ]]; then node apps/server/tests/isolated-runner-smoke.mjs; fi

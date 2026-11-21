@@ -6,6 +6,7 @@ import type { WorkspaceFiles } from "../files/workspace-files.js";
 import {readPreferences} from "../settings/preferences.js";
 import {turnEvents} from "../codex/timeline.js";
 import {scopedAccess} from "../temp-access/routes.js";
+import {stepDetail,turnPage} from "../codex/turns.js";
 
 export function registerConsoleRoutes(app:FastifyInstance,ctx:ServerContext,files:WorkspaceFiles) {
   const db=ctx.native;
@@ -32,6 +33,20 @@ export function registerConsoleRoutes(app:FastifyInstance,ctx:ServerContext,file
     const input=localImportSchema.safeParse({automation_level:readPreferences(db).automationLevel,...(req.body as object)});
     if (!input.success) return reply.code(400).send({error:"Invalid local workspace directory."});
     return reply.code(201).send(await files.importLocal(input.data));
+  });
+  app.get<{Params:{id:string};Querystring:{limit?:string;before_turn_index?:string}}>("/api/threads/:id/turns",scopedAccess(ctx),async(req,reply)=>{
+    const limit=Number(req.query.limit??12), before=Number(req.query.before_turn_index??Number.MAX_SAFE_INTEGER);
+    if(!Number.isSafeInteger(limit)||limit<1||limit>50||!Number.isSafeInteger(before)||before<1) return reply.code(400).send({error:"Invalid turn pagination."});
+    if(!db.prepare("SELECT 1 FROM threads WHERE id=?").get(req.params.id)) return reply.code(404).send({error:"Unknown thread."});
+    const missing=db.prepare(`SELECT p.id FROM (SELECT id FROM thread_turns WHERE thread_id=? AND turn_index<? ORDER BY turn_index DESC LIMIT ?) p
+      WHERE EXISTS(SELECT 1 FROM artifacts WHERE turn_id=p.id AND size_bytes IS NULL AND content_sha256 IS NOT NULL)`).pluck().all(req.params.id,before,limit) as string[];
+    if(missing.length) await files.backfillArtifactSizes(missing);
+    reply.header("Cache-Control","private, no-store");
+    return turnPage(db,req.params.id,limit,before,ctx.masker);
+  });
+  app.get<{Params:{turnId:string;stepId:string}}>("/api/turns/:turnId/steps/:stepId",scopedAccess(ctx),async(req,reply)=>{
+    const step=stepDetail(db,req.params.turnId,req.params.stepId,ctx.masker);
+    return step??reply.code(404).send({error:"Unknown turn step."});
   });
   app.get<{Params:{id:string};Querystring:{before?:string;artifact_before?:string;debug?:string}}>("/api/threads/:id/history",scopedAccess(ctx),async (req,reply)=>{
     if (!db.prepare("SELECT 1 FROM threads WHERE id=?").get(req.params.id)) return reply.code(404).send({error:"Unknown thread."});

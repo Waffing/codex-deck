@@ -109,5 +109,5 @@ export function projectTurn(events:ThreadEvent[]) {
       }
     }
   }
-  return {answer:[...messages.values()].filter(Boolean).join("\n\n"),items:items.filter(i=>i.text||i.steps?.length),debug,telemetry};
+  return {answer:[...messages.values()].filter(Boolean).join("\n\n"),answerItems:[...messages].map(([id,text])=>({id,text})),items:items.filter(i=>i.text||i.steps?.length),debug,telemetry};
 }

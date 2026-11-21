@@ -11,7 +11,7 @@ export const compactResultSchema=z.object({
   estimated:z.boolean(), before_estimated:z.boolean().optional(),
 });
 export type CompactResult=z.infer<typeof compactResultSchema>;
-export const threadMessageSchema = z.object({ prompt:z.string().trim().max(200_000), image_ids:z.array(z.uuid()).max(4).optional() })
+export const threadMessageSchema = z.object({ prompt:z.string().trim().max(200_000), image_ids:z.array(z.uuid()).max(4).optional(), client_msg_id:z.uuid().optional() })
   .refine(input => Boolean(input.prompt || input.image_ids?.length));
 export const threadModelPatchSchema = z.object({
   model_alias: z.string().min(1).optional(), reasoning_effort: reasoningEffortSchema.nullable().optional(),

@@ -1,3 +1,4 @@
+import {ToggleSwitch,SegmentedControl,NumberControl} from "./Controls";
 import { useEffect, useRef, useState } from "react";
 import type { Model, Provider, ProviderPreset, ProbeResult } from "@codexdeck/shared";
 import {
@@ -376,12 +377,12 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
           </div>
           <fieldset><legend>Key 轮询池</legend>
             {providers.find(row=>row.id===editor.id)?.keys?.map(k=><label key={k.id} className="ad-check">
-              <input type="checkbox" checked={p.retain.includes(k.id)} onChange={e=>setP({...p,retain:e.target.checked?[...p.retain,k.id]:p.retain.filter(id=>id!==k.id)})}/>
+              <ToggleSwitch checked={p.retain.includes(k.id)} onCheckedChange={next=>setP({...p,retain:next?[...p.retain,k.id]:p.retain.filter(id=>id!==k.id)})}/>
               保留 {k.masked} · {k.status}</label>)}
             {p.extraKeys.map((key,i)=><label key={i}>附加 Key {i+1}<input type="password" autoComplete="new-password" value={key} onChange={e=>setP({...p,extraKeys:p.extraKeys.map((old,n)=>i===n?e.target.value:old)})}/></label>)}
             <button type="button" className="ad-button" onClick={()=>setP({...p,extraKeys:[...p.extraKeys,""]})}>添加另一个 Key</button>
-            <label>轮询策略<select value={p.strategy} onChange={e=>setP({...p,strategy:e.target.value as ProviderDraft["strategy"]})}>
-              <option value="round_robin">按序轮询</option><option value="failover">仅故障切换</option></select></label></fieldset>
+            <label>轮询策略<SegmentedControl value={p.strategy} onValueChange={next=>setP({...p,strategy:next as ProviderDraft["strategy"]})}>
+              <option value="round_robin">按序轮询</option><option value="failover">仅故障切换</option></SegmentedControl></label></fieldset>
           <details><summary>余额查询凭证</summary>
             <label>余额端点<input type="url" placeholder="使用厂商预设" value={p.balanceEndpoint} onChange={e=>setP({...p,balanceEndpoint:e.target.value})}/></label>
             <label>余额管理令牌<input type="password" autoComplete="new-password" placeholder="留空保留" value={p.balanceToken} onChange={e=>setP({...p,balanceToken:e.target.value})}/></label>
@@ -389,15 +390,14 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
           <details>
             <summary>高级适配</summary>
             <label className="ad-check">
-              <input
-                type="checkbox"
+              <ToggleSwitch
                 checked={p.forceChat}
-                onChange={(e) => setP({ ...p, forceChat: e.target.checked })}
+                onCheckedChange={next=> setP({ ...p, forceChat: next })}
               />
               强制 Chat Completions 转译
             </label>
             <label className="ad-check">
-              <input type="checkbox" checked={p.strip} onChange={(e) => setP({ ...p, strip: e.target.checked })} />
+              <ToggleSwitch checked={p.strip} onCheckedChange={next=> setP({ ...p, strip: next })} />
               剥离 reasoning 字段
             </label>
             <label>
@@ -411,10 +411,9 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
             </label>
           </details>
           <label className="ad-check">
-            <input
-              type="checkbox"
+            <ToggleSwitch
               checked={p.enabled}
-              onChange={(e) => setP({ ...p, enabled: e.target.checked })}
+              onCheckedChange={next=> setP({ ...p, enabled: next })}
             />
             启用渠道
           </label>
@@ -528,14 +527,14 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
             </label>
             <label>
               接入协议
-              <select
+              <SegmentedControl
                 value={m.protocol}
-                onChange={(e) => setM({ ...m, protocol: e.target.value as Model["protocol"] })}
+                onValueChange={next=> setM({ ...m, protocol: next as Model["protocol"] })}
               >
                 <option value="auto">自动选择</option>
                 <option value="responses">Responses 原生</option>
                 <option value="chat">强制 Chat Completions 转译</option>
-              </select>
+              </SegmentedControl>
             </label>
             <label>
               模型别名
@@ -547,8 +546,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
             </label>
             <label>
               输入单价 / 百万 Token
-              <input
-                type="number"
+              <NumberControl
                 step="any"
                 min="0"
                 required
@@ -556,13 +554,12 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                 onChange={(e) => setM({ ...m, input: Number(e.target.value) })}
               />
             </label>
-            <label>上下文窗口<input type="number" required min="1" step="1" value={m.context} onChange={e=>setM({...m,context:Number(e.target.value)})}/></label>
-            <label>最大输出 Token<input type="number" min="1" step="1" max={m.context} required value={m.maxOutput} onChange={e=>setM({...m,maxOutput:Number(e.target.value)})}/></label>
-            <label>缓存读取单价 / 百万 Token<input type="number" min="0" step="any" required value={m.cache} onChange={e=>setM({...m,cache:Number(e.target.value)})}/></label>
+            <label>上下文窗口<NumberControl required min="1" step="1" value={m.context} onChange={e=>setM({...m,context:Number(e.target.value)})}/></label>
+            <label>最大输出 Token<NumberControl min="1" step="1" max={m.context} required value={m.maxOutput} onChange={e=>setM({...m,maxOutput:Number(e.target.value)})}/></label>
+            <label>缓存读取单价 / 百万 Token<NumberControl min="0" step="any" required value={m.cache} onChange={e=>setM({...m,cache:Number(e.target.value)})}/></label>
             <label>
               输出单价 / 百万 Token
-              <input
-                type="number"
+              <NumberControl
                 step="any"
                 min="0"
                 required
@@ -594,10 +591,9 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
               })}
             </div>
             <label className="ad-check">
-              <input
-                type="checkbox"
+              <ToggleSwitch
                 checked={m.enabled}
-                onChange={(e) => setM({ ...m, enabled: e.target.checked })}
+                onCheckedChange={next=> setM({ ...m, enabled: next })}
               />
               启用模型
             </label>
@@ -650,10 +646,10 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                 </div>
               </div>
             ))}
-            <select
+            <SegmentedControl
               aria-label="添加备用模型"
               value=""
-              onChange={(e) => setM({ ...m, fallback: [...m.fallback, e.target.value] })}
+              onValueChange={next=> setM({ ...m, fallback: [...m.fallback, next] })}
             >
               <option value="">选择备用模型…</option>
               {models
@@ -663,17 +659,17 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                     {v.alias}
                   </option>
                 ))}
-            </select>
+            </SegmentedControl>
           </fieldset>
           {editor.id && refs && <fieldset>
             <legend>模型引用</legend>
             <p>{refs.threads} 个会话 · {refs.fallback.length} 条备用路由{refs.isDefault && " · 当前默认模型"}</p>
             {(refs.threads>0 || refs.fallback.length>0 || refs.isDefault) && <>
-              <label>迁移到<select value={replacement} onChange={e=>setReplacement(e.target.value)}>
+              <label>迁移到<SegmentedControl value={replacement} onValueChange={next=>setReplacement(next)}>
                 <option value="">选择可用模型…</option>
                 {models.filter(row=>row.id!==editor.id && row.enabled && providers.some(p=>p.id===row.provider_id && p.enabled))
                   .map(row=><option key={row.id} value={row.id}>{row.alias}</option>)}
-              </select></label>
+              </SegmentedControl></label>
               <button type="button" className="ad-button" disabled={!replacement || a.busy} onClick={()=>void a.run(async()=>{
                 const remaining=await api<References>(`/api/models/${editor.id}/replace`,json("POST",{replacement_id:replacement}));
                 setRefs(remaining);

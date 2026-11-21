@@ -16,7 +16,7 @@ interface ConfigOptions {
   port: number;
   defaultModel?: string;
   tokenTtlSeconds?: number;
-  thread?: { id: string; workspaceId?:string; home?: string | null; opsEntry: string; globalInstructions: string };
+  thread?: { id: string; workspaceId?:string; home?: string | null; opsEntry: string; globalInstructions: string; isolated?:boolean };
 }
 
 /** The returned env is a complete child environment. Do not merge process.env into it. */
@@ -82,7 +82,8 @@ export async function generateCodexConfig(options: ConfigOptions) {
   // JSON-quoted strings escape Windows paths, quotes and newlines in TOML basic strings.
   const caches:Record<string,string> = {};
   let cacheRoot:string|undefined;
-  if (options.thread && process.platform !== "win32") {
+  const isolated = options.thread?.isolated === true;
+  if (options.thread && !isolated && process.platform !== "win32") {
     const scope = options.thread.workspaceId ?? options.thread.id;
     if (!/^[A-Za-z0-9_-]+$/.test(scope)) throw new Error("Invalid workspace cache identifier.");
     cacheRoot=await workspaceDirectory(base,path.join("caches",scope),true);
@@ -94,16 +95,17 @@ export async function generateCodexConfig(options: ConfigOptions) {
     `model_context_window = ${model.context_window}`,
     ...(publicSummaries?['model_reasoning_summary = "auto"']:[]),
     'model_provider = "codexdeck"',
-    `model_catalog_json = ${JSON.stringify(catalogPath)}`,
+    `model_catalog_json = ${JSON.stringify(isolated ? "/run/deck-config/models.json" : catalogPath)}`,
     "",
     ...(options.thread ? [
-      'sandbox_mode = "workspace-write"', 'approval_policy = "on-request"',
+      isolated ? 'sandbox_mode = "danger-full-access"' : 'sandbox_mode = "workspace-write"',
+      isolated ? 'approval_policy = "never"' : 'approval_policy = "on-request"',
       '[shell_environment_policy]', 'inherit = "core"',
       'exclude = ["*TOKEN*", "*KEY*", "CODEX_HOME", "CODEXDECK_*"]',
       ...(cacheRoot ? ["[shell_environment_policy.set]",...Object.entries(caches).map(([k,v])=>`${k} = ${JSON.stringify(v)}`),
         "[sandbox_workspace_write]",`writable_roots = [${JSON.stringify(cacheRoot)}]`] : []),
-      '[mcp_servers.codexdeck_ops]', "command = " + JSON.stringify(process.execPath),
-      "args = [" + JSON.stringify(options.thread.opsEntry) + "]",
+      '[mcp_servers.codexdeck_ops]', "command = " + JSON.stringify(isolated ? "/usr/local/bin/node" : process.execPath),
+      "args = [" + JSON.stringify(isolated ? "/app/packages/ops-mcp/dist/index.js" : options.thread.opsEntry) + "]",
       'env_vars = ["CODEXDECK_OPS_TOKEN", "CODEXDECK_OPS_URL"]',
     ] : []),
     "[model_providers.codexdeck]",

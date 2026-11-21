@@ -3,13 +3,15 @@ import { randomUUID } from "node:crypto";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
-import { projectEvent, subscriptionSchema, type ThreadEvent } from "@codexdeck/shared";
+import { projectEvent, projectTurn, subscriptionSchema, type ThreadEvent } from "@codexdeck/shared";
 import { authenticated, createRequireAdmin,bindAdminSocket } from "../auth.js";
 import {getGuestSession,onLinkChange,visit} from "../temp-access/service.js";
 import {threadWorkspace} from "../temp-access/routes.js";
 import {clientIp} from "../security/ingress.js";
 import type { ServerContext } from "../app.js";
 import {safeAnswerFragments} from "../codex/timeline.js";
+import {archivedAnswers} from "../codex/answer-archive.js";
+import {latestThreadSequence,materializeTurn} from "../codex/turns.js";
 
 export class ThreadEvents {
   private readonly changes = new EventEmitter();
@@ -19,11 +21,24 @@ export class ThreadEvents {
     const db = this.ctx.native;
     const active = taskId === undefined ? db.prepare("SELECT id FROM tasks WHERE thread_id=? AND status='running'").pluck().get(threadId) as string | undefined : taskId;
     const event = db.transaction(() => {
-      const seq = db.prepare("SELECT coalesce(max(sequence),0)+1 FROM thread_events WHERE thread_id=?").pluck().get(threadId) as number;
+      const seq = latestThreadSequence(db,threadId)+1;
+      if(active && type.startsWith("task_") && payload && typeof payload==="object") {
+        const clientId=db.prepare("SELECT client_msg_id FROM thread_turns WHERE id=?").pluck().get(active);
+        if(typeof clientId==="string") payload={...payload,client_msg_id:clientId};
+      }
       const value: ThreadEvent = { thread_id: threadId, task_id: active ?? null, seq_id: seq, type: this.ctx.masker.maskString(type),
         payload: this.ctx.masker.maskObject(payload ?? null), created_at: new Date().toISOString() };
       db.prepare("INSERT INTO thread_events(id,thread_id,sequence,type,payload_json,task_id,created_at) VALUES(?,?,?,?,?,?,?)")
         .run(randomUUID(), threadId, seq, value.type, JSON.stringify(value.payload), value.task_id, value.created_at);
+      if(active && ["task_completed","task_failed","task_cancelled"].includes(type)) {
+        materializeTurn(db,threadId,active,this.ctx.masker);
+      }
+      if(active && type==="context_compacted") {
+        // Compaction belongs to its already completed turn. Append only the public summary.
+        const card=projectTurn([value]).items[0];
+        if(card) db.prepare(`UPDATE thread_turns SET timeline_summary_json=json_insert(timeline_summary_json,'$[#]',json(?)),latest_seq_id=?
+          WHERE id=? AND timeline_summary_json IS NOT NULL`).run(JSON.stringify(card),seq,active);
+      }
       return value;
     }).immediate();
     this.changes.emit("event", event);
@@ -41,25 +56,35 @@ export class ThreadEvents {
     const parts=this.ctx.native.prepare(`SELECT sequence AS seq_id,type,payload_json FROM thread_events
       WHERE thread_id=? AND task_id=? AND type='item/agentMessage/delta' ORDER BY sequence`);
     let currentTask:string|null=null, replacements=new Map<number,string>();
+    let archived:ThreadEvent[]=[], archiveIndex=0;
+    const db=this.ctx.native;
     const query = this.ctx.native.prepare(`SELECT thread_id, task_id, sequence AS seq_id, type, payload_json, created_at
       FROM thread_events WHERE thread_id=? AND sequence>? AND (? IS NULL OR task_id=?) ORDER BY sequence LIMIT 64`);
     function replay() {
       if(stopped) return;
       const rows=query.all(thread,cursor,task ?? null,task ?? null) as Array<Omit<ThreadEvent,"payload"> & {payload_json:string}>;
-      for (const {payload_json,...base} of rows) {
+      if(task && !archived.length) archived=archivedAnswers(db,thread,task);
+      while(archiveIndex<archived.length && archived[archiveIndex].seq_id<=cursor) archiveIndex++;
+      const backlog:ThreadEvent[]=rows.map(({payload_json,...base})=>({...base,payload:JSON.parse(payload_json)}));
+      // Merge bounded batches in sequence order, including a turn compacted between replay ticks.
+      const candidates=backlog.concat(archived.slice(archiveIndex,archiveIndex+64))
+        .sort((a,b)=>a.seq_id-b.seq_id).slice(0,64);
+      for (const frame of candidates) {
         if (stopped) return;
-        const payload=masker.maskObject(JSON.parse(payload_json));
+        const {payload:original,...base}=frame;
+        const payload=masker.maskObject(original) as Record<string,unknown>;
         if(base.task_id && base.type==="item/agentMessage/delta") {
           if(currentTask!==base.task_id) {
             currentTask=base.task_id;
             const deltas=parts.all(thread,currentTask) as {seq_id:number;type:string;payload_json:string}[];
-            replacements=safeAnswerFragments(deltas.map(v=>({...base,seq_id:v.seq_id,type:v.type,payload:JSON.parse(v.payload_json)})),masker);
+            const fragments=archived.concat(deltas.map(v=>({...base,seq_id:v.seq_id,type:v.type,payload:JSON.parse(v.payload_json)})));
+            replacements=safeAnswerFragments(fragments.sort((a,b)=>a.seq_id-b.seq_id),masker);
           }
           if(replacements.has(base.seq_id)) payload.delta=replacements.get(base.seq_id);
         }
         send({...base,payload}); cursor=base.seq_id;
       }
-      if (rows.length===64) next=setImmediate(replay);
+      if (candidates.length===64) next=setImmediate(replay);
       else { replaying=false; onCaughtUp?.(); }
     }
     const off=this.subscribe(e=>{
@@ -143,7 +168,7 @@ export function registerEventRoutes(app: FastifyInstance, ctx: ServerContext, ev
         visit(ctx,guest,clientIp(req),workspace);
       }
       if (parsed.data.thread_id) unsubscribe = events.follow(parsed.data.thread_id, parsed.data.last_seq_id, raw => {
-        const event=projectEvent(raw,parsed.data.debug);
+        const event=workbenchEvent(raw,parsed.data.debug);
         if (event) send({type:"event",event});
         else send({type:"cursor",seq_id:raw.seq_id,thread_id:raw.thread_id});
       });
@@ -152,6 +177,10 @@ export function registerEventRoutes(app: FastifyInstance, ctx: ServerContext, ev
     subscribe({ type: "subscribe", thread_id: query.thread_id, last_seq_id: Number(query.last_seq_id ?? 0),debug:query.debug==="true" });
     if(!guest){counts();send(heartbeat());}
     const offCounts = events.subscribe(e => {
+      const activity:Record<string,string>={task_started:"running",task_running:"running",task_completed:"completed",approval_req:"approval",task_failed:"failed",task_cancelled:"cancelled"};
+      if (activity[e.type] && (!guest || guest.link.workspace_ids.includes(String(threadWorkspace(ctx,e.thread_id))))) {
+        send({type:"activity",thread_id:e.thread_id,task_id:e.task_id,seq_id:e.seq_id,kind:activity[e.type]});
+      }
       if(guest){
         if (/^(task_|model_changed)/.test(e.type) && guest.link.workspace_ids.includes(String(threadWorkspace(ctx,e.thread_id))))send({type:"thread_changed",thread_id:e.thread_id});
         return;
@@ -167,4 +196,17 @@ export function registerEventRoutes(app: FastifyInstance, ctx: ServerContext, ev
     timer.unref();
     socket.once("close", () => { clearInterval(timer);clearTimeout(expiry);offGuest?.(); unsubscribe?.(); offCounts(); });
   });
+}
+
+/** The caller may fetch a step's command, output or patch on demand. Cursor-only frames still advance the subscription. */
+export function workbenchEvent(raw:ThreadEvent,debug:boolean):ThreadEvent|null {
+  if(!debug && (raw.type==="item/commandExecution/outputDelta" || raw.type==="item/fileChange/outputDelta")) return null;
+  const event=projectEvent(raw,debug);
+  if(!event || debug) return event;
+  if(event.type==="tool_group") {
+    const op=event.payload as {id:string;label:string;status:string};
+    return {...event,payload:{id:op.id,label:op.label,status:op.status,detail:""}};
+  }
+  if(event.type==="turn_telemetry") return {...event,payload:{...event.payload as object,diff:""}};
+  return event;
 }

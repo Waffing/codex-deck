@@ -22,6 +22,7 @@ RUN pnpm install --frozen-lockfile \
     && rm -rf /tmp/server-package /tmp/ops-package
 
 FROM node:22-bookworm-slim AS runtime
+LABEL io.codexdeck.executor="1"
 
 ARG INSTALL_PLAYWRIGHT=false
 ARG CODEX_VERSION=0.157.1

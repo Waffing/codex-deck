@@ -1,3 +1,4 @@
+import {ToggleSwitch,SegmentedControl} from "./Controls";
 import { useEffect, useRef, useState } from "react";
 import type { Model, Provider, DiscoveredModel } from "@codexdeck/shared";
 import { api, json } from "../../lib/api";
@@ -35,8 +36,8 @@ export function ModelLibrary({provider,close,changed}:{provider:Provider;close:(
     <div className="ad-labelrow"><h2>{provider.name} · 上游模型</h2><button className="ad-button" onClick={close}>关闭</button></div>
     <div className="ad-form-grid"><label>搜索模型<input autoFocus type="search" value={query} onChange={e=>setQuery(e.target.value)}/></label>
     <label>模型前缀<select value={prefix} onChange={e=>setPrefix(e.target.value)}><option value="">全部前缀</option>{prefixes.map(p=><option key={p}>{p}</option>)}</select></label></div>
-    <label className="ad-check"><input type="checkbox" checked={all} disabled={!visible.length} onChange={()=>setSelected(all?selected.filter(id=>!visible.some(m=>m.model_id===id)):[...new Set([...selected,...visible.map(m=>m.model_id)])])}/>选择筛选结果</label>
-    <div className="library-list">{visible.map(m=><label key={m.model_id} className="ad-check"><input type="checkbox" checked={selected.includes(m.model_id)} onChange={e=>setSelected(e.target.checked?[...selected,m.model_id]:selected.filter(id=>id!==m.model_id))}/>
+    <label className="ad-check"><ToggleSwitch checked={all} disabled={!visible.length} onCheckedChange={()=>setSelected(all?selected.filter(id=>!visible.some(m=>m.model_id===id)):[...new Set([...selected,...visible.map(m=>m.model_id)])])}/>选择筛选结果</label>
+    <div className="library-list">{visible.map(m=><label key={m.model_id} className="ad-check"><ToggleSwitch checked={selected.includes(m.model_id)} onCheckedChange={next=>setSelected(next?[...selected,m.model_id]:selected.filter(id=>id!==m.model_id))}/>
       <span>{m.model_id}<small>{m.context_window.toLocaleString()} tokens · {m.context_source==="upstream"?"上游报告":"建议值"} {m.capabilities.join(" · ")}</small></span></label>)}
       {!visible.length&&!loading&&!a.error&&<small>没有匹配的上游模型</small>}</div>
     <Feedback busy={a.busy||loading} error={a.error} notice={outcome}/>
@@ -66,13 +67,13 @@ export function BenchmarkBoard({models,current,changed}:{models:Model[];current:
   if(!models.length)return null;
   return <section className="benchmark-board"><div className="ad-subhead"><h2>模型测速榜</h2>
     <button className="ad-primary" disabled={a.busy||!ids.length} onClick={()=>void a.run(benchmark,"测速完成")}>{selected.length?"测速选中模型":"测速全部启用模型"}</button></div>
-    <div className="ad-actions"><label className="ad-check"><input type="checkbox" checked={speed} onChange={e=>setSpeed(e.target.checked)}/>测生成速度（最多 32 tokens）</label>
-      <select aria-label="测速排序" value={order} onChange={e=>setOrder(e.target.value as typeof order)}><option value="ttft_ms">按首字延迟</option><option value="tokens_per_sec">按生成速率</option><option value="status">按可用性</option></select></div>
+    <div className="ad-actions"><label className="ad-check"><ToggleSwitch checked={speed} onCheckedChange={next=>setSpeed(next)}/>测生成速度（最多 32 tokens）</label>
+      <SegmentedControl aria-label="测速排序" value={order} onValueChange={next=>setOrder(next as typeof order)}><option value="ttft_ms">按首字延迟</option><option value="tokens_per_sec">按生成速率</option><option value="status">按可用性</option></SegmentedControl></div>
     <Feedback busy={a.busy} notice={a.notice} error={a.error}/>
     <div className="ad-table-wrap"><table className="ad-table"><thead><tr>{["模型","状态","首字延迟","生成速率","采样时间",""].map((v,i)=><th key={i}>{v}</th>)}</tr></thead>
       <tbody>{sorted.map(m=>{
         const b=m.last_benchmark;
-        return <tr key={m.id}><td><label className="ad-check"><input type="checkbox" aria-label={"选择测速 "+m.alias} checked={selected.includes(m.id)} onChange={e=>setSelected(e.target.checked?[...selected,m.id]:selected.filter(id=>id!==m.id))}/>{m.alias}</label></td>
+        return <tr key={m.id}><td><label className="ad-check"><ToggleSwitch aria-label={"选择测速 "+m.alias} checked={selected.includes(m.id)} onCheckedChange={next=>setSelected(next?[...selected,m.id]:selected.filter(id=>id!==m.id))}/>{m.alias}</label></td>
           <td title={b?.error??undefined}>{b?b.status==="ok"?"可用":"失败":"未测"}{b?.error&&<small>{b.error}</small>}</td>
           <td>{b?.ttft_ms==null?"—":`${b.ttft_ms} ms`}</td><td>{b?.tokens_per_sec==null?b?"样本不足":"—":`${b.tokens_per_sec.toFixed(1)} tok/s`}</td>
           <td>{b?new Date(b.tested_at).toLocaleString():"—"}</td><td>{current===m.alias?"默认模型":<button className="ad-button" disabled={a.busy} onClick={()=>void a.run(async()=>{await api("/api/models/default",json("PUT",{alias:m.alias}));await changed()})}>设为默认</button>}</td></tr>;

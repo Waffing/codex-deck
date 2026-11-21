@@ -67,17 +67,32 @@ export async function chatExperienceJourney(page,submit,shot) {
     else {assert.equal(bytes.subarray(1,4).toString(),"PNG");assert.ok(bytes.readUInt32BE(16)>=800 && bytes.readUInt32BE(20)>100);}
   }
   await page.locator(".desk-nav").getByRole("button",{name:/系统|设置/}).click();
-  await page.getByLabel("外观主题").selectOption("system");
+  assert.equal(await page.locator('.admin-pages input[type="checkbox"]').count(),0);
+  assert.doesNotMatch(await page.locator(".desk-path").innerText(),/console-lab/);
+  for(const [name,skin] of [["曜石琥珀","obsidian"],["午夜松林","pine"],["暖纸阅读","paper"],["极简纯白","white"]]){
+    await page.getByRole("button",{name,exact:true}).click();
+    await page.waitForFunction(id=>document.documentElement.dataset.skin===id,skin);
+  }
+  await page.getByRole("radio",{name:"舒适 108%"}).click();
+  await page.waitForFunction(()=>getComputedStyle(document.documentElement).getPropertyValue("--deck-scale")==="1.08");
+  await page.getByRole("radio",{name:"标准 100%"}).click();
+  await page.getByRole("radio",{name:"柔和木琴"}).click();
+  await page.getByRole("button",{name:"试听",exact:true}).click();
+  await page.getByRole("radio",{name:"静音",exact:true}).click();
+  await page.getByRole("heading",{name:"缓存与性能"}).waitFor();
+  await page.getByRole("button",{name:"一键清空本地缓存"}).click();
+  await page.getByText("本地缓存已清空",{exact:true}).waitFor();
+  await page.getByRole("radiogroup",{name:"外观主题"}).getByRole("radio",{name:"跟随系统"}).click();
   await page.emulateMedia({colorScheme:"light"});
   await page.waitForFunction(()=>document.documentElement.dataset.theme==="light");
-  await page.getByLabel("开发者原始 JSON 调试").check();
+  await page.getByLabel("开发者原始 JSON 调试").click();
   await page.locator(".desk-nav").getByRole("button",{name:"工作台"}).click();
   await page.getByRole("button",{name:/原始协议调试/}).click();
   const debug=page.getByRole("dialog",{name:"原始协议调试"});
   await debug.locator("pre").filter({hasText:"thread/status/changed"}).first().waitFor();
   await debug.getByRole("button",{name:"关闭原始协议"}).click();
   await page.locator(".desk-nav").getByRole("button",{name:/系统|设置/}).click();
-  await page.getByLabel("开发者原始 JSON 调试").uncheck();
+  await page.getByLabel("开发者原始 JSON 调试").click();
   await page.locator(".desk-nav").getByRole("button",{name:"工作台"}).click();
   await turn.getByRole("heading",{name:"核验结果"}).waitFor();
   await shot(page,"07-chat-light");
@@ -134,14 +149,14 @@ export async function mobileExperienceJourney(page, shot, fits) {
   await page.locator(".cd-context-notice").getByText(/上下文已压缩/).waitFor();
   await fits(page);
   await openMobileView("系统与通知");
-  await page.getByLabel("开发者原始 JSON 调试").check();
+  await page.getByLabel("开发者原始 JSON 调试").click();
   await nav.getByRole("button",{name:"工作台"}).tap();
   await page.getByRole("button",{name:/原始协议调试/}).tap();
   const debug=page.getByRole("dialog",{name:"原始协议调试"});
   await debug.locator("pre").filter({hasText:"thread/status/changed"}).first().waitFor();
   await debug.getByRole("button",{name:"关闭原始协议"}).tap();
   await openMobileView("系统与通知");
-  await page.getByLabel("开发者原始 JSON 调试").uncheck();
+  await page.getByLabel("开发者原始 JSON 调试").click();
 
   await openMobileView("第三方 API 与模型");
   const card=page.locator("article.ad-card").first();
@@ -154,7 +169,7 @@ export async function mobileExperienceJourney(page, shot, fits) {
   await fits(page);
   await library.getByRole("button",{name:"关闭"}).tap();
   const board=page.locator(".benchmark-board");
-  await board.getByRole("checkbox",{name:/选择测速 .*library/}).check();
+  await board.getByRole("switch",{name:/选择测速 .*library/}).click();
   const measured=page.waitForResponse(r=>r.url().endsWith("/api/models/benchmark") && r.status()===200);
   await board.getByRole("button",{name:"测速选中模型"}).tap();
   await measured;

@@ -39,12 +39,17 @@ export class RpcClient {
   private readonly pending = new Map<number, { resolve: (r: Json) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   private readonly exited: Promise<void>;
 
-  static async start(cwd: string, env: Record<string,string>, callbacks: RpcCallbacks, binary?: string) {
+  static async start(cwd: string, env: Record<string,string>, callbacks: RpcCallbacks, binary?: string,
+    runner?:{args:string[];env:NodeJS.ProcessEnv;dispose:()=>Promise<void>}) {
+    if (runner) {
+      return new RpcClient(spawn("docker",runner.args,{cwd,env:runner.env,stdio:"pipe"}),callbacks,runner.dispose);
+    }
     const [file, args] = await command(binary);
     return new RpcClient(spawn(file, args, { cwd, env, stdio: "pipe", windowsHide: true }), callbacks);
   }
 
-  private constructor(private readonly proc: ChildProcessWithoutNullStreams, private readonly callbacks: RpcCallbacks) {
+  private constructor(private readonly proc: ChildProcessWithoutNullStreams, private readonly callbacks: RpcCallbacks,
+    private readonly dispose?:()=>Promise<void>) {
     this.exited = new Promise(resolve => proc.once("close", () => { this.end(); resolve(); }));
     proc.once("error", () => this.end());
     proc.stdin.on("error", () => this.end());
@@ -96,6 +101,7 @@ export class RpcClient {
   private end() {
     if (this.closed) return;
     this.closed = true;
+    void this.dispose?.();
     for (const waiter of this.pending.values()) {
       clearTimeout(waiter.timer); waiter.reject(new Error("Codex process exited."));
     }
@@ -105,6 +111,7 @@ export class RpcClient {
 
   async close(force = false) {
     this.proc.stdin.end();
+    if (this.dispose) { await this.dispose(); await this.exited; return; }
     if (!force && await Promise.race([this.exited.then(() => true), delay(1200, false, { ref: false })])) return;
     if (process.platform === "win32" && this.proc.pid) {
       const killer = spawn(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),

@@ -130,11 +130,12 @@ export class WorkspaceFiles {
     const directory = await ensureDirectory(this.dataDirectory, "artifact-blobs");
     const temporary = await resolveSafeWorkspacePath(directory, "capture-" + randomUUID());
     const hash = createHash("sha256");
+    let sizeBytes = 0;
     try {
       const output = await open(temporary, "wx", 0o600);
       try {
         await pipeline(handle.createReadStream(), new Transform({
-          transform(chunk, _encoding, done) { hash.update(chunk); done(null,chunk); },
+          transform(chunk, _encoding, done) { sizeBytes+=chunk.length; hash.update(chunk); done(null,chunk); },
         }), output.createWriteStream());
       } finally { await output.close(); }
     } catch (error) {
@@ -150,9 +151,23 @@ export class WorkspaceFiles {
     const rel = path.relative(root, target).split(path.sep).join("/");
     const row: Artifact = { id: randomUUID(), workspace_id: workspaceId, thread_id: threadId, turn_id: turnId,
       name: path.basename(target), path: rel, mime_type: lookup(target) || "application/octet-stream",
-      change_type: changeType, created_at: new Date().toISOString() };
-    this.context.native.prepare("INSERT INTO artifacts(id,workspace_id,thread_id,turn_id,name,path,mime_type,change_type,created_at,content_sha256) VALUES(@id,@workspace_id,@thread_id,@turn_id,@name,@path,@mime_type,@change_type,@created_at,@digest)").run({...row,digest});
+      change_type: changeType, size_bytes:sizeBytes, created_at: new Date().toISOString() };
+    this.context.native.prepare("INSERT INTO artifacts(id,workspace_id,thread_id,turn_id,name,path,mime_type,change_type,created_at,content_sha256,size_bytes) VALUES(@id,@workspace_id,@thread_id,@turn_id,@name,@path,@mime_type,@change_type,@created_at,@digest,@size_bytes)").run({...row,digest});
     return row;
+  }
+
+  async backfillArtifactSizes(turnIds:string[]) {
+    const read=this.context.native.prepare("SELECT id,content_sha256 FROM artifacts WHERE turn_id=? AND size_bytes IS NULL AND content_sha256 IS NOT NULL");
+    const store=this.context.native.prepare("UPDATE artifacts SET size_bytes=? WHERE id=? AND size_bytes IS NULL");
+    for (const turnId of turnIds) {
+      for (const row of read.all(turnId) as {id:string;content_sha256:string}[]) {
+        if (!/^[0-9a-f]{64}$/.test(row.content_sha256)) continue;
+        try {
+          const file=await openWorkspaceFile(this.dataDirectory,"artifact-blobs/"+row.content_sha256);
+          try {store.run((await file.stat()).size,row.id);} finally {await file.close();}
+        } catch(error) {if(!missing(error) && (error as {statusCode?:number}).statusCode!==404) throw error;}
+      }
+    }
   }
 
   async openArtifact(id:string) {

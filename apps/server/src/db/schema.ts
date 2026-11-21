@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text, primaryKey } from "drizzle-orm/sqlite-core";
+import { blob, integer, real, sqliteTable, text, primaryKey } from "drizzle-orm/sqlite-core";
 
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
@@ -61,6 +61,7 @@ export const workspaces = sqliteTable("workspaces", {
 });
 
 export const threads = sqliteTable("threads", {
+  executorMode: text("executor_mode").notNull().default("standard"),
   pinned: integer("pinned", {mode:"boolean"}).notNull().default(false),
   lastContextTokens: integer("last_context_tokens"),
   compactedSummary: text("compacted_summary"),
@@ -100,6 +101,7 @@ export const approvals = sqliteTable("approvals", {
 });
 
 export const artifacts = sqliteTable("artifacts", {
+  sizeBytes: integer("size_bytes"),
   contentSha256: text("content_sha256"),
   workspaceId: text("workspace_id").references(() => workspaces.id, { onDelete: "cascade" }),
   turnId: text("turn_id"),
@@ -202,6 +204,20 @@ export const tasks = sqliteTable("tasks", {
   updatedAt: text("updated_at").notNull(),
 });
 
+export const threadTurns = sqliteTable("thread_turns", {
+  id:text("id").primaryKey().references(()=>tasks.id,{onDelete:"cascade"}),
+  threadId:text("thread_id").notNull().references(()=>threads.id,{onDelete:"cascade"}),
+  turnIndex:integer("turn_index").notNull(), clientMsgId:text("client_msg_id"), requestHash:text("request_hash"),
+  userContent:text("user_content").notNull(), assistantMarkdown:text("assistant_markdown"),
+  timelineSummaryJson:text("timeline_summary_json"), artifactsSummaryJson:text("artifacts_summary_json"),
+  telemetryJson:text("telemetry_json"), summaryOnly:integer("summary_only",{mode:"boolean"}).notNull().default(false),
+  status:text("status").notNull(), latestSeqId:integer("latest_seq_id").notNull().default(0),
+  createdAt:text("created_at").notNull(), updatedAt:text("updated_at").notNull(),
+});
+export const turnAnswerReplay = sqliteTable("turn_answer_replay", {
+  turnId:text("turn_id").primaryKey().references(()=>threadTurns.id,{onDelete:"cascade"}),frames:blob("frames").notNull(),
+});
+
 export const checkpoints = sqliteTable("checkpoints", {
   turnId: text("turn_id").primaryKey(),
   workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
@@ -235,7 +251,7 @@ export const auditLogs=sqliteTable("audit_logs",{
 export const schema = {
   tempAccessLinks,guestSessions,
   taskSubmissions,adminAudit,userSessions,loginBans,auditLogs,
-  tasks,
+  tasks,threadTurns,turnAnswerReplay,
   checkpoints,
   settings,
   providers,

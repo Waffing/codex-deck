@@ -19,7 +19,7 @@ export function threadWorkspace(ctx:ServerContext,id:string) {
 }
 function guestScope(ctx:ServerContext,req:FastifyRequest,g:GuestSession) {
   const route=req.routeOptions.url??"",method=req.method;
-  const params=req.params as {id?:string;workspace?:string};
+  const params=req.params as {id?:string;workspace?:string;turnId?:string};
   const body=req.body as {workspace_id?:string}|undefined,query=req.query as {workspace_id?:string;debug?:string};
   if(route==="/api/guest/session" || route==="/api/guest/previews" || route==="/ws/events" || route==="/api/workspaces" && method==="GET") return;
   if(route==="/api/artifacts/sign" && method==="POST" || route==="/api/dl/*" && method==="GET") return; // Subject checked against every artifact by the handler.
@@ -30,7 +30,9 @@ function guestScope(ctx:ServerContext,req:FastifyRequest,g:GuestSession) {
     workspace=query.workspace_id;
   } else if(route==="/api/threads" && method==="POST" && g.link.permission!=="readonly") {
     workspace=body?.workspace_id;
-  } else if(route==="/api/threads/:id/history" && method==="GET" && query.debug!=="true" ||
+  } else if(route==="/api/turns/:turnId/steps/:stepId" && method==="GET"){
+    workspace=ctx.native.prepare("SELECT workspace_id FROM tasks WHERE id=?").pluck().get(params.turnId!);
+  } else if(route==="/api/threads/:id/turns" && method==="GET" || route==="/api/threads/:id/history" && method==="GET" && query.debug!=="true" ||
     route==="/api/threads/:id/messages" && method==="POST" && g.link.permission!=="readonly") {
     workspace=threadWorkspace(ctx,params.id!);
   } else if(method==="GET" && ["/api/workspaces/:id/files/content","/api/workspaces/:id/files/tree","/api/workspaces/:id/files/search",

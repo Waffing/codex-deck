@@ -1,5 +1,5 @@
 import { installationCode } from "../src/routes/auth.js";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer as httpServer } from "node:http";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -13,6 +13,7 @@ import { parseGatewayConfig, type ServerContext } from "../src/app.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import {registerSettingsRoutes} from "../src/settings/routes.js";
 import { registerThreadRoutes } from "../src/routes/threads.js";
+import { registerConsoleRoutes } from "../src/routes/console.js";
 import { registerGatewayRoutes } from "../src/gateway/server.js";
 import { openDatabase, resolveDataDirectory } from "../src/db/index.js";
 import { ThreadManager } from "../src/codex/manager.js";
@@ -62,6 +63,7 @@ beforeEach(async () => {
   });
   registerSettingsRoutes(app,ctx,manager,data);
   registerThreadRoutes(app,ctx,manager);
+  registerConsoleRoutes(app,ctx,files);
   registerAuthRoutes(app,ctx);
   registerGatewayRoutes(app,ctx);
   await app.listen({host:"127.0.0.1",port:0});
@@ -103,6 +105,30 @@ async function decision(id: string, action: string, guidance?: string) {
   const result = await post("/api/approvals/" + id + "/decision",{decision:action,user_guidance:guidance});
   expect(result.statusCode).toBe(204);
 }
+it("opens history without waking Codex, deduplicates focus and correlates the first optimistic message",async()=>{
+  const http="/api/threads/"+thread;
+  const get=(url:string)=>app.inject({url,headers:{cookie}});
+  const empty=await get(http+"/turns");
+  expect(empty.json()).toMatchObject({turns:[],latest_seq_id:0,has_more:false,active_turn:null});
+  await get(http+"/history");
+  expect(events("fixture/process")).toHaveLength(0);
+  await Promise.all([post(http+"/warmup"),post(http+"/warmup")]).then(res=>expect(res.map(r=>r.statusCode)).toEqual([204,204]));
+  await poll(()=>expect(events("fixture/process")).toHaveLength(1));
+  const request={prompt:"核对  所有  工作区中的历史回合和最终交付物，保留后续计划安排",client_msg_id:randomUUID()};
+  const response=await Promise.all([post(http+"/messages",request),post(http+"/messages",request)]);
+  const id=response[0].json().task_id as string;
+  expect(response.every(r=>r.statusCode===202&&r.json().task_id===id&&r.json().client_msg_id===request.client_msg_id)).toBe(true);
+  expect((await post(http+"/messages",{...request,prompt:"changed"})).statusCode).toBe(409);
+  await poll(()=>expect(status(id)).toBe("completed"));
+  const result=(await get(http+"/turns")).json();
+  expect(result.turns).toHaveLength(1);
+  expect(result.turns[0]).toMatchObject({id,client_msg_id:request.client_msg_id,user_content:request.prompt,status:"completed"});
+  expect(events("task_queued")).toEqual([{task_id:id,client_msg_id:request.client_msg_id}]);
+  const title=Array.from(request.prompt.replace(/\s+/g," ")).slice(0,24).join("");
+  expect(events("thread_updated")).toEqual([expect.objectContaining({title})]);
+  expect(ctx.native.prepare("SELECT title FROM threads WHERE id=?").pluck().get(thread)).toBe(title);
+  expect(events("fixture/process")).toHaveLength(1);
+});
 it("kills only the selected live process and releases its workspace for queued work",async()=>{
   expect((await app.inject("/api/admin/runtime/tasks")).statusCode).toBe(401);
   const waiting=await submit("wait");
@@ -115,6 +141,29 @@ it("kills only the selected live process and releases its workspace for queued w
   await poll(()=>expect(status(queued)).toBe("completed"));
   expect((await post("/api/admin/runtime/tasks/"+thread+"/kill")).statusCode).toBe(404);
   expect((await app.inject({url:"/api/admin/runtime/tasks",headers:{cookie}})).json()).toEqual([]);
+});
+
+it("keeps command output out of the initial HTTP page and requires the correct turn for step details",async()=>{
+  const id=randomUUID();
+  const http="/api/threads/"+thread+"/turns";
+  const get=(url:string)=>app.inject({url,headers:{cookie}});
+  ctx.native.prepare("INSERT INTO tasks(id,workspace_id,thread_id,prompt,status,created_at,updated_at) VALUES(?,?,?,'hello','completed','','')")
+    .run(id,workspace,thread);
+  const source=new ThreadEvents(ctx);
+  const log="result "+randomUUID();
+  source.append(thread,"item/completed",{item:{id:"command",type:"commandExecution",command:"read",aggregatedOutput:log}},id);
+  source.append(thread,"task_completed",{task_id:id},id);
+  const initial=await get(http);
+  expect(initial.statusCode).toBe(200);
+  expect(initial.payload).not.toContain(log);
+  const entry=initial.json().turns[0];
+  expect(entry.timeline[0].operations[0]).toMatchObject({id:"command",detail:""});
+  expect((await get("/api/turns/"+id+"/steps/command")).json().detail).toContain(log);
+  expect((await get("/api/turns/"+id+"/steps/missing")).statusCode).toBe(404);
+  expect((await app.inject("/api/turns/"+id+"/steps/command")).statusCode).toBe(401);
+  expect((await get(http+"?limit=0")).statusCode).toBe(400);
+  expect((await get(http+"?before_turn_index="+entry.turn_index)).json().turns).toHaveLength(0);
+  expect(events("fixture/process")).toHaveLength(0);
 });
 
 it("steers and interrupts a live turn, hot-switches the real gateway without respawning, and resumes after a crash", async () => {
@@ -158,7 +207,7 @@ it("serves approvals over two-way RPC, remembers scoped rules, delivers guidance
   const denied = await submit("approve:pnpm build");
   await decision(await pending(),"deny_guide","use the existing build");
   await poll(() => expect(status(denied)).toBe("completed"));
-  expect(events("item/agentMessage/delta").at(-1).delta).toBe("guidance:use the existing build");
+  expect(ctx.native.prepare("SELECT assistant_markdown FROM thread_turns WHERE id=?").pluck().get(denied)).toContain("guidance:use the existing build");
   expect(events("fixture/approval").at(-1).decision).toBe("decline");
   const aborted = await submit("approve:pnpm test && other");
   await decision(await pending(),"abort");

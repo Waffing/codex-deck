@@ -12,6 +12,7 @@ import { Deployer,type OpsOptions } from "./deployer.js";
 import { registerPreview } from "./preview-proxy.js";
 import {taskLink} from "../temp-access/service.js";
 import {scopedGuest} from "../temp-access/routes.js";
+import {hasIsolatedRunner} from "../codex/isolated-runner.js";
 
 interface Events {append(thread:string,type:string,payload:unknown):unknown}
 interface Approver {requestOpsApproval(thread:string,tool:string,payload:Record<string,unknown>):Promise<unknown>}
@@ -36,6 +37,8 @@ export function registerOps(app:FastifyInstance,ctx:ServerContext,files:Workspac
   app.addHook("onReady",async()=>{await probe();await deployer.recover();});
   app.addHook("onClose",async()=>deployer.close());
   app.get("/api/server/profile",admin,async()=>getProfile());
+  app.get("/api/runtime/capabilities",admin,async()=>({isolated_executor:await hasIsolatedRunner(),
+    deployment:getProfile().docker_available || process.env.NODE_ENV!=="production" || process.env.CODEXDECK_ALLOW_LOCAL_DEPLOYMENTS==="true"}));
   app.post("/api/server/probe",admin,probe);
   app.get("/api/deployments",admin,async()=>deployer.rows().map(row=>deployer.dto(row)));
   app.get("/api/guest/previews",async(req,reply)=>{

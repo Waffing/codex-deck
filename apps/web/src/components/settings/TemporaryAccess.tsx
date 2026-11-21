@@ -1,3 +1,4 @@
+import {NumberControl,ToggleSwitch,SegmentedControl} from "./Controls";
 import {useEffect,useState} from "react";
 import type {TempAccessLink,Workspace} from "@codexdeck/shared";
 import {api,json} from "../../lib/api";
@@ -29,18 +30,18 @@ export function TemporaryAccess({workspaces}:{workspaces:Workspace[]}) {
       setInvite(new URL(result.url,location.origin).href+(result.code?"\n提取码 "+result.code:""));setCreate(false);await load();
     });}}>
       <label>邀请名称<input name="name" required maxLength={120}/></label><label>备注<input name="note" maxLength={1000}/></label>
-      <label>有效小时数<input name="hours" type="number" min="0.0167" step="any" defaultValue="1" required/></label>
-      <fieldset><legend>可访问工作区</legend>{workspaces.map(w=><label key={w.id}>{w.name}<input type="checkbox" name="workspace" value={w.id}/></label>)}</fieldset>
-      <label>访问权限<select name="permission">{Object.entries(permissions).map(([v,label])=><option key={v} value={v}>{label}</option>)}</select></label>
-      <label>轮次上限<input name="max_turns" type="number" min="1" placeholder="不限"/></label><label>Token 上限<input name="max_tokens" type="number" min="1" placeholder="不限"/></label>
-      <label>费用上限<input name="max_cost" type="number" min="0.000001" step="any" placeholder="不限"/></label><label>费用币种<select name="currency"><option>USD</option><option>CNY</option></select></label>
-      <label>要求提取码<input type="checkbox" name="code" defaultChecked/></label><label>绑定首次访问 IP<input type="checkbox" name="bind"/></label>
+      <label>有效小时数<NumberControl name="hours" min="0.0167" step="any" defaultValue="1" required/></label>
+      <fieldset><legend>可访问工作区</legend>{workspaces.map(w=><label key={w.id}>{w.name}<ToggleSwitch name="workspace" value={w.id}/></label>)}</fieldset>
+      <label>访问权限<SegmentedControl name="permission">{Object.entries(permissions).map(([v,label])=><option key={v} value={v}>{label}</option>)}</SegmentedControl></label>
+      <label>轮次上限<NumberControl name="max_turns" min="1" placeholder="不限"/></label><label>Token 上限<NumberControl name="max_tokens" min="1" placeholder="不限"/></label>
+      <label>费用上限<NumberControl name="max_cost" min="0.000001" step="any" placeholder="不限"/></label><label>费用币种<SegmentedControl name="currency"><option>USD</option><option>CNY</option></SegmentedControl></label>
+      <label>要求提取码<ToggleSwitch name="code" defaultChecked/></label><label>绑定首次访问 IP<ToggleSwitch name="bind"/></label>
       <button className="ad-primary" disabled={a.busy}>生成邀请</button></form>}
     {invite&&<section className="ad-card settings-form"><strong>邀请信息仅显示一次</strong><textarea aria-label="邀请文案" readOnly value={invite}/><button className="ad-button" onClick={()=>void a.run(()=>navigator.clipboard.writeText(invite),"已复制邀请")}>复制邀请文案</button><button className="ad-button" onClick={()=>setInvite("")}>收起邀请</button></section>}
     {links.map(link=><article key={link.id} className="ad-card settings-form"><header className="settings-row"><strong>{link.name}</strong><span>{statuses[link.status]}</span></header><small>{permissions[link.permission]} · {timeLabel(link.expires_at)} 到期</small><Quotas link={link}/>{link.status!=="revoked"&&<div className="ad-actions"><button className="ad-button" onClick={()=>setEditing(link)}>续期 / 加额</button><button className="ad-button ad-danger" onClick={()=>{if(window.confirm("立即断开并吊销 "+link.name+" 的所有访客？"))void a.run(async()=>{await api("/api/temp-access/"+link.id+"/revoke",json("POST",{}));await load();});}}>立即吊销</button></div>}</article>)}
     {editing&&<dialog open className="ad-card settings-dialog" aria-label="续期与加额"><h2>{editing.name} · 续期 / 加额</h2><form className="settings-form" onSubmit={e=>{e.preventDefault();const f=new FormData(e.currentTarget);void a.run(async()=>{const patch=Object.fromEntries([...f].filter(([,v])=>Number(v)>0).map(([k,v])=>[k,Number(v)]));if(!Object.keys(patch).length)throw Error("请至少选择一项增量。");await api("/api/temp-access/"+editing.id+"/extend",json("PATCH",patch));setEditing(undefined);await load();});}}>
-      <label>延长有效期<select name="hours"><option value="0">保持当前有效期</option>{[1,6,24].map(n=><option key={n} value={n}>+{n} 小时</option>)}</select></label>
-      {([["turns","追加轮次"],["tokens","追加 Token"],["cost","追加费用"]] as const).map(([key,label])=><label key={key}>{label}<input name={key} type="number" min="0" step={key==="cost"?"any":"1"}/></label>)}
+      <label>延长有效期<SegmentedControl name="hours"><option value="0">保持当前有效期</option>{[1,6,24].map(n=><option key={n} value={n}>+{n} 小时</option>)}</SegmentedControl></label>
+      {([["turns","追加轮次"],["tokens","追加 Token"],["cost","追加费用"]] as const).map(([key,label])=><label key={key}>{label}<NumberControl name={key} min="0" step={key==="cost"?"any":"1"}/></label>)}
       <Feedback error={a.error}/><button className="ad-primary" disabled={a.busy}>保存增量</button><button type="button" className="ad-button" onClick={()=>setEditing(undefined)}>取消</button></form></dialog>}
     <section className="ad-card settings-form"><h2>活跃访客</h2>{!live.length&&<small>当前没有在线访客。</small>}{live.map((v,i)=><div key={v.id??i}><strong>{v.link.name} · {v.ip}</strong><small>{workspaces.find(w=>w.id===v.workspace_id)?.name??"正在选择工作区"} · 剩余 {remaining(v.link)}</small><Quotas link={v.link}/></div>)}</section>
     <details className="ad-card"><summary>访客操作记录</summary>{!audit.length&&<small>还没有访客记录。</small>}{audit.map(v=><p key={v.id}>{timeLabel(v.created_at)} · {v.action} · {v.ip}</p>)}</details></>;

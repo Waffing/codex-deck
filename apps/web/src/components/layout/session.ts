@@ -1,5 +1,6 @@
 import {useCallback,useEffect,useRef,useState} from "react";
 import {type Approval,type Thread,type Model,type Provider,type Workspace,type ServerProfile} from "@codexdeck/shared";
+import {cached,cachePut,cacheTicket} from "../../lib/cache";
 import {api} from "../../lib/api";
 export const views=["workbench","services","providers","open-api","system","approvals","more"] as const;
 export type View=typeof views[number];
@@ -13,14 +14,37 @@ export function useTheme(mode:"system"|"dark"|"light",set:(v:"system"|"dark"|"li
 }
 const initial={workspaces:[] as Workspace[],threads:[] as Thread[],models:[] as Model[],providers:[] as Provider[],approvals:[] as Approval[],profile:null as ServerProfile|null};
 export function useSnapshot(enabled:boolean,onError:(e:unknown)=>void){
-  const [data,set]=useState(initial);const rev=useRef(0);
-  const reload=useCallback(async ()=>{
-    if(!enabled)return;const id=++rev.current;
-    try{
-      const [workspaces,threads,models,providers,approvals,profile]=await Promise.all([api<Workspace[]>("/api/workspaces"),api<Thread[]>("/api/threads"),api<Model[]>("/api/models"),api<Provider[]>("/api/providers"),api<Approval[]>("/api/approvals"),api<ServerProfile>("/api/server/profile")]);
-      if(id===rev.current)set({workspaces,threads,models,providers,approvals:approvals.filter(a=>a.status==="pending"),profile});
-    }catch(e){if(id===rev.current)onError(e);}
+  const [data,set]=useState(initial);
+  const revisions=useRef(0);
+  const reload=useCallback(async (sections?:Array<keyof typeof initial>)=>{
+    if(!enabled)return;
+    const revision=revisions.current;
+    const ticket=cacheTicket();
+    const urls={workspaces:"/api/workspaces",threads:"/api/threads",models:"/api/models",providers:"/api/providers",approvals:"/api/approvals",profile:"/api/server/profile"};
+    async function load<K extends keyof typeof initial>(key:K) {
+      try {
+        const value=await api<typeof initial[K]>(urls[key]);
+        if(revision!==revisions.current || latest.current[key]!==loadId)return;
+        const result=key==="approvals"?(value as Approval[]).filter(a=>a.status==="pending"):value;
+        if(key!=="approvals" && key!=="profile")cachePut(key,result,ticket);
+        set(old=>({...old,[key]:result}));
+      }catch(e){if(revision===revisions.current && latest.current[key]===loadId)onError(e);}
+    }
+    const keys=sections??Object.keys(urls) as (keyof typeof initial)[];
+    const loadId=++counter.current;
+    for(const key of keys)latest.current[key]=loadId;
+    await Promise.all(keys.map(load));
   },[enabled,onError]);
-  useEffect(()=>{if(enabled)void reload();else set(initial);return ()=>{rev.current++;};},[enabled,reload]);
-  return {data,reload};
+  const latest=useRef<Partial<Record<keyof typeof initial,number>>>({});
+  const counter=useRef(0);
+  useEffect(()=>{
+    if(enabled){
+      set({...initial,workspaces:cached<Workspace[]>("workspaces")??[],threads:cached<Thread[]>("threads")??[],
+        providers:cached<Provider[]>("providers")??[],models:cached<Model[]>("models")??[]});
+      void reload();
+    }else set(initial);
+    return ()=>{revisions.current++;};
+  },[enabled,reload]);
+  function addThread(thread:Thread){set(previous=>({...previous,threads:[thread,...previous.threads.filter(t=>t.id!==thread.id)]}));}
+  return {data,reload,addThread};
 }

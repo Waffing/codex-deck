@@ -21,7 +21,11 @@ export function registerThreadRoutes(app: FastifyInstance, context: ServerContex
   app.post<ById>("/api/threads/:id/messages",auth,async (request,reply) => {
     const parsed = threadMessageSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({error:"Invalid message."});
-    return reply.code(202).send(manager.submit(request.params.id,parsed.data.prompt,undefined,parsed.data.image_ids,scopedGuest(request)?.link.id));
+    return reply.code(202).send(manager.submit(request.params.id,parsed.data.prompt,undefined,parsed.data.image_ids,scopedGuest(request)?.link.id,parsed.data.client_msg_id));
+  });
+  app.post<ById>("/api/threads/:id/warmup",auth,async(request,reply)=>{
+    await manager.warmup(request.params.id);
+    return reply.code(204).send();
   });
   app.patch<ById>("/api/threads/:id",auth,async(req,reply)=>{
     const input=threadUpdateSchema.safeParse(req.body);

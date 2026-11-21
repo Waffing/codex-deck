@@ -3,7 +3,7 @@ import { authLoginRequestSchema,authSetupRequestSchema,authPasswordChangeSchema 
 import { createHmac,randomBytes,timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
 import { hashPassword,verifyPassword } from "../security/crypto.js";
-import { authenticated,clearSessionCookie,setSessionCookie,revokeSessions } from "../auth.js";
+import { authenticated,sessionId,clearSessionCookie,setSessionCookie,revokeSessions } from "../auth.js";
 import { readSecurityConfig,getSetting } from "../security/config.js";
 import { clientIp,directLocal } from "../security/ingress.js";
 import { Captchas,banSeconds,failedAttempt } from "../security/attempts.js";
@@ -29,9 +29,12 @@ export function registerAuthRoutes(app:FastifyInstance,ctx:ServerContext) {
     pending.add(ip);
     try {return await action(ip);} finally {pending.delete(ip);}
   }
-  app.get("/api/auth/status",async req=>{
+  app.get("/api/auth/status",async (req,reply)=>{
+    reply.header("Cache-Control","private, no-store");
+    const session = sessionId(ctx,req);
     const config=readSecurityConfig(db);
-    return {authenticated:authenticated(ctx,req),setup_required:!currentHash(),captcha_enabled:config.captcha_enabled,totp_enabled:config.totp_enabled};
+    return {authenticated:!!session,cache_scope:session?createHmac("sha256",ctx.masterKey).update("browser-cache:"+session).digest("hex"):null,
+      onboarding_completed:!!session && getSetting(db,"onboarding_completed")==="1",setup_required:!currentHash(),captcha_enabled:config.captcha_enabled,totp_enabled:config.totp_enabled};
   });
   app.get("/api/auth/captcha",async(req,reply)=>{
     if(!readSecurityConfig(db).captcha_enabled) return reply.code(404).send();

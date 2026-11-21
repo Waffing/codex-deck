@@ -1062,3 +1062,7 @@
   .cd-context { margin-left:auto; } .cd-compose-controls .cd-model-picker { max-width:26%; }
   .cd-model-menu { left:auto;right:-30px; } .cd-question .cd-prompt { max-width:92%; }
 }
+
+.cd-thinking { color: var(--muted-foreground, #73777e); font-size: .82rem; animation: cd-thinking 1.45s ease-in-out infinite alternate; }
+@keyframes cd-thinking { to { opacity: .5; } }
+.cd-turn:has(.md-document) { content-visibility: auto; contain-intrinsic-size: auto 10rem; }

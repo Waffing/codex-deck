@@ -46,7 +46,8 @@ export class ApprovalEngine {
     resolve: (decision: ApprovalResult) => void; timeout: NodeJS.Timeout; reminder: NodeJS.Timeout }>();
 
   constructor(private context: ServerContext, private events: EventSink, private notifications: NoticeSink,
-    private timeoutMs?: number, private reminderMs = 30_000) {}
+    private timeoutMs?: number, private reminderMs = 30_000,
+    private isolatedAdmin:(thread:string,task?:string)=>boolean=()=>false) {}
 
   list() {
     return (this.context.native.prepare("SELECT * FROM approvals ORDER BY created_at DESC").all() as
@@ -63,7 +64,7 @@ export class ApprovalEngine {
     const rules: string[] = JSON.parse(state.session_rules_json);
     const guest=taskLink(this.context,taskId);
     if(guest && (guest.status!=="active" || guest.permission!=="full_with_approval"))return Promise.resolve({decision:"abort"});
-    const auto = (!guest || risk==="low") && risk !== "high" && ((!script || Boolean(scriptRevision)) && rules.includes(rule) ||
+    const auto = (!guest && this.isolatedAdmin(threadId,taskId)) || (!guest || risk==="low") && risk !== "high" && ((!script || Boolean(scriptRevision)) && rules.includes(rule) ||
       (!script && ((risk === "low" && state.automation_level !== "conservative") || state.automation_level === "full")));
     const id = randomUUID();
     const timestamp = new Date().toISOString();

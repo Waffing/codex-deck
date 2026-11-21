@@ -66,11 +66,15 @@ test("scopes guest REST, preview, signed artifacts and live subscriptions; revok
   expect(exported).not.toContain(link.route.slice(7));expect(exported).not.toContain('"code":"'+link.code+'"');
   expect((await req("GET","/api/workspaces",visitor)).json().map((w:{id:string})=>w.id)).toEqual([a]);
   expect((await req("GET","/api/threads",visitor)).json().map((w:{id:string})=>w.id)).toEqual([ta]);
-  for(const url of ["/api/threads/"+tb+"/history","/api/workspaces/"+b+"/files/tree","/api/threads/"+ta+"/history?debug=true",
+  for(const url of ["/api/threads/"+tb+"/history","/api/threads/"+tb+"/turns","/api/workspaces/"+b+"/files/tree","/api/threads/"+ta+"/history?debug=true",
       "/api/providers","/api/admin/runtime/tasks","/api/workspaces/local-directories","/preview/3000/","/live/"+b+"/"]){
     expect((await req("GET",url,visitor)).statusCode,url).toBe(403);
   }
   expect((await req("GET","/api/threads/"+ta+"/history",visitor)).statusCode).toBe(200);
+  expect((await req("GET","/api/threads/"+ta+"/turns",visitor)).statusCode).toBe(200);
+  expect((await req("POST","/api/threads/"+ta+"/warmup",visitor,{})).statusCode).toBe(403);
+  ctx.native.prepare("INSERT INTO tasks(id,thread_id,workspace_id,prompt,created_at,updated_at,status) VALUES('private-turn',?,?,'','','','completed')").run(tb,b);
+  expect((await req("GET","/api/turns/private-turn/steps/%24diff",visitor)).statusCode).toBe(403);
   expect((await req("POST","/api/threads/"+ta+"/messages",visitor,{prompt:"x"})).statusCode).toBe(403);
   const workspace=ctx.native.prepare("SELECT path FROM workspaces WHERE id=?").pluck().get(a) as string;
   await writeFile(path.join(workspace,"result.txt"),"allowed");

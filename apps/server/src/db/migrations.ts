@@ -186,6 +186,45 @@ export const migrations = [
     `,
   },
   guestMigration,
+  {
+    version: 8,
+    sql: `
+      ALTER TABLE artifacts ADD COLUMN size_bytes INTEGER;
+      ALTER TABLE threads ADD COLUMN executor_mode TEXT NOT NULL DEFAULT 'standard';
+      CREATE INDEX idx_artifacts_thread_turn ON artifacts(thread_id,turn_id);
+      CREATE TABLE thread_turns (
+        id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        turn_index INTEGER NOT NULL, client_msg_id TEXT, request_hash TEXT, user_content TEXT NOT NULL,
+        assistant_markdown TEXT, timeline_summary_json TEXT, artifacts_summary_json TEXT, telemetry_json TEXT,
+        summary_only INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, latest_seq_id INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX idx_turns_thread_index ON thread_turns(thread_id,turn_index DESC);
+      CREATE INDEX idx_turns_thread_sequence ON thread_turns(thread_id,latest_seq_id DESC);
+      CREATE INDEX idx_tasks_running_thread ON tasks(thread_id) WHERE status='running';
+      CREATE UNIQUE INDEX idx_turns_client ON thread_turns(thread_id,client_msg_id) WHERE client_msg_id IS NOT NULL;
+      CREATE TABLE turn_answer_replay (
+        turn_id TEXT PRIMARY KEY REFERENCES thread_turns(id) ON DELETE CASCADE, frames BLOB NOT NULL
+      );
+      INSERT INTO thread_turns(id,thread_id,turn_index,user_content,status,created_at,updated_at)
+        SELECT id,thread_id,row_number() OVER (PARTITION BY thread_id ORDER BY rowid),prompt,status,created_at,updated_at FROM tasks;
+      CREATE TRIGGER create_turn_after_task AFTER INSERT ON tasks BEGIN
+        INSERT INTO thread_turns(id,thread_id,turn_index,user_content,status,created_at,updated_at)
+        VALUES(NEW.id,NEW.thread_id,(SELECT coalesce(max(turn_index),0)+1 FROM thread_turns WHERE thread_id=NEW.thread_id),
+          NEW.prompt,NEW.status,NEW.created_at,NEW.updated_at);
+      END;
+      CREATE TRIGGER turn_artifact_added AFTER INSERT ON artifacts WHEN NEW.turn_id IS NOT NULL BEGIN
+        UPDATE thread_turns SET artifacts_summary_json=NULL WHERE id=NEW.turn_id;
+      END;
+      CREATE TRIGGER turn_artifact_changed AFTER UPDATE OF size_bytes ON artifacts WHEN NEW.turn_id IS NOT NULL BEGIN
+        UPDATE thread_turns SET artifacts_summary_json=NULL WHERE id=NEW.turn_id;
+      END;
+      CREATE TRIGGER turn_artifact_removed AFTER DELETE ON artifacts WHEN OLD.turn_id IS NOT NULL BEGIN
+        UPDATE thread_turns SET artifacts_summary_json=NULL WHERE id=OLD.turn_id;
+      END;
+    `,
+  },
 ];
 
 export function runMigrations(database: Database.Database): void {

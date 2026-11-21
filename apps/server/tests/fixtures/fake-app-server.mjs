@@ -107,6 +107,8 @@ async function receive(msg) {
     notify("fixture/approval",{decision:msg.result?.decision});
     if (consoleItem && ["accept","acceptForSession"].includes(msg.result?.decision)) {
       await writeFile(join(process.cwd(),"result.txt"),"CodexDeck test artifact\n");
+      await writeFile(join(process.cwd(),"report.docx"),"Fixture for artifact metadata");
+      await writeFile(join(process.cwd(),"Dockerfile"),"FROM scratch\n");
       notify("item/completed",{turnId,item:{...consoleItem,status:"completed",exitCode:0,aggregatedOutput:"working tree clean"}});
       delta("已生成验收摘要。");
     }
