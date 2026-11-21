@@ -50,7 +50,7 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
   const systemPorts = new Set([22, 80, 443]);
   if (systemPorts.has(context.gatewayConfig.port)) throw new Error("CodexDeck cannot listen on a protected system port.");
 
-  const health = async () => ({ status: "ok", version: process.env.CODEXDECK_VERSION ?? "1.3.0", uptime: Math.floor(process.uptime()) });
+  const health = async () => ({ status: "ok", version: process.env.CODEXDECK_VERSION ?? "1.4.0", uptime: Math.floor(process.uptime()) });
   app.get("/health", health);
   app.get("/api/health", health);
   registerStoredCredentials(context);

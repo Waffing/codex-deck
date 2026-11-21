@@ -7,8 +7,17 @@ const secretPatterns = [
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
   /\b(?:token|api[_-]?key|authorization)\s*[:=]\s*["']?[^\s,"'}]+/gi,
 ];
+function protocolField(key:string,value:unknown) {
+  if(typeof value!=="string") return false;
+  if (/^(?:id|.*(?:_id|Id))$/.test(key)) return /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
+  if (key.endsWith("_at") || key==="timestamp") return /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value);
+  if (key==="version") return /^\d+\.\d+\.\d+$/.test(value);
+  if (key==="diff_hash") return /^[0-9a-f]{64}$/.test(value);
+  return /^(?:type|status|role|mode|side)$/.test(key) &&
+    /^(?:completed|pending|passed|failed|running|stopped|repairing|cancelled|starting|queued|ready|idle|staging|live|ok|plan|execute|item|message|function|tool|system|developer|assistant|user|old|new)$/.test(value);
+}
 
-export class SecretMasker {
+class LiteralSecrets {
   private readonly knownSecrets = new Set<string>();
   private sortedSecrets?:string[];
 
@@ -30,29 +39,43 @@ export class SecretMasker {
     return false;
   }
 
-  maskString(value: string): string {
+  get empty() { return this.knownSecrets.size===0; }
+  has(value:string) {return this.knownSecrets.has(value);}
+
+  maskLiterals(value: string, protocol?:LiteralSecrets): string {
     let result = value;
     this.sortedSecrets ??= [...this.knownSecrets].sort((left, right) => right.length - left.length);
     const marker="[REDACTED]";
     for (const secret of this.sortedSecrets) {
+      // Short .env settings (such as DEBUG=1) can coincide with part of an unrelated UUID or timestamp.
+      if (protocol && secret.length<=4 && protocol.has(secret) && secret!==value) continue;
       if (!result.includes(secret)) continue;
       // A short literal vault value can also occur in the redaction marker.
       result = marker.includes(secret) ? result.split(marker).map(part=>part.split(secret).join(marker)).join(marker)
         : result.split(secret).join(marker);
     }
+    return result;
+  }
+}
+
+export class SecretMasker extends LiteralSecrets {
+  readonly workspace = new LiteralSecrets();
+
+  maskString(value: string, protocol=false): string {
+    let result=this.maskLiterals(value,protocol ? this.workspace : undefined);
     for (const pattern of secretPatterns) result = result.replace(pattern, "[REDACTED]");
     return result;
   }
 
-  maskObject<T>(value: T): T {
-    if (typeof value === "string") return this.maskString(value) as T;
-    if (Array.isArray(value)) return value.map((item) => this.maskObject(item)) as T;
+  maskObject<T>(value: T, protocol=false): T {
+    if (typeof value === "string") return this.maskString(value,protocol) as T;
+    if (Array.isArray(value)) return value.map((item) => this.maskObject(item,protocol)) as T;
     if (!value || typeof value !== "object") return value;
 
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [
-      this.maskString(key), /^(?:authorization|proxy-authorization|x-api-key|api[_-]?key|(?:access[_-]?|refresh[_-]?|id[_-]?)?token|(?:client[_-]?)?secret|password|cookie|set-cookie)$/i.test(key)
+      this.maskString(key,/^[A-Za-z][A-Za-z0-9_]*$/.test(key)), /^(?:authorization|proxy-authorization|x-api-key|api[_-]?key|(?:access[_-]?|refresh[_-]?|id[_-]?)?token|(?:client[_-]?)?secret|password|cookie|set-cookie)$/i.test(key)
         ? (item == null ? item : "[REDACTED]")
-        : this.maskObject(item),
+        : this.maskObject(item,protocolField(key,item)),
     ])) as T;
   }
 }

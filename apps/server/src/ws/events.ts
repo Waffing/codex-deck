@@ -26,7 +26,7 @@ export class ThreadEvents {
         const clientId=db.prepare("SELECT client_msg_id FROM thread_turns WHERE id=?").pluck().get(active);
         if(typeof clientId==="string") payload={...payload,client_msg_id:clientId};
       }
-      const value: ThreadEvent = { thread_id: threadId, task_id: active ?? null, seq_id: seq, type: this.ctx.masker.maskString(type),
+      const value: ThreadEvent = { thread_id: threadId, task_id: active ?? null, seq_id: seq, type: this.ctx.masker.maskString(type,true),
         payload: this.ctx.masker.maskObject(payload ?? null), created_at: new Date().toISOString() };
       db.prepare("INSERT INTO thread_events(id,thread_id,sequence,type,payload_json,task_id,created_at) VALUES(?,?,?,?,?,?,?)")
         .run(randomUUID(), threadId, seq, value.type, JSON.stringify(value.payload), value.task_id, value.created_at);

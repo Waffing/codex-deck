@@ -9,7 +9,7 @@ import { installationCode } from "../src/routes/auth.js";
 import { rotateMasterKey } from "../src/rotate-key.js";
 import { decryptSecret } from "../src/security/crypto.js";
 import { SecretMasker } from "../src/security/secret-masker.js";
-import { workspaceSecretEnv, workspaceSecretNames } from "../src/security/workspace-secrets.js";
+import { registerWorkspaceSecret, workspaceSecretEnv, workspaceSecretNames } from "../src/security/workspace-secrets.js";
 import { ThreadEvents } from "../src/ws/events.js";
 import { OutputMasker } from "../src/codex/output-masker.js";
 import { completeAnswer } from "../src/codex/timeline.js";
@@ -20,6 +20,11 @@ it("keeps repeated masking of short environment values stable",()=>{
   const hidden=masker.maskString("ED");
   expect(hidden).toBe("[REDACTED][REDACTED]");
   expect(masker.maskString(hidden)).toBe(hidden);
+  registerWorkspaceSecret({masker},"1");
+  registerWorkspaceSecret({masker},"e");
+  const meta={id:"d79eaee1-180a-4829-afad-1111f64b8391",type:"item",status:"completed",created_at:"2026-11-21T10:01:00Z"};
+  expect(masker.maskObject({...meta,text:"step1!"})).toEqual({...meta,text:"st[REDACTED]p[REDACTED]!"});
+  expect(masker.maskObject({data:{id:"step1!"}})).toEqual({data:{id:"st[REDACTED]p[REDACTED]!"}});
 });
 
 it("isolates encrypted workspace secrets across scopes, imports atomically, and restores masking after key rotation",async()=>{

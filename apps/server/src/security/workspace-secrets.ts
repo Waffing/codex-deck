@@ -13,9 +13,11 @@ type VaultContext = Pick<ServerContext, "native" | "masterKey" | "masker">;
 const fail = (statusCode: number, message: string): never => { throw Object.assign(new Error(message), {statusCode}); };
 
 export function registerWorkspaceSecret(ctx: Pick<VaultContext,"masker">, value: string) {
-  ctx.masker.register(value);
-  // Process output and event logs can deliver multiline credentials one line at a time.
-  if (/[\r\n]/.test(value)) for (const line of value.split(/[\r\n]+/)) ctx.masker.register(line);
+  // Text tools can return JSON-escaped strings or emit a multiline credential line by line.
+  for (const literal of [value, JSON.stringify(value).slice(1,-1), ...(/[\r\n]/.test(value) ? value.split(/[\r\n]+/) : [])]) {
+    ctx.masker.register(literal);
+    ctx.masker.workspace.register(literal);
+  }
 }
 
 export function registerStoredWorkspaceSecrets(ctx: VaultContext) {

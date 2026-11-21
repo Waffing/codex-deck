@@ -11,6 +11,7 @@ import { models, providers, schema, usageLogs } from "../src/db/schema.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { createInternalToken, encryptSecret, signPayload } from "../src/security/crypto.js";
 import { SecretMasker } from "../src/security/secret-masker.js";
+import { registerWorkspaceSecret } from "../src/security/workspace-secrets.js";
 import { keyFields,sealHeaders } from "../src/gateway/credentials.js";
 import { readSse } from "../src/gateway/sse.js";
 
@@ -23,7 +24,7 @@ const nativeStream = ": service heartbeat\r\n\r\n"
   + "event: response.completed\r\ndata: " + JSON.stringify({ type: "response.completed", response: nativeResult }) + "\r\n\r\n";
 
 type Upstream = (body: Record<string, any>, response: ServerResponse, path: string) => void;
-let observed: { headers: IncomingHttpHeaders; path: string; body: Record<string, any> }[];
+let observed: { headers: IncomingHttpHeaders; path: string; body: Record<string, any>;raw:string }[];
 let context: ServerContext;
 let app: ReturnType<typeof createServer>;
 let mock: ReturnType<typeof createHttpServer>;
@@ -46,7 +47,7 @@ beforeEach(async () => {
     let text = "";
     for await (const chunk of req) text += chunk;
     const body = JSON.parse(text);
-    observed.push({ headers: req.headers, path: req.url!, body });
+    observed.push({ headers: req.headers, path: req.url!, body,raw:text });
     serve(body, res, req.url!);
   });
   mock.listen(0, "127.0.0.1");
@@ -148,6 +149,40 @@ test("forwards native JSON and preserves raw SSE including comments, CRLF and UT
   const rows = context.orm.select().from(usageLogs).all();
   expect(rows).toHaveLength(2);
   for (const row of rows) expect(row).toMatchObject({ modelId: "native", providerId: "p-native", inputTokens: 20, outputTokens: 7, costUsd: 0.000075 });
+});
+
+test.each(["responses","chat"])("redacts only registered vault literals in outbound %s conversation and tool text",async protocol=>{
+  addModel("safe",protocol);
+  const value='canary-"'+randomBytes(15).toString("hex")+'\\vault', old=randomBytes(23).toString("hex");
+  registerWorkspaceSecret(context,old);
+  registerWorkspaceSecret(context,value);
+  const preserved="Bearer example_documentation";
+  const name="inspect",call="call_123";
+  const definition={type:"function",name,description:"Read output",parameters:{type:"object",properties:{password:{type:"string"}}}};
+  serve=(_b,res)=>res.end(protocol==="chat"?JSON.stringify({choices:[{message:{content:"ok"}}]}):JSON.stringify(nativeResult));
+  const result=await post("safe",{instructions:"key "+old,input:[
+    {role:"user",content:[{type:"input_text",text:preserved+" "+value}]},
+    {type:"function_call",name,call_id:call,arguments:JSON.stringify({password:value})},
+    {type:"function_call_output",call_id:call,output:JSON.stringify({stdout:value,previous:old})},
+  ],tools:[definition]});
+  expect(result.status).toBe(200);
+  const {headers,body,raw}=observed[0];
+  expect(raw).not.toContain(old);
+  expect(raw).not.toContain(value.match(/[a-f0-9]{30}/)![0]);
+  expect(raw).toContain(preserved);
+  expect(headers.authorization).toBe("Bearer "+upstreamKey);
+  expect(headers["x-tenant"]).toBe(tenantKey);
+  if(protocol==="responses") {
+    expect(body.instructions).toBe("key [REDACTED]");
+    expect(body.input[1]).toEqual({type:"function_call",name,call_id:call,arguments:'{"password":"[REDACTED]"}'});
+    expect(JSON.parse(body.input[2].output)).toEqual({stdout:"[REDACTED]",previous:"[REDACTED]"});
+    expect(body.tools).toEqual([definition]);
+  } else {
+    expect(body.messages[0].content).toBe("key [REDACTED]");
+    expect(body.messages[2].tool_calls[0]).toEqual({id:call,type:"function",function:{name,arguments:'{"password":"[REDACTED]"}'}});
+    expect(JSON.parse(body.messages[3].content)).toEqual({stdout:"[REDACTED]",previous:"[REDACTED]"});
+    expect(body.messages[3].tool_call_id).toBe(call);
+  }
 });
 
 test("honors forced Chat mode and accounts CNY prices in their configured currency", async () => {

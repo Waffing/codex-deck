@@ -16,6 +16,7 @@ import {completeAnswer,turnMetrics} from "./timeline.js";
 import {assertGuestTurn,finishGuestTurn,taskLink} from "../temp-access/service.js";
 import {runGuestTurn} from "../temp-access/turn.js";
 import {workspaceSecretEnv,workspaceSecretNames} from "../security/workspace-secrets.js";
+import {beginReviewedVerification} from "../security/workspace-review.js";
 import {readVerifyConfig,runVerifyGate} from "./verify-gate.js";
 
 export interface ManagerOptions {
@@ -364,11 +365,13 @@ export class ThreadManager {
         else {terminal="failed";turn.summary="Plan was empty.";}
       }
       if(!turn.plan && terminal==="completed" && !turn.cancelled && (files.length || task.verify_root_id)) {
+        let unlock:(()=>void)|undefined;
         try {
           const config=readVerifyConfig(this.context,workspaceId);
           if(config.auto_verify_enabled || task.verify_only) {
             const pending=!!db.prepare("SELECT verify_external_pending FROM workspaces WHERE id=?").pluck().get(workspaceId);
             const requiresReview=!!task.external || (pending && !task.verify_only);
+            if(!requiresReview) unlock=beginReviewedVerification(workspaceId);
             turn.verifyAbort=new AbortController();
             const result=await (this.options.verifyGate??runVerifyGate)({root:await this.files.getRoot(workspaceId),data:this.options.dataDirectory,
               config,env:requiresReview?{}:workspaceSecretEnv(this.context,workspaceId,"verify"),masker:this.context.masker,signal:turn.verifyAbort.signal,
@@ -386,8 +389,9 @@ export class ThreadManager {
         } catch(err) {
           terminal=turn.cancelled || this.stopping?"cancelled":"failed";
           turn.summary=this.context.masker.maskString(err instanceof Error?err.message:"质检执行失败。");
-          this.events.append(threadId,"verify_gate_result",{status:terminal,attempt:task.verify_attempt,max_retries:readVerifyConfig(this.context,workspaceId).max_self_heal_retries,commands:[{command:"质检环境",output:turn.summary,exit_code:null}]},taskId);
-        }
+          this.events.append(threadId,"verify_gate_result",{status:terminal,turn_id:taskId,requires_review:!!db.prepare("SELECT verify_external_pending FROM workspaces WHERE id=?").pluck().get(workspaceId),
+            attempt:task.verify_attempt,max_retries:readVerifyConfig(this.context,workspaceId).max_self_heal_retries,commands:[{command:"质检环境",output:turn.summary,exit_code:null}]},taskId);
+        } finally {unlock?.();}
       }
       this.active.delete(threadId);
       this.events.append(threadId,"turn_telemetry",turnMetrics(db,threadId,taskId,started,files,diff),taskId);

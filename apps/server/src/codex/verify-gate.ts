@@ -59,7 +59,7 @@ async function sandbox(opts:GateOptions) {
     const source=projectMountSource(root,data,mounts);
     if(/[,"\r\n]/.test(source)) throw new Error("Unsupported workspace mount path.");
     env.DOCKER_HOST=process.env.DOCKER_HOST;
-    return {file:"docker",args:["run","--rm","-i","--init","--pull","never","--name",name,"--network",opts.config.verify_network_enabled?"bridge":"none",
+    return {file:"docker",args:["run","--rm","-i","--init","--log-driver","none","--pull","never","--name",name,"--network",opts.config.verify_network_enabled?"bridge":"none",
       "--read-only","--user",uid+":"+gid,"--cap-drop","ALL","--security-opt","no-new-privileges","--pids-limit","128","--memory","768m","--memory-swap","768m","--cpus","1",
       "--no-healthcheck","--tmpfs","/tmp:size=512m,mode=1777,exec","--mount","type=bind,src="+source+",dst=/source,readonly","--entrypoint","node",id,
       "/app/apps/server/dist/codex/verify-entry.js"],env,stop:()=>exec("docker",["rm","-f",name],{env,timeout:10_000})};
@@ -98,11 +98,18 @@ export async function collectVerification(opts:GateOptions,runner:{file:string;a
   child.stdin.end(JSON.stringify({commands:opts.config.verify_commands,env:opts.env}));
   // Keep head and tail after masking, so chunk boundaries and truncation cannot expose a secret.
   let output="",active=-1,finished=0;
+  let flushTimer:NodeJS.Timeout|undefined;
+  const report=()=>opts.progress({...result,current_command:result.commands.at(-1)?.command??""});
   const masker=new OutputMasker(opts.masker,(_method,p)=>{
     output+=p.delta;
     if(output.length>12_288) output=output.slice(0,4096)+"\n…\n"+output.slice(-4096);
+    if(!flushTimer && active>=0) flushTimer=setTimeout(()=>{
+      flushTimer=undefined;
+      if(active>=0 && result.commands[active].output!==output) {
+        result.commands[active].output=output;report();
+      }
+    },750);
   });
-  const report=()=>opts.progress({...result,current_command:result.commands.at(-1)?.command??""});
   const lines=createInterface({input:child.stdout});
   child.stderr.resume();
   lines.on("line",line=>{
@@ -114,6 +121,7 @@ export async function collectVerification(opts:GateOptions,runner:{file:string;a
       if(frame.kind==="output" && typeof frame.text==="string") masker.push("verify-output",{delta:frame.text,stream:frame.stream});
       if(frame.kind==="end") {
         masker.flush();result.commands[active].output=output;result.commands[active].exit_code=Number.isSafeInteger(frame.code)?frame.code:null;
+        clearTimeout(flushTimer);flushTimer=undefined;
         finished++;active=-1;report();
       }
     }
@@ -127,7 +135,7 @@ export async function collectVerification(opts:GateOptions,runner:{file:string;a
     result.status=code===0 && !timeout && finished===opts.config.verify_commands.length && result.commands.every(c=>c.exit_code===0)?"passed":"failed";
     return result;
   } finally {
-    clearTimeout(timer);opts.signal.removeEventListener("abort",stop);
+    clearTimeout(timer);clearTimeout(flushTimer);opts.signal.removeEventListener("abort",stop);
     if(stopping) await stopping;
     lines.close();
   }

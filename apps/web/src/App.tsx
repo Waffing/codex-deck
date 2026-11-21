@@ -90,7 +90,7 @@ function AdminApp(){
   function go(v:View){setView(v);setMenu(null);history.pushState(null,"",v==="workbench"?"/":"/console/"+v);}
   const open=useCallback((t:PanelTab)=>{const key=tabKey(t);setTabs(old=>old.some(entry=>tabKey(entry)===key)?old:[...old,t]);setSelected(key);setMenu(null);},[]);
   function choose(w:Workspace){setWs(w.id);setTh("");localStorage.setItem("deck.workspace",w.id);localStorage.removeItem("deck.thread");setTabs([]);go("workbench");void reload();}
-  function jump(t:Thread){if(t.workspace_id!==workspace?.id)setTabs([]);setWs(t.workspace_id??"");setTh(t.id);localStorage.setItem("deck.workspace",t.workspace_id??"");localStorage.setItem("deck.thread",t.id);go("workbench");}
+  function jump(t:Thread){if(t.workspace_id!==workspace?.id)setTabs([]);else if(t.id!==activeThread)setTabs(old=>old.filter(tab=>!("turnId" in tab&&tab.turnId)));setWs(t.workspace_id??"");setTh(t.id);localStorage.setItem("deck.workspace",t.workspace_id??"");localStorage.setItem("deck.thread",t.id);go("workbench");}
   const creating=useRef(new Map<string,Promise<Thread>>());
   function newThread(){
     if(!workspace)return Promise.reject(new Error("请先创建工作区"));

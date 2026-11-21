@@ -11,6 +11,7 @@ import { estimateUsageCost, OutputTiming } from "./metrics.js";
 import { fromChatResponse, toChatRequest, translateChatStream } from "./transforms.js";
 import { readSse, type SseFrame } from "./sse.js";
 import { redactSse } from "./redact-sse.js";
+import { redactVaultInput } from "./vault-input.js";
 import { upstreamHeaders, upstreamUrl } from "./upstream.js";
 import { upstreamFetch } from "./transport.js";
 import type { AddressInfo } from "node:net";
@@ -192,7 +193,7 @@ export function registerGatewayRoutes(app: FastifyInstance, context: ServerConte
   }, async (request, reply) => {
     const parsed = responseRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid Responses request." });
-    const input = parsed.data;
+    const input = redactVaultInput(parsed.data,context.masker);
     const claims = claimsByRequest.get(request);
     if (typeof claims?.thread_id === "string") {
       const thread = context.native.prepare("SELECT active_model_alias,reasoning_effort FROM threads WHERE id=?")
