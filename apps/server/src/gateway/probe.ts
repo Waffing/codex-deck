@@ -8,7 +8,7 @@ import { targetPolicy,upstreamFetch } from "./transport.js";
 
 const redSquare = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC";
 type RequestUpstream = (endpoint: string, body?: object) => Promise<Response>;
-type Protocol = "responses" | "chat/completions";
+type Protocol = "responses" | "chat/completions" | "messages";
 
 async function ttft(request: RequestUpstream, protocol: Protocol, model: string) {
   const start = performance.now();
@@ -23,7 +23,7 @@ async function ttft(request: RequestUpstream, protocol: Protocol, model: string)
       const chunk = JSON.parse(frame.data);
       const delta = protocol === "responses"
         ? chunk.type === "response.output_text.delta" && chunk.delta
-        : chunk.choices?.[0]?.delta?.content;
+        : protocol==="messages" ? chunk.delta?.text : chunk.choices?.[0]?.delta?.content;
       if (typeof delta === "string" && delta.length) return Math.round(performance.now() - start);
     }
     return null;
@@ -73,7 +73,7 @@ export async function probeProvider(provider: typeof providers.$inferSelect, con
   const request: RequestUpstream = async (endpoint, body) => {
     try {
     const response=await withProviderKey(provider,context,(apiKey,headers)=>upstreamFetch(upstreamUrl(provider.baseUrl, endpoint), {
-    method: body ? "POST" : "GET", headers: upstreamHeaders(headers, apiKey),
+    method: body ? "POST" : "GET", headers: upstreamHeaders(headers, apiKey,provider.protocolType),
     body: body && JSON.stringify(body), signal: AbortSignal.timeout(Math.min(context.gatewayConfig.upstream_timeout_ms, 8000)),
     },credentials,ports));
     if (!response.ok) failures.set(endpoint,`HTTP ${response.status}`);
@@ -90,6 +90,22 @@ export async function probeProvider(provider: typeof providers.$inferSelect, con
   } else await list?.body?.cancel();
 
   const model = configuredModel ?? result.models[0] ?? "gpt-4o-mini";
+  if(provider.protocolType==="anthropic_messages"){
+    const latency=await ttft(request,"messages",model).catch(()=>null);
+    result.capabilities.messages=latency!==null;result.capabilities.latency_ms=latency;result.ok=latency!==null;
+    if(result.ok){
+      const responses=await Promise.all(["tools","vision"].map(async feature=>{
+        const opts=feature==="tools"?{tools:[{name:"ping",input_schema:{type:"object",properties:{}}}],tool_choice:{type:"tool",name:"ping"},
+          messages:[{role:"user",content:"Call ping."}]}:{messages:[{role:"user",content:[{type:"image",source:{type:"base64",media_type:"image/png",data:redSquare.split(",")[1]}},{type:"text",text:"Which color fills the image?"}]}]};
+        const res=await request("messages",{model,max_tokens:64,...opts});
+        if(!res.ok){await res.body?.cancel();return false;}
+        const body=await res.json();
+        return Array.isArray(body.content) && body.content.some((item:{type:string;name?:string;text?:string})=>feature==="tools"?item.type==="tool_use"&&item.name==="ping":item.type==="text"&&/\\bred\\b/i.test(item.text??""));
+      }).map(job=>job.catch(()=>false)));
+      [result.capabilities.tools,result.capabilities.vision]=responses;
+    }else result.error=failures.get("messages")??"No Messages text delta.";
+    return probeResultSchema.parse(context.masker.maskObject(result));
+  }
   const [responses, chat] = await Promise.all((["responses", "chat/completions"] as const)
     .map(protocol => ttft(request, protocol, model).catch(() => null)));
   const caps = result.capabilities;

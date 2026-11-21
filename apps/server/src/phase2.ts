@@ -18,6 +18,8 @@ import { registerConsoleRoutes } from "./routes/console.js";
 import { registerUsageRoutes } from "./routes/usage.js";
 import { registerShares } from "./routes/public-shares.js";
 import { registerQualityReviews } from "./routes/quality-review.js";
+import { registerModuleRoutes } from "./routes/modules.js";
+import {fileURLToPath} from "node:url";
 
 export type Phase2Options = Omit<ManagerOptions,"port"|"profile"> & Pick<OpsOptions,"portPool"|"proxyConfig"> & {managedWorkspaceDirectory?:string};
 
@@ -45,6 +47,7 @@ export function mountPhase2(app: FastifyInstance, ctx: ServerContext, options: P
     registerUsageRoutes(service,ctx,notifications);
     registerThreadRoutes(service,ctx,manager);
     registerQualityReviews(service,ctx,files,manager);
+    registerModuleRoutes(service,ctx,files,manager,options.opsEntry ?? fileURLToPath(new URL("../../../packages/ops-mcp/dist/index.js",import.meta.url)));
     registerShares(service,ctx,files);
     registerNotifications(service,ctx,notifications);
     registerOpenApi(service,ctx,files,manager,events);

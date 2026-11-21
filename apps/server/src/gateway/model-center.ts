@@ -39,7 +39,7 @@ function inference(provider:ProviderRow,context:ServerContext,boundPort?:number)
   const signal=AbortSignal.timeout(Math.min(30000,context.gatewayConfig.upstream_timeout_ms));
   return (endpoint:string,body?:object)=>withProviderKey(provider,context,(key,headers)=>
     upstreamFetch(upstreamUrl(provider.baseUrl,endpoint),{method:body?"POST":"GET",signal,
-      body:body?JSON.stringify(body):undefined,headers:upstreamHeaders(headers,key)},
+      body:body?JSON.stringify(body):undefined,headers:upstreamHeaders(headers,key,provider.protocolType)},
     !!key || Object.values(headers).some(Boolean),[boundPort,context.gatewayConfig.port]));
 }
 
@@ -115,13 +115,14 @@ export async function benchmarkModel(model:ModelRow,provider:ProviderRow,context
   try {
     const probe=inference(provider,context,boundPort);
     const caps=model.lastProbeJson ? JSON.parse(model.lastProbeJson).capabilities : {};
-    let chat=JSON.parse(provider.quirksJson).force_chat || model.protocol==="chat" || model.protocol==="auto" && caps.chat && !caps.responses;
+    const anthropic=provider.protocolType==="anthropic_messages";
+    let chat=provider.protocolType==="openai_chat" || provider.protocolType==="gemini_openai" || JSON.parse(provider.quirksJson).force_chat || model.protocol==="chat" || model.protocol==="auto" && caps.chat && !caps.responses;
     const prompt=limit===1?"Answer 1.":"Count from 1 to 100 separated by spaces.";
     const budget=Math.min(model.maxOutputTokens,limit);
     const request={model:model.modelId,input:prompt,stream:true,max_output_tokens:budget};
-    const call=()=>chat?probe("chat/completions",toChatRequest(request,model.modelId)):probe("responses",request);
+    const call=()=>anthropic?probe("messages",{model:model.modelId,messages:[{role:"user",content:prompt}],max_tokens:budget,stream:true}):chat?probe("chat/completions",toChatRequest(request,model.modelId)):probe("responses",request);
     let response=await call();
-    if(model.protocol==="auto" && !chat && [404,405].includes(response.status)) {await response.body?.cancel();chat=true;response=await call();}
+    if(!provider.protocolType && model.protocol==="auto" && !chat && [404,405].includes(response.status)) {await response.body?.cancel();chat=true;response=await call();}
     if(!response.ok || !response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
       status=response.ok?502:response.status;
       await response.body?.cancel(); result.error=`Upstream HTTP ${response.status} or unsupported stream.`; return result;
@@ -131,6 +132,18 @@ export async function benchmarkModel(model:ModelRow,provider:ProviderRow,context
       if(!frame.data || frame.data==="[DONE]") continue;
       const chunk=JSON.parse(frame.data);
       if(chunk.error || ["error","response.failed"].includes(chunk.type)) throw new Error();
+      if(anthropic){
+        if(chunk.type==="message_start"){
+          const usage=chunk.message?.usage;
+          input=number(usage?.input_tokens);
+          cached=number(usage?.cache_read_input_tokens);
+          if(input!==null) input+= (cached??0)+(number(usage?.cache_creation_input_tokens)??0);
+        }
+        if(chunk.type==="message_delta") output=number(chunk.usage?.output_tokens);
+        if(chunk.type==="message_stop") terminal="completed";
+        if(chunk.type==="content_block_delta") timing.delta(chunk.delta?.text);
+        continue;
+      }
       if(chat) {
         const reason=chunk.choices?.[0]?.finish_reason;
         if(reason) terminal=reason==="stop" || reason==="length" ? "completed":"failed";

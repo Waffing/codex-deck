@@ -41,7 +41,7 @@ WORKDIR /app
 COPY --from=builder --chown=0:0 /out/ /app/
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gosu git iproute2 python3 python3-venv ripgrep jq \
+    && apt-get install -y --no-install-recommends ca-certificates curl gosu git bubblewrap iproute2 python3 python3-venv ripgrep jq \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \

@@ -8,7 +8,7 @@ import { Empty, Feedback, SectionHead, useAction } from "./common";
 
 type Created = { api_key: string; webhook_signing_secret: string; workspaceId: string; scopes: ApiKey["scopes"] };
 type Scope = ApiKey["scopes"][number];
-const scopes: Scope[] = ["tasks:read", "tasks:write", "files:download"];
+const scopes: Scope[] = ["tasks:read", "tasks:write", "files:download","proxy:models","proxy:responses","proxy:chat","proxy:messages"];
 function KeyReceipt({ item, close }: { item: Created; close: () => void }) {
   const dialog = useRef<HTMLDialogElement | null>(null);
   const a = useAction();
@@ -22,18 +22,22 @@ function KeyReceipt({ item, close }: { item: Created; close: () => void }) {
     window.location.origin +
     '/api/v1/tasks \\\n  -H "Authorization: Bearer $CODEXDECK_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d ' +
     JSON.stringify({ workspace_id: item.workspaceId, prompt: "列出当前项目文件" }).replace(/^|$/g, "'");
+  const proxy=item.scopes.find(s=>s.startsWith("proxy:"));
+  const proxyPath=proxy==="proxy:models"?"models":proxy==="proxy:responses"?"responses":proxy==="proxy:chat"?"chat/completions":"messages";
+  const proxyBody=proxy==="proxy:responses"?{model:"MODEL_ALIAS",input:"Hello"}:{model:"MODEL_ALIAS",max_tokens:8,messages:[{role:"user",content:"Hello"}]};
+  const proxyExample="curl "+window.location.origin+"/v1/"+proxyPath+' -H "Authorization: Bearer $CODEXDECK_API_KEY"'+(proxyPath==="models"?"":' -H "Content-Type: application/json" -d '+JSON.stringify(proxyBody).replace(/^|$/g,"'"));
   const example = item.scopes.includes("tasks:write")
     ? writeExample
     : item.scopes.includes("tasks:read")
       ? 'curl -H "Authorization: Bearer $CODEXDECK_API_KEY" "' +
         window.location.origin +
         '/api/v1/tasks/$CODEXDECK_TASK_ID"'
-      : 'curl -o artifact "$CODEXDECK_DOWNLOAD_URL"';
+      : proxy?proxyExample:'curl -o artifact "$CODEXDECK_DOWNLOAD_URL"';
   const exampleHint = item.scopes.includes("tasks:write")
     ? "将 API Key 设为 CODEXDECK_API_KEY 后测试请求。"
     : item.scopes.includes("tasks:read")
       ? "设置 CODEXDECK_API_KEY 和已授权工作区的 CODEXDECK_TASK_ID 后查询任务。"
-      : "使用具有 tasks:read 和 files:download 权限的密钥查询已完成任务，从 artifacts 取出签名下载地址并设为 CODEXDECK_DOWNLOAD_URL。";
+      : proxy?"设置 CODEXDECK_API_KEY 后，使用已授权的模型别名。":"使用具有 tasks:read 和 files:download 权限的密钥查询已完成任务，从 artifacts 取出签名下载地址并设为 CODEXDECK_DOWNLOAD_URL。";
   return (
     <dialog className="ad-onekey" ref={dialog} aria-labelledby="receipt-title" onCancel={close}>
       <div className="ad-labelrow">
@@ -73,7 +77,8 @@ function KeyReceipt({ item, close }: { item: Created; close: () => void }) {
     </dialog>
   );
 }
-export function OpenApi() {
+export function OpenApi({showLedger=true}:{showLedger?:boolean}={}) {
+  const [aliases,setAliases]=useState<string[]>([]),[allowedModels,setAllowedModels]=useState<string[]>(["*"]),[tpm,setTpm]=useState(0),[daily,setDaily]=useState(0),[monthly,setMonthly]=useState(0);
   const [keys, setKeys] = useState<ApiKey[]>([]),
     [spaces, setSpaces] = useState<Workspace[]>([]);
   const [editing, setEditing] = useState(false),
@@ -86,6 +91,8 @@ export function OpenApi() {
   const a = useAction();
   async function keysLoad() {
     const [ks, ws] = await Promise.all([api<ApiKey[]>("/api/api-keys"), api<Workspace[]>("/api/workspaces")]);
+    const [models,routes]=await Promise.all([api<{alias:string;enabled:boolean}[]>("/api/models"),api<{slug:string;enabled:boolean}[]>("/api/routing-profiles")]);
+    setAliases([...models.filter(m=>m.enabled).map(m=>m.alias),...routes.filter(r=>r.enabled).map(r=>r.slug)]);
     setKeys(ks);
     setSpaces(ws);
   }
@@ -95,19 +102,19 @@ export function OpenApi() {
   async function issue() {
     const data = await api<Created>(
       "/api/api-keys",
-      json("POST", { name, scopes: rights, workspace_ids: allowed, rate_limit_rpm: rpm }),
+      json("POST", { name, scopes: rights, workspace_ids: allowed, rate_limit_rpm: rpm,allowed_models:allowedModels,tpm_limit:tpm,daily_budget:daily,monthly_budget:monthly }),
     );
     setReceipt({ ...data, workspaceId: allowed[0], scopes: rights });
     setEditing(false);
     setName("");
-    setRights(["tasks:read"]);
+    setRights(["tasks:read"]);setAllowedModels(["*"]);setDaily(0);setMonthly(0);setTpm(0);
     setAllowed([]);
     await keysLoad();
   }
   return (
     <>
       <SectionHead
-        title="Open API 与用量"
+        title={showLedger?"Open API 与用量":"公网 Open API Key"}
         description="管理外部系统的访问范围，核对各渠道的 Token 与成本。"
         actions={
           <button className="ad-primary" onClick={() => setEditing((v) => !v)}>
@@ -164,7 +171,10 @@ export function OpenApi() {
               </label>
             ))}
           </fieldset>
-          <fieldset>
+          {rights.some(s=>s.startsWith("proxy:"))&&<fieldset><legend>代理模型白名单与配额</legend>
+            {["*",...aliases].map(alias=><label className="ad-check" key={alias}><ToggleSwitch checked={allowedModels.includes(alias)} onCheckedChange={v=>setAllowedModels(v?(alias==="*"?["*"]:[...allowedModels.filter(m=>m!=="*"),alias]):allowedModels.filter(m=>m!==alias))}/>{alias==="*"?"全部模型":alias}</label>)}
+            <div className="ad-form-grid">{([["Token / 分钟",tpm,setTpm],["日预算",daily,setDaily],["月预算",monthly,setMonthly]] as const).map(([label,value,set])=><label key={label}>{label}<input type="number" min="0" step={label==="Token / 分钟"?"1":"any"} value={value} onChange={e=>set(Number(e.target.value))}/></label>)}</div></fieldset>}
+          {rights.some(s=>!s.startsWith("proxy:"))&&<fieldset>
             <legend>工作区白名单</legend>
             <div className="ad-scroll-list">
               {spaces.map((s) => (
@@ -179,9 +189,9 @@ export function OpenApi() {
                 </label>
               ))}
             </div>
-          </fieldset>
+          </fieldset>}
           <div>
-            <button className="ad-primary" disabled={a.busy || !rights.length || !allowed.length}>
+            <button className="ad-primary" disabled={a.busy || !rights.length || (rights.some(s=>!s.startsWith("proxy:")) && !allowed.length) || (rights.some(s=>s.startsWith("proxy:")) && !allowedModels.length)}>
               生成密钥
             </button>
           </div>
@@ -250,7 +260,7 @@ export function OpenApi() {
           </button>
         </div>
       )}
-      <UsageLedger />
+      {showLedger&&<UsageLedger />}
       {receipt && <KeyReceipt item={receipt} close={() => setReceipt(null)} />}
     </>
   );

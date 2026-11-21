@@ -44,6 +44,16 @@ export function SegmentedControl({value,defaultValue,name,children,onValueChange
   const selected=String(value??local);
   const group=useRef<HTMLSpanElement>(null);
   useLayoutEffect(()=>{
+    const el=group.current,active=el?.querySelector<HTMLButtonElement>('button[aria-checked="true"]');
+    if(!el||!active)return;
+    const measure=()=>{
+      el.style.setProperty("--segment-x",active.offsetLeft+"px");el.style.setProperty("--segment-y",active.offsetTop+"px");
+      el.style.setProperty("--segment-w",active.offsetWidth+"px");el.style.setProperty("--segment-h",active.offsetHeight+"px");
+    };
+    measure();
+    const observer=new ResizeObserver(measure);observer.observe(el);observer.observe(active);return ()=>observer.disconnect();
+  },[selected]);
+  useLayoutEffect(()=>{
     const box=group.current,label=box?.closest("label");
     if(!box||!label||aria["aria-label"])return;
     const text=Array.from(label.childNodes).filter(n=>n!==box).map(n=>n.textContent).join(" ").trim();

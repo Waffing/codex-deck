@@ -1,34 +1,16 @@
 import {randomUUID} from "node:crypto";
 import {chmod, realpath} from "node:fs/promises";
 import {createServer, request} from "node:http";
-import {hostname} from "node:os";
+import type Database from "better-sqlite3";
+import {executorRuntime,namespaceArgs,type Mount} from "./execution-environment.js";
 import path from "node:path";
 import {once} from "node:events";
+import {enableNamespaceHttps} from "./namespace-network.js";
 import {command} from "../server-ops/probe.js";
 import {workspaceDirectory} from "../security/paths.js";
 
-type Mount = {Type:string; Source:string; Destination:string};
-
-export async function executorRuntime() {
-  if (process.platform !== "linux" || !process.getuid?.()) {
-    throw new Error("完全访问需要以普通用户运行的 Linux 控制面与 Docker 执行镜像。");
-  }
-  let image = process.env.CODEXDECK_EXECUTOR_IMAGE;
-  let mounts:Mount[] | undefined;
-  if (process.env.CODEXDECK_DEPLOYMENT_NETWORK) {
-    const fields = await command("docker",["inspect","--format","{{.Image}} {{json .Mounts}}",hostname()]);
-    image ??= fields.slice(0,fields.indexOf(" "));
-    mounts = JSON.parse(fields.slice(fields.indexOf(" ") + 1));
-  }
-  if (!image || image.startsWith("-")) throw new Error("请配置已安装的 CodexDeck 执行镜像。");
-  const result = await command("docker",["image","inspect","--format",'{{.Id}} {{index .Config.Labels "io.codexdeck.executor"}}',image]);
-  const [id,protocol]=result.split(" ");
-  if (!/^sha256:[a-f0-9]{64}$/.test(id) || protocol!=="1") throw new Error("执行镜像需要支持 CodexDeck V1.3。");
-  return {id,mounts};
-}
-
-export async function hasIsolatedRunner() {
-  try { await executorRuntime(); return true; } catch { return false; }
+export async function hasIsolatedRunner(db?:Database.Database) {
+  try { await executorRuntime(db); return true; } catch { return false; }
 }
 
 export function mountSource(file:string,mounts?:Mount[]) {
@@ -49,10 +31,11 @@ export function projectMountSource(project:string,data:string,mounts?:Mount[]) {
 }
 
 export async function isolatedRunner(options:{
-  workspace:string; data:string; config:string; threadId:string; workspaceId:string;
+  db?:Database.Database; workspace:string; data:string; config:string; threadId:string; workspaceId:string;
   leases:Record<"model"|"ops",string>; port:number; reviewed:boolean; readOnly?:boolean;
 }) {
-  const {id,mounts}=await executorRuntime();
+  const runtime=await executorRuntime(options.db);
+  const {id,mounts}=runtime;
   const uid=process.getuid!(),gid=process.getgid!();
   const data=await realpath(options.data), project=await realpath(options.workspace);
   const sourceProject=projectMountSource(project,data,mounts);
@@ -80,6 +63,8 @@ export async function isolatedRunner(options:{
     res.once("close",()=>upstream.destroy());
     req.pipe(upstream);
   });
+  const httpsProxy=!id && !options.readOnly && !options.reviewed;
+  const closeTunnels=httpsProxy?enableNamespaceHttps(relay):undefined;
   const args=["run","--rm","-i","--init","--pull","never","--name",name,"--network",options.readOnly?"none":"bridge",
     "--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--user",uid+":"+gid,
     "--pids-limit","128","--memory","512m","--memory-swap","512m","--cpus","1","--no-healthcheck",
@@ -88,22 +73,27 @@ export async function isolatedRunner(options:{
     "--workdir","/workspace","--env","HOME=/home/runner","--env","CODEX_HOME=/codex",
     "--env","NPM_CONFIG_CACHE=/cache/npm","--env","PIP_CACHE_DIR=/cache/pip","--env","UV_CACHE_DIR=/cache/uv",
     "--env","CODEXDECK_INTERNAL_TOKEN",...(options.readOnly?[]:["--env","CODEXDECK_OPS_TOKEN","--env","CODEXDECK_OPS_URL=http://127.0.0.1:3141/internal/ops"])];
+  const ns=runtime.strategy==="docker"?[]:[...await namespaceArgs(),"--tmpfs","/codex","--dir","/home/runner","--chdir","/workspace",
+    "--setenv","CODEX_HOME","/codex","--setenv","HOME","/home/runner","--setenv","NPM_CONFIG_CACHE","/cache/npm","--setenv","PIP_CACHE_DIR","/cache/pip","--setenv","UV_CACHE_DIR","/cache/uv"];
   for(const [local,target,ro] of [[project,"/workspace",options.readOnly],[state,"/codex/sessions",false],
     [cache,"/cache",false],[await realpath(options.config),"/run/deck-config",true],[socket,"/run/deck.sock",true]] as const) {
     if(!local) continue;
     const source=target==="/workspace" ? sourceProject : mountSource(local,mounts);
+    if(runtime.strategy!=="docker") { ns.push(ro?"--ro-bind":"--bind",source,target);continue; }
     if (/[,"\r\n]/.test(source)) throw new Error("执行目录名称包含 Docker 不支持的字符。");
     args.push("--mount","type=bind,src="+source+",dst="+target+(ro?",readonly":""));
   }
-  args.push("--entrypoint","node",id,"/app/apps/server/dist/codex/runner-entry.js");
+  if(id) args.push("--entrypoint","node",id,"/app/apps/server/dist/codex/runner-entry.js");
+  else ns.push("--","/run/deck-bin/node","/app/apps/server/dist/codex/runner-entry.js");
   relay.listen(socket);
   await once(relay,"listening");
   try {await chmod(socket,0o600);} catch(e){relay.close();throw e;}
   let closing:Promise<void>|undefined;
-  return {args,env:{PATH:process.env.PATH,DOCKER_HOST:process.env.DOCKER_HOST,
-    CODEXDECK_INTERNAL_TOKEN:options.leases.model,CODEXDECK_OPS_TOKEN:options.leases.ops},
+  return {file:id?"docker":"/usr/bin/bwrap",args:id?args:ns,env:{PATH:process.env.PATH,...(id && {DOCKER_HOST:process.env.DOCKER_HOST}),
+    ...(httpsProxy && {HTTPS_PROXY:"http://127.0.0.1:3141",https_proxy:"http://127.0.0.1:3141",NO_PROXY:"localhost,127.0.0.1",no_proxy:"localhost,127.0.0.1"}),
+    CODEXDECK_INTERNAL_TOKEN:options.leases.model,...(!options.readOnly && {CODEXDECK_OPS_TOKEN:options.leases.ops,CODEXDECK_OPS_URL:"http://127.0.0.1:3141/internal/ops"})},
     dispose:()=>closing??=(async()=>{
-      relay.close();relay.closeAllConnections();
-      await command("docker",["rm","-f",name],{timeout:10000}).catch(()=>{}); // --rm also removes normally exited runners.
+      closeTunnels?.();relay.close();relay.closeAllConnections();
+      if(id) await command("docker",["rm","-f",name],{timeout:10000}).catch(()=>{}); // --rm also removes normally exited runners.
     })()};
 }

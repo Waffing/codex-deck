@@ -8,6 +8,7 @@ import type { ServerContext } from "../app.js";
 import { createRequireAdmin } from "../auth.js";
 import type { WorkspaceFiles } from "./workspace-files.js";
 import { fileError, openWorkspaceFile } from "./sandbox.js";
+import {pluginEnabled} from "../settings/modules.js";
 
 const textTypes = new Set(["html", "htm", "svg", "csv", "md", "markdown", "mmd", "mermaid"]);
 const binaryTypes = new Set(["docx", "xlsx", "xls", "pdf", "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp"]);
@@ -87,11 +88,13 @@ export async function sendDocument(ctx: ServerContext, reply: FastifyReply, name
 export function registerDocumentRoutes(app: FastifyInstance, ctx: ServerContext, files: WorkspaceFiles) {
   const auth = { preHandler: createRequireAdmin(ctx) };
   app.get<{ Params: { id: string }; Querystring: { download?: string } }>("/api/artifacts/:id/content", auth, async (req, reply) => {
+    if(req.query.download!=="1" && !pluginEnabled(ctx.native,"document_viewer"))throw fileError(409,"文档直览已停用，仍可下载原件。");
     const [item] = files.artifactsFor({ kind: "artifact", id: req.params.id });
     return sendDocument(ctx, reply, item.name, await files.openArtifact(item.id), req.query.download === "1");
   });
   app.get<{ Params: { id: string }; Querystring: { path?: string; download?: string } }>("/api/workspaces/:id/files/preview", auth, async (req, reply) => {
     const name = req.query.path;
+    if(req.query.download!=="1" && !pluginEnabled(ctx.native,"document_viewer"))throw fileError(409,"文档直览已停用，仍可下载原件。");
     if (typeof name !== "string" || name.length > 1024) throw fileError(400, "需要有效的工作区相对路径。");
     const ext = extname(name).slice(1).toLowerCase();
     if (!textTypes.has(ext) && !binaryTypes.has(ext)) throw fileError(415, "此格式请使用文本编辑器查看。");

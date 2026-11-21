@@ -104,9 +104,12 @@ export async function qualityJourney({browser,context,origin,instrument,submit,s
     await drawer.getByRole("button",{name:"关闭抽屉"}).click();
     if(viewport.width<768)await page.getByRole("button",{name:"上下文占用"}).click();
     else await page.getByRole("button",{name:"会话操作"}).click();
-    const created=page.waitForResponse(r=>r.url().endsWith("/handoff")&&r.status()===201);
-    await page.getByRole("button",{name:"生成交接单并开新会话",exact:true}).click();
-    const child=await (await created).json();
+    const [created]=await Promise.all([
+      page.waitForResponse(r=>r.url().endsWith("/handoff")&&r.request().method()==="POST"),
+      page.getByRole("button",{name:"生成交接单并开新会话",exact:true}).click(),
+    ]);
+    assert.equal(created.status(),201,"handoff HTTP "+created.status());
+    const child=await created.json();
     await page.getByText("架构交接单",{exact:true}).click();
     await page.getByRole("heading",{name:"架构目标"}).waitFor();
     assert.equal(await page.evaluate(()=>localStorage.getItem("deck.thread")),child.thread_id);

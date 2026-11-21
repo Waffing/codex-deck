@@ -1,19 +1,20 @@
 import {useEffect,useRef,useState,type RefObject} from "react";
 import {ArrowUp,FileText,ListChecks,Plus,Square,X} from "lucide-react";
-import type {CompactResult, Workspace} from "@codexdeck/shared";
+import type {CompactResult, Thread, Workspace} from "@codexdeck/shared";
 import {api,json} from "../../lib/api";
-import {AutomationControl} from "../settings/Controls";
+import {PermissionPicker} from "./PermissionPicker";
+import "./composer-menus.css";
 import {ModelPicker} from "./ModelPicker";
 import {TodoSteps,type ChatPreferences} from "./Timeline";
 import {type ChatTurn,object} from "./turns";
 import type {ChatProps} from "./ChatPane";
-import {useCompletions} from "./completions";
+import {useCompletions, type Choice} from "./completions";
 
 export type ComposerHandle={edit:(prompt:string)=>void};
-type Props=Pick<ChatProps,"workspace"|"thread"|"models"|"providers"|"onCreateThread"|"onRefresh"|"onHandoff"> & {
+type Props=Pick<ChatProps,"workspace"|"thread"|"models"|"providers"|"onCreateThread"|"onRefresh"|"onHandoff"|"onOpen"|"onCommandPage"|"onSelectThread"> & {
   latest?:ChatTurn;hasTurns:boolean;running:boolean;preferences:ChatPreferences;onSend:(prompt:string,images:string[],mode?:"plan"|"execute")=>void;
   refresh:()=>void;handle:RefObject<ComposerHandle|null>};
-export function Composer({workspace,thread,models,providers,onCreateThread,onRefresh,latest,hasTurns,running,preferences,onSend,refresh,handle,onHandoff}:Props){
+export function Composer({workspace,thread,models,providers,onCreateThread,onRefresh,latest,hasTurns,running,preferences,onSend,refresh,handle,onHandoff,onCommandPage,onOpen,onSelectThread}:Props){
   const [mode,setMode]=useState<"plan"|"execute">(thread?.execution_mode??"execute");
   useEffect(()=>{setMode(thread?.execution_mode??"execute");},[thread?.execution_mode]);
   async function togglePlan(){
@@ -38,6 +39,10 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
     return ()=>{document.removeEventListener("pointerdown",outside);document.removeEventListener("keydown",escape);};
   },[contextMenu]);
   useEffect(()=>{handle.current={edit(prompt){setDraft(prompt);setCaret(prompt.length);input.current?.focus();}};return ()=>{handle.current=null;};},[handle]);
+  useEffect(()=>{
+    if(complete.open) document.getElementById("completion-"+complete.index)?.scrollIntoView?.({block:"nearest"});
+  },[complete.open,complete.index]);
+  const [confirmDelete,setConfirmDelete]=useState(false);
   const steps=latest?.projection.items.find(item=>item.kind==="todo_progress")?.steps??[];
   const usage=latest?.projection.telemetry;
   const usageFrames=latest?.frames.filter(e=>e.seq_id>(thread?.model_changed_seq??0) && (e.type==="context_usage" || e.type==="context_compacted") && (!object(e.payload).model_alias||object(e.payload).model_alias===thread?.active_model_alias));
@@ -100,12 +105,39 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
       refresh();onRefresh();
     }catch(e){setError((e as Error).message);}finally{setWorking(false);}
   }
-  function choose(value:string){
-    const before=draft.slice(0,complete.start),after=draft.slice(caret);
+  async function runCommand(value:string){
+    if(value==="/compact"){await compactThread();return;}
+    if(value==="/review"){onOpen({kind:"diff",title:"Git Diff"});return;}
+    if(value==="/init"){onOpen({kind:"agents",title:"AGENTS.md"});return;}
+    if(value==="/mcp" || value==="/prompts" || value==="/deploy"){
+      onCommandPage?.(value==="/mcp"?"mcp":value==="/prompts"?"prompts":"apps");return;
+    }
+    if(value==="/test"){send("检查项目测试脚本，运行相关测试并汇总结果。");return;}
+    if(working)return;
+    setWorking(true);setError("");
+    try {
+      if(value==="/new"){await onCreateThread();return;}
+      if(!thread)throw new Error("请先选择一个会话。");
+      if(running)throw new Error("本轮结束后可以操作会话。");
+      if(value==="/fork"){
+        const child=await api<Thread>("/api/threads/"+thread.id+"/fork",json("POST",{}));onSelectThread?.(child);onRefresh();
+      } else if(value==="/archive"){
+        await api("/api/threads/archive",json("POST",{ids:[thread.id],archived:true}));onRefresh();
+      } else if(value==="/delete")setConfirmDelete(true);
+    }catch(e){setError((e as Error).message);}finally{setWorking(false);}
+  }
+  async function removeThread(){
+    if(!thread || working)return;
+    setWorking(true);
+    try {await api("/api/threads/"+thread.id,{method:"DELETE"});setConfirmDelete(false);onRefresh();}
+    catch(e){setError((e as Error).message);}finally{setWorking(false);}
+  }
+  function choose(choice:Choice){
+    const before=draft.slice(0,complete.start),after=draft.slice(caret),{value}=choice;
     complete.close();
     if(complete.kind==="@"){setPaths(prev=>prev.includes(value)?prev:[...prev,value]);setDraft(before+after);setCaret(before.length);}
-    else if(value==="/compact"){setDraft(before+after);void compactThread();}
-    else {setDraft(before+value+after);setCaret(before.length+value.length);}
+    else if(choice.custom){setDraft(before+value+after);setCaret(before.length+value.length);}
+    else {setDraft(before+after);setCaret(before.length);void runCommand(value);}
     input.current?.focus();
   }
   async function changePolicy(value:Workspace["automation_level"]){
@@ -168,8 +200,9 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
               ))}
             </div>
           )}
+          {confirmDelete && <aside className="cd-delete-confirm" role="alertdialog" aria-label="永久删除聊天"><strong>永久删除此会话及其记录？</strong><button type="button" disabled={working} onClick={()=>void removeThread()}>确认删除</button><button type="button" onClick={()=>setConfirmDelete(false)}>取消</button></aside>}
           {complete.open && <div className="cd-suggestions" id="composer-options" role="listbox" aria-label={complete.kind==="@"?"工作区文件":"快捷命令"}>
-            {complete.options.length?complete.options.map((v,i)=><button id={`completion-${i}`} role="option" type="button" aria-selected={i===complete.index} key={v.label+i} onMouseDown={e=>e.preventDefault()} onClick={()=>choose(v.value)}>{v.label}</button>):<p>{complete.hint}</p>}
+            {complete.options.length?complete.options.map((v,i)=><button className={"cd-command-row"+(v.custom && !complete.options[i-1]?.custom?" cd-command-divider":"")} data-danger={v.value==="/delete" || undefined} id={`completion-${i}`} role="option" type="button" aria-label={v.command??v.label} title={v.description} aria-selected={i===complete.index} key={v.label+i} onMouseDown={e=>e.preventDefault()} onClick={()=>choose(v)}><v.Icon size={16}/><b>{v.label}</b>{v.description&&<span>{v.description}</span>}{v.value==="/compact"?<small>{percent==null?"占用未知":"已使用 "+percent+"%"}</small>:v.badge&&<small>{v.badge}</small>}</button>):<p>{complete.hint}</p>}
           </div>}
           <textarea ref={input}
             aria-label="任务指令"
@@ -196,7 +229,7 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
                   return;
                 }
                 if(e.key==="Enter" || e.key==="Tab"){
-                  e.preventDefault();const choice=complete.options[complete.index];if(choice)choose(choice.value);return;
+                  e.preventDefault();const choice=complete.options[complete.index];if(choice)choose(choice);return;
                 }
               }
               if (e.key === "Enter" && !e.shiftKey && (preferences.sendShortcut!=="ctrl_enter" || e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) {
@@ -226,30 +259,34 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
               <Plus size={17} />
             </button>
             <button className="plan-switch" type="button" aria-label="Plan 模式" aria-pressed={mode==="plan"} disabled={working||running} onClick={()=>void togglePlan()}><ListChecks size={14}/>Plan</button>
-            <AutomationControl label="工作区权限" value={workspace.automation_level} disabled={working} onChange={v=>void changePolicy(v)}/>
+            <PermissionPicker value={workspace.automation_level} disabled={working} onChange={v=>void changePolicy(v)}/>
             <span className="cd-live-usage" aria-label="生成性能">{speed!=null?speed.toFixed(1):"—"} tok/s · 缓存 {cacheRatio!=null?Math.round(cacheRatio*100)+"%":"—"}</span>
-            <div ref={contextControl} className="cd-context" onPointerEnter={e=>{if(e.pointerType==="mouse")setContextMenu(true);}} onPointerLeave={e=>{if(e.pointerType==="mouse")setContextMenu(false);}} onBlur={e=>{if(e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node))setContextMenu(false);}}>
-              <button type="button" aria-label="上下文占用" aria-expanded={contextMenu} onFocus={()=>setContextMenu(true)} onClick={()=>setContextMenu(true)} data-high={percent!=null&&percent>=(preferences.contextThreshold??80)}>
-                <svg width="32" height="32" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17"/><circle className="cd-context-value" cx="20" cy="20" r="17" pathLength="100" strokeDasharray={`${Math.min(100,percent??0)} 100`}/></svg><small>{percent!=null?percent+"%":"—"}</small>
+            <div className="cd-compose-actions">
+              <div ref={contextControl} className="cd-context" onPointerEnter={e=>{if(e.pointerType==="mouse")setContextMenu(true);}} onPointerLeave={e=>{
+                if(e.pointerType==="mouse" && !e.currentTarget.contains(document.activeElement))setContextMenu(false);
+              }} onBlur={e=>{if(e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node))setContextMenu(false);}}>
+                <button type="button" aria-label="上下文占用" aria-expanded={contextMenu} onFocus={()=>setContextMenu(true)} onClick={()=>setContextMenu(true)} data-high={percent!=null&&percent>=(preferences.contextThreshold??80)}>
+                  <svg width="32" height="32" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17"/><circle className="cd-context-value" cx="20" cy="20" r="17" pathLength="100" strokeDasharray={`${Math.min(100,percent??0)} 100`}/></svg><small>{percent!=null?percent+"%":"—"}</small>
+                </button>
+                {contextMenu && <aside><p>{total?.toLocaleString()??"—"} / {limit?.toLocaleString()??"—"} Token</p><button type="button" disabled={!thread||running||working||!hasTurns||latest?.projection.items.some(item=>item.kind==="context_compacted")} onClick={()=>void compactThread()}>一键压缩上下文</button>{onHandoff&&<button type="button" disabled={!thread||running||working||!hasTurns} onClick={()=>{setContextMenu(false);onHandoff();}}>生成交接单并开新会话</button>}</aside>}
+              </div>
+              <ModelPicker {...{ thread, models, providers, workspace, onCreateThread, onRefresh }} />
+              {running && (
+                <button className="cd-stop" type="button" disabled={working} onClick={() => void interrupt()}>
+                  <Square size={12} />
+                  中止
+                </button>
+              )}
+              <button
+                className="cd-send"
+                type="submit"
+                aria-label={running ? "中途插话" : "发送消息"}
+                disabled={working || uploading || (!draft.trim() && !paths.length)}
+              >
+                {running && <span>插话</span>}
+                <ArrowUp size={17} />
               </button>
-              {contextMenu && <aside><p>{total?.toLocaleString()??"—"} / {limit?.toLocaleString()??"—"} Token</p><button type="button" disabled={!thread||running||working||!hasTurns||latest?.projection.items.some(item=>item.kind==="context_compacted")} onClick={()=>void compactThread()}>一键压缩上下文</button>{onHandoff&&<button type="button" disabled={!thread||running||working||!hasTurns} onClick={()=>{setContextMenu(false);onHandoff();}}>生成交接单并开新会话</button>}</aside>}
             </div>
-            <ModelPicker {...{ thread, models, providers, workspace, onCreateThread, onRefresh }} />
-            {running && (
-              <button className="cd-stop" type="button" disabled={working} onClick={() => void interrupt()}>
-                <Square size={12} />
-                中止
-              </button>
-            )}
-            <button
-              className="cd-send"
-              type="submit"
-              aria-label={running ? "中途插话" : "发送消息"}
-              disabled={working || uploading || (!draft.trim() && !paths.length)}
-            >
-              {running && <span>插话</span>}
-              <ArrowUp size={17} />
-            </button>
           </div>
         </form>
         {notice && <div className="cd-context-notice" role="status">{notice}<button aria-label="关闭压缩提示" onClick={()=>setNotice("")}><X size={13}/></button></div>}

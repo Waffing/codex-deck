@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type RefObject } from "react";
-import { Check, ChevronDown, Clock3, Copy, GitBranch, Pencil, Terminal, X } from "lucide-react";
+import { CircleAlert, CircleSlash, Check, ChevronDown, Clock3, Copy, GitBranch, Pencil, Terminal, X } from "lucide-react";
 import { type ThreadEvent, type TimelineItem, type ToolOperation } from "@codexdeck/shared";
 import { api, json } from "../../lib/api";
 import {Telemetry,TurnFiles} from "./TurnFiles";
@@ -37,8 +37,9 @@ function Trace({turn,expanded}:{turn:ChatTurn;expanded:boolean}) {
   const {task,projection}=turn;
   const count=projection.items.reduce((sum,item)=>sum+(item.operations?.length??0),0);
   const ms=projection.telemetry?.elapsed_ms??Date.parse(task.updated_at)-Date.parse(task.created_at);
-  return <section className="cd-step-block"><button type="button" className="cd-step-toggle" aria-expanded={open} onClick={()=>setOpen(!open)}>
-    {turn.finished?<Check size={13}/>:<Clock3 size={13}/>} {labels[task.status]??task.status} · {elapsed(ms)} · {count} 个工具 <ChevronDown size={13}/></button>
+  const StatusIcon=task.status==="failed"?CircleAlert:task.status==="cancelled"?CircleSlash:task.status==="completed"?Check:Clock3;
+  return <section className="cd-step-block"><button type="button" className="cd-step-toggle" data-state={task.status} aria-expanded={open} onClick={()=>setOpen(!open)}>
+    <StatusIcon size={13}/> {labels[task.status]??task.status} · {elapsed(ms)} · {count} 个工具 <ChevronDown size={13}/></button>
     {open && <ol>{projection.items.map(item=><li key={item.kind+item.id} data-kind={item.kind}>
       {item.kind==='tool_group'?<ToolGroup item={item} turnId={task.id}/>:
         item.kind==='todo_progress'?<details><summary>{item.text||'任务清单'}</summary><TodoSteps steps={item.steps??[]}/></details>:
@@ -80,7 +81,7 @@ const Turn=memo(function Turn({turn,workspaceId,onOpen,onError,onEdit,preference
     </div></section>
     {confirm&&<div className="cd-confirm">还原到本轮开始前的工作区？<button disabled={busy} onClick={()=>void restore()}>确认回滚</button><button onClick={()=>setConfirm(false)}>取消</button></div>}
     <Trace turn={turn} expanded={preferences.expandTimeline}/>
-    {turn.summaryOnly&&<small>这轮历史仅留存了回复摘要。</small>}
+    {turn.summaryOnly && task.status==="completed" && answer.trim() && <small>这轮历史仅留存了回复摘要。</small>}
     {answer?<AnswerDocument source={answer} turnId={task.id} complete={finished} onError={onError}/>:!finished&&<span role="status" className="cd-thinking">思考中…</span>}
     {preferences.telemetry&&projection.telemetry&&<Telemetry value={projection.telemetry}/>}
     <TurnFiles files={files} value={projection.telemetry} onOpen={onOpen} onError={onError} turnId={task.id} diffStepId="$diff"/>

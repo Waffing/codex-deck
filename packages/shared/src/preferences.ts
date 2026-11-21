@@ -27,7 +27,7 @@ export const workbenchPreferencesSchema = z.strictObject({
   debug: z.boolean().default(false),
   sendShortcut: z.enum(["enter", "ctrl_enter"]).default("enter"),
   contextThreshold: z.number().int().min(1).max(100).default(80),
-  automationLevel: automationLevelSchema.default("conservative"),
+  automationLevel: automationLevelSchema.default("semi"),
   approvalTimeoutSeconds: z.number().int().min(10).max(86400).default(600),
 });
 export type WorkbenchPreferences = z.infer<typeof workbenchPreferencesSchema>;

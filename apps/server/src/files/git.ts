@@ -56,6 +56,7 @@ export async function gitStatus(root: string) {
 }
 
 export async function gitDiff(root: string) {
+  if (!(await gitDirectory(root))) return "";
   const opts = ["--binary", "--no-ext-diff", "--no-textconv"];
   const head = await run(root, ["rev-parse", "--verify", "HEAD"]).catch(() => "");
   return head ? run(root, ["diff", ...opts, "HEAD", "--"])

@@ -37,7 +37,7 @@ export function registerOps(app:FastifyInstance,ctx:ServerContext,files:Workspac
   app.addHook("onReady",async()=>{await probe();await deployer.recover();});
   app.addHook("onClose",async()=>deployer.close());
   app.get("/api/server/profile",admin,async()=>getProfile());
-  app.get("/api/runtime/capabilities",admin,async()=>({isolated_executor:await hasIsolatedRunner(),
+  app.get("/api/runtime/capabilities",admin,async()=>({isolated_executor:await hasIsolatedRunner(ctx.native),
     deployment:getProfile().docker_available || process.env.NODE_ENV!=="production" || process.env.CODEXDECK_ALLOW_LOCAL_DEPLOYMENTS==="true"}));
   app.post("/api/server/probe",admin,probe);
   app.get("/api/deployments",admin,async()=>deployer.rows().map(row=>deployer.dto(row)));
@@ -71,6 +71,7 @@ export function registerOps(app:FastifyInstance,ctx:ServerContext,files:Workspac
       typeof claims.thread_id!=="string" || typeof claims.exp!=="number" || claims.exp<=now || typeof claims.iat!=="number" ||
       claims.iat>now+30 || claims.exp-claims.iat>86400) return reply.code(401).send({error:"Invalid local ops token."});
     const thread=claims.thread_id;
+    if(!mcpEntries(ctx.native).some(server=>server.builtin && server.enabled))return reply.code(403).send({error:"Ops MCP is disabled."});
     const authorizedTask=()=>{
       const guest=taskLink(ctx,typeof claims.task_id==="string"?claims.task_id:undefined);
       if(guest && (guest.status!=="active" || guest.permission!=="full_with_approval" || req.params.tool!=="app_deploy_staging")) return false;
@@ -119,3 +120,4 @@ export function registerOps(app:FastifyInstance,ctx:ServerContext,files:Workspac
   return {getProfile,probe,pool,deployer};
 }
 export type OpsService = ReturnType<typeof registerOps>;
+import {mcpEntries} from "../settings/modules.js";

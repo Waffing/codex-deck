@@ -12,7 +12,7 @@
 .deck .ad-card,.deck .ad-form-panel {background:var(--panel);box-shadow:0 2px 7px color-mix(in srgb,var(--text) 5%,transparent)}
 .deck .thread-line time {white-space:nowrap;color:var(--muted);margin-left:auto;font-size:10px;font-variant-numeric:tabular-nums;font-weight:400}
 .deck .desk-nav button {position:relative;border-radius:10px}
-.nav-tooltip {display:none;position:absolute;left:calc(100% + 5px);width:max-content;padding:4px 8px;color:var(--panel);background:var(--text);font-size:11px;font-style:normal;border-radius:6px;z-index:20;pointer-events:none}
+.nav-tooltip {display:none;position:fixed;left:calc(100% + 5px);width:max-content;padding:4px 8px;color:var(--panel);background:var(--text);font-size:11px;font-style:normal;border-radius:6px;z-index:20;pointer-events:none}
 .nav-collapsed .desk-nav button:is(:hover,:focus-visible) .nav-tooltip {display:block}
 .settings-tabs button {transition:background .18s,color .18s,box-shadow .18s}
 .workshop-group {display:grid;gap:12px}

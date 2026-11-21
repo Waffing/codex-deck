@@ -11,7 +11,7 @@ type ProviderRow = typeof providers.$inferSelect;
 type Stored = Pick<ProviderRow, "apiKeyCiphertext" | "apiKeysEnc" | "headersJson" | "balanceTokenEnc">;
 type PoolEntry = {id:string;value:string};
 
-function readPool(provider: Stored, context:Context):PoolEntry[] {
+export function readPool(provider: Stored, context:Context):PoolEntry[] {
   const keys:PoolEntry[]=provider.apiKeysEnc ? JSON.parse(decryptSecret(provider.apiKeysEnc,context.masterKey))
     : provider.apiKeyCiphertext ? [{id:"legacy",value:decryptSecret(provider.apiKeyCiphertext,context.masterKey)}] : [];
   for (const key of keys) context.masker.register(key.value);
@@ -59,13 +59,13 @@ export async function withProviderKey(provider:ProviderRow,context:Context,call:
     const item=candidates[(start+i)%candidates.length];
     if(state.cooling.has(item.id)) continue;
     const response=await call(item.value,headers);
-    if (![401,429].includes(response.status)) return response;
+    if (![401,403,429].includes(response.status)) return response;
     status=response.status;
     const retry=response.headers.get("retry-after");
     const seconds=retry && /^\d+$/.test(retry)?Number(retry):NaN;
     const delay=Number.isFinite(seconds)?seconds*1000:retry?Date.parse(retry)-Date.now():NaN;
-    const duration=Number.isFinite(delay)?Math.min(86400000,Math.max(1000,delay)):(status===401?300000:30000);
-    state.cooling.set(item.id,{status:status===401?"unauthorized":"cooldown",until:Date.now()+duration});
+    const duration=Number.isFinite(delay)?Math.min(86400000,Math.max(1000,delay)):(status!==429?300000:30000);
+    state.cooling.set(item.id,{status:status!==429?"unauthorized":"cooldown",until:Date.now()+duration});
     await response.body?.cancel();
   }
   if(!candidates.length && entries.every(item=>state.cooling.get(item.id)?.status==="unauthorized")) status=401;

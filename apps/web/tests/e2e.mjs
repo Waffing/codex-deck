@@ -11,6 +11,8 @@ import { chromium } from "playwright-core";
 import {harnessResponse,qualityJourney} from "./quality-harness.mjs";
 import {performanceJourney} from "./performance.mjs";
 import {hubPwaJourney} from "./hub-pwa.mjs";
+import {flagshipJourney} from "./flagship-journey.mjs";
+import {assertMobileComposerRow} from "./composer-journey.mjs";
 import {viewerJourney} from "./viewer-journey.mjs";
 import {securityCenterJourney} from "./security-center.mjs";
 import {modelLedgerJourney} from "./model-ledger.mjs";
@@ -124,6 +126,10 @@ try {
   await desktop.getByRole("button",{name:"关闭抽屉"}).click();
 
   step="流式任务、内嵌审批与文件预览";
+  // This journey checks an explicit approval for git status, which semi mode allows automatically.
+  await desktop.getByRole("button",{name:/^工作区权限：/}).click();
+  await desktop.getByRole("radio",{name:/^请求批准/}).click();
+  await desktop.getByRole("button",{name:"工作区权限：请求批准"}).waitFor();
   await submit(desktop,"检查工作区并生成验收摘要");
   await desktop.getByText("正在检查工作区。",{exact:true}).waitFor();
   const card=desktop.locator(".cd-pending-stack").getByTestId("approval-card");
@@ -178,7 +184,7 @@ try {
   await fits(mobile);
   await submit(mobile,"启动预发布验收站点");
   const mobileCard=mobile.locator(".mobile-overview").getByTestId("approval-card");
-  await mobileCard.waitFor();await fits(mobile);await shot(mobile,"04-approval-mobile");
+  await mobileCard.waitFor();await fits(mobile);await assertMobileComposerRow(mobile,true);await shot(mobile,"04-approval-mobile");
   await approve(mobileCard);
   await mobile.getByText("预发布服务已就绪。",{exact:true}).waitFor();
   await mobile.getByRole("textbox",{name:"任务指令"}).click();await fits(mobile);
@@ -186,8 +192,8 @@ try {
   await mobile.getByRole("button",{name:"预览",exact:true}).waitFor();
 
   step="服务卡片墙、预览与二级路由";
-  await desktop.locator(".desk-nav").getByRole("button",{name:"已部署服务"}).click();
-  assert.equal(new URL(desktop.url()).pathname,"/console/services");
+  await desktop.locator(".desk-nav").getByRole("button",{name:"应用",exact:true}).click();
+  assert.equal(new URL(desktop.url()).pathname,"/console/apps");
   assert.equal((await desktop.reload()).status(),200);
   const preview=desktop.getByRole("button",{name:"预览",exact:true});
   await preview.waitFor();await shot(desktop,"05-services-desktop");
@@ -208,6 +214,8 @@ try {
       const input={page,origin,workspaceId:workspaces.find(w=>w.name==="console-lab").id};
       await hubPwaJourney(input);
       await viewerJourney(input);
+      step="旗舰工作台与 API 指挥中心 "+viewport.width;
+      await flagshipJourney(page,origin,shot);
     } finally {await checks.close();}
   }
   step="V1.3 缓存、上滑分页、输入帧与乐观发送";

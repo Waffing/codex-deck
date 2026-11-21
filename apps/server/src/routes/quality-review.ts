@@ -9,6 +9,7 @@ import {listReviews,reviewDiff,reviewThread,runReview} from "../codex/diff-revie
 import type {ThreadManager} from "../codex/manager.js";
 import {qualityError as fail} from "../codex/quality-model.js";
 import type {WorkspaceFiles} from "../files/workspace-files.js";
+import {catalogModel} from "../gateway/catalog-route.js";
 
 type ById={Params:{id:string}};
 export function registerQualityReviews(app:FastifyInstance,ctx:ServerContext,files:WorkspaceFiles,manager:ThreadManager) {
@@ -70,7 +71,7 @@ export function registerQualityReviews(app:FastifyInstance,ctx:ServerContext,fil
     if(!parsed.success) throw fail(400,"Invalid handoff request.");
     const input=parsed.data,id=req.params.id;
     const parent=reviewThread(ctx,id),alias=input.model_alias??parent.active_model_alias;
-    if(!ctx.native.prepare("SELECT 1 FROM models m JOIN providers p ON p.id=m.provider_id WHERE m.alias=? AND m.enabled AND p.enabled").get(alias))
+    if(!catalogModel(ctx.native,alias))
       throw fail(400,"Handoff model unavailable.");
     const lastTurn=()=>ctx.native.prepare("SELECT id FROM tasks WHERE thread_id=? ORDER BY rowid DESC LIMIT 1").pluck().get(id);
     const isBusy=()=>ctx.native.prepare("SELECT 1 FROM tasks WHERE thread_id=? AND status IN ('running','queued') LIMIT 1").get(id);

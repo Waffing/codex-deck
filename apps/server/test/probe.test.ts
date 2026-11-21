@@ -1,8 +1,7 @@
 import { installationCode } from "../src/routes/auth.js";
 import { randomBytes } from "node:crypto";
-import { once } from "node:events";
+import {listenHttpFixture} from "./fixtures/http-port.js";
 import { createServer as mockServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -35,9 +34,7 @@ beforeEach(async () => {
     paths.push(req.url!);
     handle(req, res, data ? JSON.parse(data) : {});
   });
-  upstream.listen(0, "127.0.0.1");
-  await once(upstream, "listening");
-  url = "http://127.0.0.1:" + (upstream.address() as AddressInfo).port;
+  url = "http://127.0.0.1:" + await listenHttpFixture(upstream);
 });
 afterEach(async () => {
   await app.close();

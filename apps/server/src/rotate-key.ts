@@ -23,6 +23,11 @@ export function rotateMasterKey(db: Database.Database, current: Buffer, next: Bu
       provider.run(row.api_key_ciphertext === null ? null : seal(row.api_key_ciphertext), JSON.stringify(renewed),
         ...(hasPool?[row.api_keys_enc?seal(row.api_keys_enc):null,row.balance_token_enc?seal(row.balance_token_enc):null]:[]),row.id);
     }
+    if(db.prepare("SELECT 1 FROM sqlite_master WHERE name='gateway_request_logs'").get()){
+      const update=db.prepare("UPDATE gateway_request_logs SET debug_payload_enc=? WHERE id=?");
+      for(const row of db.prepare("SELECT id,debug_payload_enc FROM gateway_request_logs WHERE debug_payload_enc IS NOT NULL").all() as {id:string;debug_payload_enc:string}[])
+        update.run(seal(row.debug_payload_enc),row.id);
+    }
     const channel = db.prepare('UPDATE notification_channels SET config_json=? WHERE id=?');
     if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspace_secrets'").get()) {
       const update = db.prepare('UPDATE workspace_secrets SET value_enc=?,description=? WHERE id=?');

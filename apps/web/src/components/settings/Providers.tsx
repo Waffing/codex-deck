@@ -1,3 +1,8 @@
+import {GatewayRouting,GlobalSwitch,HealthDots,ProviderSymbol} from "./GatewayRouting";
+import {GatewayInspector,GatewayClients} from "./GatewayInspector";
+import {OpenApi} from "./OpenApi";
+import type {RoutingProfile} from "@codexdeck/shared";
+import "./gateway-center.css";
 import {ToggleSwitch,SegmentedControl,NumberControl} from "./Controls";
 import { useEffect, useRef, useState } from "react";
 import type { Model, Provider, ProviderPreset, ProbeResult } from "@codexdeck/shared";
@@ -27,6 +32,7 @@ type ProviderDraft = {
   headers: string;
   key: string;
   extraKeys:string[]; retain:string[]; strategy:"round_robin"|"failover";
+  protocol:NonNullable<Provider["protocol_type"]>|""; patch:string; weight:number;rpm:number;daily:number;monthly:number;budgetAction:"alert"|"block";threshold:number;cooldown:number;
   balanceEndpoint:string; balanceToken:string; balanceUser:string;
 };
 type ModelDraft = {
@@ -43,6 +49,7 @@ type ModelDraft = {
   enabled: boolean;
 };
 const blankProvider: ProviderDraft = {
+  protocol:"",patch:"{}",weight:100,rpm:0,daily:0,monthly:0,budgetAction:"alert",threshold:3,cooldown:30,
   preset: "custom",
   name: "",
   base_url: "",
@@ -71,6 +78,8 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
   const [providers, setProviders] = useState<Provider[]>([]),
     [models, setModels] = useState<Model[]>([]),
     [presets, setPresets] = useState<Preset[]>([]);
+  const [tab,setTab]=useState("厂商切换台"),[routes,setRoutes]=useState<RoutingProfile[]>([]),[passphrase,setPassphrase]=useState("");
+  const [health,setHealth]=useState<{provider_id:string;states:number[];availability:number|null;circuit:{state:string}}[]>([]);
   const [editor, setEditor] = useState<{ type: "provider" | "model"; id?: string } | null>(null);
   const [p, setP] = useState<ProviderDraft>(blankProvider),
     [m, setM] = useState<ModelDraft>(blankModel);
@@ -90,6 +99,8 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
       api<Preset[]>("/api/providers/presets"),
       api<{alias:string|null}>("/api/models/default"),
     ]);
+    const [routeRows,matrix]=await Promise.all([api<RoutingProfile[]>("/api/routing-profiles"),api<{providers:typeof health}>("/api/providers/health-matrix")]);
+    setRoutes(routeRows);setHealth(matrix.providers);
     setProviders(ps);
     setModels(ms);
     setPresets(ts);
@@ -106,6 +117,9 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
     setP(
       row
         ? {
+            protocol:row.protocol_type??"",patch:JSON.stringify(row.patch_rules??{},null,2),
+            weight:row.weight??100,rpm:row.rpm_limit??0,daily:row.daily_budget??0,monthly:row.monthly_budget??0,budgetAction:row.budget_action??"alert",
+            threshold:row.circuit_breaker?.failure_threshold??3,cooldown:row.circuit_breaker?.cooldown_seconds??30,
             name: row.name,
             preset: row.preset,
             base_url: row.base_url,
@@ -167,7 +181,8 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
     await api(
       "/api/providers" + (id ? "/" + id : ""),
       json(id ? "PATCH" : "POST", {
-        name: p.name,
+        protocol_type:p.protocol||null,patch_rules:JSON.parse(p.patch),weight:p.weight,rpm_limit:p.rpm,daily_budget:p.daily,monthly_budget:p.monthly,budget_action:p.budgetAction,
+        circuit_breaker:{failure_threshold:p.threshold,cooldown_seconds:p.cooldown},name: p.name,
         preset: p.preset,
         base_url: p.base_url,
         enabled: p.enabled,
@@ -204,17 +219,10 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
     setEditor(null);
     await changed();
   }
-  function exportChannels() {
-    const data = providers.map(({ name, preset, base_url, enabled, quirks }) => ({
-      name,
-      preset,
-      base_url,
-      enabled,
-      quirks,
-    }));
-    const url = URL.createObjectURL(
-      new Blob([JSON.stringify({ version: 1, providers: data }, null, 2)], { type: "application/json" }),
-    );
+  async function exportChannels(mode:"redacted"|"encrypted") {
+    const data=await api("/api/providers/export",json("POST",{mode,...(mode==="encrypted"&&{passphrase})}));
+    const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"}));
+    setPassphrase("");
     const link = document.createElement("a");
     link.href = url;
     link.download = "codexdeck-providers.json";
@@ -223,6 +231,10 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
   }
   async function importChannel(f: File) {
     const doc = JSON.parse(await f.text());
+    if(doc.format==="codexdeck-config-v1"){
+      await api("/api/providers/import",json("POST",{bundle:doc,...(doc.mode==="encrypted"&&{passphrase})}));
+      setPassphrase("");await changed();return;
+    }
     if (!Array.isArray(doc.providers) || doc.version !== 1 || !doc.providers.length)
       throw new Error("请选择 CodexDeck 导出的渠道配置。");
     for (const row of doc.providers) {
@@ -279,15 +291,20 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
   return (
     <>
       <SectionHead
-        title="第三方 API 与模型"
-        description="连接上游渠道，配置模型协议、推理价格与备用路由。"
+        title="API 指挥中心"
         actions={
-          <button className="ad-primary" onClick={() => editProvider()}>
+          <button className="ad-primary" onClick={() => {setTab("厂商切换台");editProvider()}}>
             <Plus size={15} />
             添加渠道
           </button>
         }
       />
+      <div role="tablist" aria-label="API 指挥中心" className="gw-tabs">{["厂商切换台","虚拟路由与模型库","请求检视器","外部接入与配额"].map(t=><button key={t} type="button" role="tab" aria-selected={tab===t} onClick={()=>{setTab(t);setEditor(null);setDeleting(null)}}>{t}</button>)}</div>
+      <Feedback error={a.error} notice={a.notice} busy={a.busy} />
+      {tab==="请求检视器" && <GatewayInspector providers={providers}/>}
+      {tab==="外部接入与配额" && <><GatewayClients models={models} routes={routes}/><OpenApi showLedger={false}/></>}
+      {tab==="厂商切换台" && <>
+      <GlobalSwitch routes={routes} models={models} changed={changed} configure={()=>setTab("虚拟路由与模型库")}/>
       <div className="ad-subhead">
         <h2>供应商渠道</h2>
         <div className="ad-actions">
@@ -295,10 +312,13 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
             <Upload size={13} />
             导入
           </button>
-          <button className="ad-button" onClick={exportChannels}>
+          <button className="ad-button" onClick={()=>void a.run(()=>exportChannels("redacted"),"已导出脱敏配置")}>
             <Download size={13} />
             脱敏导出
           </button>
+          <details className="gw-bundle"><summary>加密迁移</summary><label>迁移口令<input type="password" autoComplete="new-password" minLength={12} value={passphrase} placeholder="至少 12 个字符" onChange={e=>setPassphrase(e.target.value)}/></label>
+            <button className="ad-button" disabled={passphrase.length<12} onClick={()=>void a.run(()=>exportChannels("encrypted"),"已导出加密配置")}>导出加密包</button>
+            <button className="ad-button" disabled={passphrase.length<12} onClick={()=>file.current?.click()}>导入加密包</button></details>
           <input
             ref={file}
             type="file"
@@ -312,10 +332,8 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
           />
         </div>
       </div>
-      <Feedback error={a.error} notice={a.notice} busy={a.busy} />
       {editor?.type === "provider" && (
-        <form
-          className="ad-form-panel ad-form"
+        <div className="gw-backdrop"><form role="dialog" aria-label={editor.id?"编辑渠道":"添加渠道"} className="ad-form-panel ad-form gw-drawer"
           onSubmit={(e) => {
             e.preventDefault();
             void a.run(saveProvider, "渠道已保存");
@@ -335,6 +353,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
               <X size={14} />
             </button>
           </div>
+          {!editor.id&&<div className="gw-presets">{presets.map(t=><button type="button" key={t.id} aria-pressed={p.preset===t.id} onClick={()=>setP({...p,name:t.label,preset:t.id,base_url:t.defaultBaseUrl??"",protocol:t.protocol_type??"",patch:JSON.stringify(t.patch_rules??{},null,2)})}><ProviderSymbol preset={t.id} name={t.label}/>{t.label}</button>)}</div>}
           <div className="ad-form-grid">
             <label>
               供应商预设
@@ -342,7 +361,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                 value={p.preset}
                 onChange={(e) => {
                   const t = presets.find((r) => r.id === e.target.value)!;
-                  setP({ ...p, preset: t.id, base_url: t.defaultBaseUrl ?? "", name: t.label });
+                  setP({ ...p, preset: t.id, base_url: t.defaultBaseUrl ?? "", name: t.label,protocol:t.protocol_type??"",patch:JSON.stringify(t.patch_rules??{},null,2) });
                 }}
               >
                 {presets.map((t) => (
@@ -376,6 +395,12 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
               />
             </label>
           </div>
+          <details><summary>协议、修补与配额</summary><div className="ad-form-grid">
+            <label>出站协议<select value={p.protocol} onChange={e=>setP({...p,protocol:e.target.value as ProviderDraft["protocol"]})}>{[["","按模型自动选择"],["openai_responses","Responses"],["openai_chat","Chat Completions"],["anthropic_messages","Anthropic Messages"],["gemini_openai","Gemini OpenAI"]].map(([v,t])=><option key={v} value={v}>{t}</option>)}</select></label>
+            {([["weight","路由权重",1,1000],["rpm","每分钟请求数",0,1000000],["daily","每日预算",0,undefined],["monthly","每月预算",0,undefined],["threshold","连续失败阈值",1,100],["cooldown","冷却秒数",1,86400]] as const).map(([k,label,min,max])=><label key={k}>{label}<input type="number" value={p[k]} min={min} max={max} step={k==="daily"||k==="monthly"?"any":1} onChange={e=>setP({...p,[k]:Number(e.target.value)})}/></label>)}
+            <label>超出预算<select value={p.budgetAction} onChange={e=>setP({...p,budgetAction:e.target.value as ProviderDraft["budgetAction"]})}><option value="alert">告警</option><option value="block">阻止请求</option></select></label>
+            <label>修补规则 JSON<textarea rows={5} value={p.patch} onChange={e=>setP({...p,patch:e.target.value})} placeholder='{"developer_to_system":true,"include_usage":true}'/></label>
+          </div></details>
           <fieldset><legend>Key 轮询池</legend>
             {providers.find(row=>row.id===editor.id)?.keys?.map(k=><label key={k.id} className="ad-check">
               <ToggleSwitch checked={p.retain.includes(k.id)} onCheckedChange={next=>setP({...p,retain:next?[...p.retain,k.id]:p.retain.filter(id=>id!==k.id)})}/>
@@ -433,9 +458,8 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
               </button>
             )}
           </div>
-        </form>
+        {deleteConfirm}<Feedback error={a.error}/></form></div>
       )}
-      {deleteConfirm}
       {library&&<ModelLibrary provider={library} close={()=>setLibrary(null)} changed={changed}/>}
       {!providers.length ? (
         <Empty title="尚未连接供应商" description="添加 OpenAI 或兼容 API 渠道，再为工作区绑定模型。" />
@@ -445,9 +469,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
             <article key={row.id} className="ad-card">
               <div className="ad-labelrow">
                 <div className="ad-pair">
-                  <span className="ad-provider-symbol">
-                    <Cable size={17} />
-                  </span>
+                  <ProviderSymbol name={row.name} preset={row.preset}/>
                   <div>
                     <strong>{row.name}</strong>
                     <small>{presets.find((t) => t.id === row.preset)?.label}</small>
@@ -466,6 +488,8 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                   {" · "}{new Date(row.last_balance.checked_at).toLocaleString()} {row.last_balance.error}
                   {row.last_balance.status!=="ok"&&row.last_balance.balance_at&&` · 余额取自 ${new Date(row.last_balance.balance_at).toLocaleString()}`}
                 </small>}</div>
+              <div className="ad-pill-group"><span className="ad-pill">{row.protocol_type??"自动协议"}</span><span className="ad-pill">{(row.keys??[]).filter(k=>k.status==="ready").length}/{row.keys?.length??0} Key 可用</span></div>
+              <HealthDots health={health.find(h=>h.provider_id===row.id)} reset={()=>void a.run(async()=>{await api("/api/providers/"+row.id+"/reset-circuit",json("POST",{}));await changed()},"熔断器已复位")}/>
               <Abilities probe={row.last_probe} />
               {row.last_probe?.error && <small>{row.last_probe.error}</small>}
               <div className="ad-actions">
@@ -494,6 +518,9 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
           ))}
         </div>
       )}
+      </>}
+      {tab==="虚拟路由与模型库"&&<>
+      <GatewayRouting routes={routes} models={models} changed={changed}/>
       <div className="ad-subhead">
         <h2>模型路由</h2>
         <button className="ad-button" disabled={!providers.length} onClick={() => editModel()}>
@@ -748,7 +775,9 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
       ) : (
         <Empty title="尚未绑定模型" description="添加模型别名后即可在工作台热切换。" />
       )}
+      {deleteConfirm}
       <BenchmarkBoard current={defaultAlias} models={models.filter(m=>m.enabled&&providers.some(p=>p.id===m.provider_id&&p.enabled))} changed={changed}/>
+      </>}
     </>
   );
 }

@@ -40,9 +40,9 @@ export class RpcClient {
   private readonly exited: Promise<void>;
 
   static async start(cwd: string, env: Record<string,string>, callbacks: RpcCallbacks, binary?: string,
-    runner?:{args:string[];env:NodeJS.ProcessEnv;dispose:()=>Promise<void>}) {
+    runner?:{file:string;args:string[];env:NodeJS.ProcessEnv;dispose:()=>Promise<void>}) {
     if (runner) {
-      return new RpcClient(spawn("docker",runner.args,{cwd,env:runner.env,stdio:"pipe"}),callbacks,runner.dispose);
+      return new RpcClient(spawn(runner.file,runner.args,{cwd,env:runner.env,stdio:"pipe"}),callbacks,runner.dispose);
     }
     const [file, args] = await command(binary);
     return new RpcClient(spawn(file, args, { cwd, env, stdio: "pipe", windowsHide: true }), callbacks);

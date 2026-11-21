@@ -15,6 +15,7 @@ cdx defaults-reset                                    # restore both sets of def
 cdx channels | channel-create | channel-update ID | channel-delete ID  # JSON on stdin for create/update
 cdx temp-link [list|create URL|extend ID|revoke ID]    # JSON input for create / extend
 cdx workspaces | audit | bans | sessions | session-revoke ID | totp-enroll | totp-confirm
+cdx executor [detect|set IMAGE|auto]                  # execution strategy and image
 cdx proxy [hostname] | backup | restore SNAPSHOT | tasks | kill THREAD
 HELP
 }
@@ -245,6 +246,14 @@ command_cdx() {
   case "$cmd" in
     status) panel_status ;;
     start|stop|restart) service_action "$cmd" ;;
+    executor)
+      case "${1:-detect}" in
+        detect|show) admin executor ;;
+        auto) printf '""' | admin executor-set ;;
+        set) [[ $# == 2 ]] || fail "Use cdx executor set IMAGE."
+          python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$2" | admin executor-set ;;
+        *) fail "Use cdx executor detect, set IMAGE or auto." ;;
+      esac ;;
     port|public) network_change "$cmd" "${1:?需要参数}" ;;
     entry)
       case "${1:-random}" in off) printf '%s' '{"entry_enabled":false}' ;;
@@ -298,6 +307,7 @@ menu() {
 (11) 实时日志               (12) 反代与 SSL 自检
 (13) 数据库备份 / 还原      (14) 正在运行的任务 / 精准终止
 (15) 升级 / 健康检查        (16) 卸载 CodexDeck
+(17) 探测 / 修改执行镜像
  (0) 退出
 MENU
     if [[ -t 1 ]]; then printf '\033[0m'; fi
@@ -314,6 +324,7 @@ MENU
       13) read -rp 'backup 或 restore 备份名: ' args;cmd="${args%% *}"; [[ "$args" != "$cmd" ]] && args="${args#* }" || args=""; [[ "$cmd" =~ ^(backup|restore)$ ]] || continue;;
       14) cmd=tasks; read -rp '列出任务按回车，或输入要终止的 threadId: ' args; [[ -z "$args" ]] || cmd='kill';;
       15) read -rp 'doctor / upgrade: ' cmd; [[ "$cmd" =~ ^(doctor|upgrade)$ ]] || continue;;
+      17) cmd=executor; read -rp '回车探测，set 镜像名，或 auto 恢复自动选择: ' args;;
       16) confirm '输入 UNINSTALL 以卸载 CodexDeck' UNINSTALL || continue; cmd=uninstall;;
       *) continue;;
     esac

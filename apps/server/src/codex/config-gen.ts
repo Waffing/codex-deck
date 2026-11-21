@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import type Database from "better-sqlite3";
@@ -7,6 +7,11 @@ import { signPayload, createInternalToken } from "../security/crypto.js";
 import { repositoryRoot, workspaceDirectory, workspaceFile } from "../security/paths.js";
 import { SecretMasker } from "../security/secret-masker.js";
 import { registerCredentialMasks } from "../gateway/credentials.js";
+import {catalogModel} from "../gateway/catalog-route.js";
+import {mcpEntries} from "../settings/modules.js";
+import {readEditable} from "../files/editor.js";
+import {resolveSafeWorkspacePath,missing} from "../files/sandbox.js";
+import {skillFileSchema} from "@codexdeck/shared";
 
 interface ConfigOptions {
   workspaceRoot?: string;
@@ -16,7 +21,7 @@ interface ConfigOptions {
   port: number;
   defaultModel?: string;
   tokenTtlSeconds?: number;
-  thread?: { id: string; workspaceId?:string; home?: string | null; opsEntry: string; globalInstructions: string; isolated?:boolean; unrestricted?:boolean; readOnly?:boolean };
+  thread?: { id: string; workspaceId?:string; home?: string | null; opsEntry: string; globalInstructions: string; isolated?:boolean; unrestricted?:boolean; readOnly?:boolean; external?:boolean };
 }
 
 /** The returned env is a complete child environment. Do not merge process.env into it. */
@@ -25,12 +30,7 @@ export async function generateCodexConfig(options: ConfigOptions) {
     port: options.port, internal_token_ttl_seconds: options.tokenTtlSeconds,
   });
   if ([22, 80, 443].includes(port)) throw new Error("Invalid internal gateway port.");
-  const configured = options.native.prepare("SELECT value FROM settings WHERE key = 'default_model'")
-    .get() as { value: string } | undefined;
-  const preferred = options.defaultModel ?? configured?.value ?? null;
-  const model = options.native.prepare(`SELECT m.alias,m.last_probe_json,m.context_window,m.protocol,m.capabilities_json,p.quirks_json FROM models m JOIN providers p ON p.id = m.provider_id
-    WHERE m.enabled = 1 AND p.enabled = 1 AND (? IS NULL OR m.alias = ?)
-    ORDER BY m.created_at, m.id LIMIT 1`).get(preferred, preferred) as { alias:string; last_probe_json:string|null; context_window:number; protocol:string; capabilities_json:string; quirks_json:string } | undefined;
+  const model = catalogModel(options.native,options.defaultModel);
   if (!model) throw new Error("Configure an enabled default model and provider before generating Codex configuration.");
 
   const root = options.workspaceRoot ?? repositoryRoot;
@@ -83,6 +83,7 @@ export async function generateCodexConfig(options: ConfigOptions) {
   const caches:Record<string,string> = {};
   let cacheRoot:string|undefined;
   const isolated = options.thread?.isolated === true;
+  const mcp=options.thread && !options.thread.readOnly ? mcpEntries(options.native).filter(m=>m.enabled) : [];
   if (options.thread && !options.thread.readOnly && !isolated && process.platform !== "win32") {
     const scope = options.thread.workspaceId ?? options.thread.id;
     if (!/^[A-Za-z0-9_-]+$/.test(scope)) throw new Error("Invalid workspace cache identifier.");
@@ -104,9 +105,11 @@ export async function generateCodexConfig(options: ConfigOptions) {
       'exclude = ["*TOKEN*", "*KEY*", "CODEX_HOME", "CODEXDECK_*"]',
       ...(cacheRoot ? ["[shell_environment_policy.set]",...Object.entries(caches).map(([k,v])=>`${k} = ${JSON.stringify(v)}`),
         "[sandbox_workspace_write]",`writable_roots = [${JSON.stringify(cacheRoot)}]`] : []),
-      ...(options.thread.readOnly ? [] : ['[mcp_servers.codexdeck_ops]', "command = " + JSON.stringify(isolated ? "/usr/local/bin/node" : process.execPath),
+      ...(!mcp.some(m=>m.builtin) ? [] : ['[mcp_servers.codexdeck_ops]', "command = " + JSON.stringify(isolated ? "node" : process.execPath),
       "args = [" + JSON.stringify(isolated ? "/app/packages/ops-mcp/dist/index.js" : options.thread.opsEntry) + "]",
       'env_vars = ["CODEXDECK_OPS_TOKEN", "CODEXDECK_OPS_URL"]']),
+      ...(options.thread.external ? [] : mcp.filter(m=>!m.builtin && m.url && masker.maskString(m.url)===m.url)
+        .flatMap(m=>["[mcp_servers."+JSON.stringify(m.id)+"]","url = "+JSON.stringify(m.url)])),
     ] : []),
     "[model_providers.codexdeck]",
     'name = "CodexDeck"',
@@ -137,7 +140,22 @@ export async function generateCodexConfig(options: ConfigOptions) {
       env.CODEXDECK_OPS_URL = "http://127.0.0.1:" + port + "/internal/ops";
       env.CODEXDECK_OPS_TOKEN = signPayload({ aud: "codexdeck-ops", thread_id: options.thread.id, iat: now, exp: now + ttl }, options.masterKey);
     }
-    await writeFile(await workspaceFile(dataRoot, path.join(codexHome, "AGENTS.md")), masker.maskString(options.thread.globalInstructions),
+    const skillsRoot=await resolveSafeWorkspacePath(base,"instructions/.agents/skills");
+    const skills=await readdir(skillsRoot,{withFileTypes:true}).catch(e=>{if(missing(e))return [];throw e;});
+    const references:string[]=[];
+    for(const item of skills){
+      if(!item.isDirectory() || !skillFileSchema.shape.name.safeParse(item.name).success)continue;
+      let skill;
+      try{skill=await readEditable(skillsRoot,item.name+"/SKILL.md",masker);}
+      catch(e){if((e as {statusCode?:number}).statusCode===404)continue;throw e;}
+      if(skill.read_only)continue;
+      const name="skill-"+item.name+".md";
+      const dest=await workspaceFile(codexHome,name);
+      await writeFile(dest,skill.content,{mode:0o600});
+      references.push("- "+item.name+": "+(isolated?"/run/deck-config/"+name:dest));
+    }
+    const instructions=[options.thread.globalInstructions,...(references.length?["可按需读取的全局技能文档",...references]:[])].join("\n");
+    await writeFile(await workspaceFile(dataRoot, path.join(codexHome, "AGENTS.md")), masker.maskString(instructions),
       { flag, mode: 0o600 });
   }
   return { codexHome, baseUrl, alias, env };

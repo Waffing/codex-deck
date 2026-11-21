@@ -1,8 +1,10 @@
 import { z } from "zod";
 
+import {providerPolicyFields} from "./gateway-policy.js";
+
 export const providerPresetSchema = z.enum([
   "openai_official",
-  "oneapi_newapi",
+  "oneapi_newapi", "anthropic", "gemini", "siliconflow", "volcengine", "dashscope", "kimi", "zhipu", "groq", "together", "lm_studio", "vllm",
   "openrouter",
   "deepseek",
   "ollama",
@@ -17,6 +19,7 @@ const headersSchema = z.record(z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/)
   (name) => !["host", "connection", "content-length", "transfer-encoding", "upgrade", "cookie", "proxy-authorization"].includes(name.toLowerCase()),
 ), z.string().regex(/^[\t\x20-\x7e]*$/));
 const providerFields = z.object({
+  ...providerPolicyFields,
   api_keys: z.array(z.string().trim().min(1).max(16384)).max(64).optional(),
   retain_key_ids: z.array(z.string().min(1)).max(64).optional(),
   rotation_strategy: z.enum(["round_robin","failover"]).optional(),
@@ -44,6 +47,7 @@ export const providerBalanceSchema = z.object({
   unit:z.string().nullable(),checked_at:z.string(),balance_at:z.string().nullable(),error:z.string().optional(),
 });
 const publicProviderFields = z.object({
+  ...providerPolicyFields,
   rotation_strategy: z.enum(["round_robin","failover"]).default("round_robin"),
   keys: z.array(z.object({id:z.string(),masked:z.string(),status:z.enum(["ready","cooldown","unauthorized"]),cooldown_until:z.string().nullable()})).default([]),
   balance_endpoint: z.string().nullable().default(null),
@@ -106,6 +110,7 @@ export type DiscoveredModel = z.infer<typeof discoveredModelSchema>;
 export type ProviderBalance = z.infer<typeof providerBalanceSchema>;
 
 export const probeCapabilitiesSchema = z.object({
+  messages:z.boolean().optional(),
   responses: z.boolean(),
   chat: z.boolean(),
   tools: z.boolean(),

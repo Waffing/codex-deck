@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Cpu, SlidersHorizontal } from "lucide-react";
-import type { Model, Provider, Thread, Workspace } from "@codexdeck/shared";
+import type { Model, Provider, Thread, Workspace, RoutingProfile } from "@codexdeck/shared";
 import { api, json } from "../../lib/api";
 export const automationLabels = { conservative: "保守", semi: "半自动", full: "全自动", unrestricted:"完全权限" };
 export function ModelPicker({
@@ -21,6 +21,7 @@ export function ModelPicker({
   const [open, setOpen] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const [routes,setRoutes]=useState<RoutingProfile[]>([]);
   const panel = useRef<HTMLDivElement>(null);
   const available = providers
     .filter((p) => p.enabled)
@@ -29,6 +30,9 @@ export function ModelPicker({
   const alias = thread?.active_model_alias || available[0]?.models[0]?.alias || "选择模型";
   useEffect(() => {
     if (!open) return;
+    const controller=new AbortController();
+    void api<RoutingProfile[]>("/api/routing-profiles",{signal:controller.signal}).then(rows=>{if(!controller.signal.aborted)setRoutes(rows.filter(r=>r.enabled));})
+      .catch(e=>{if(!controller.signal.aborted)setError(e.message);});
     function outside(e: PointerEvent) {
       if (!panel.current?.contains(e.target as Node)) setOpen(false);
     }
@@ -38,6 +42,7 @@ export function ModelPicker({
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", key);
     return () => {
+      controller.abort();
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("keydown", key);
     };
@@ -75,6 +80,7 @@ export function ModelPicker({
             <strong>模型与策略</strong>
             <small>{automationLabels[workspace.automation_level]}</small>
           </header>
+          {routes.length>0&&<section><h4>虚拟路由组</h4>{routes.map(r=><button type="button" disabled={busy} key={r.id} onClick={()=>void change({model_alias:r.slug})}><span>{r.name}</span>{alias===r.slug&&<Check size={13}/>}<small>{r.slug}</small></button>)}</section>}
           {available.map(({ p, models: group }) => (
             <section key={p.id}>
               <h4>{p.name}</h4>

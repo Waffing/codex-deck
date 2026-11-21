@@ -50,6 +50,11 @@ export function registerPublicGate(app:FastifyInstance,ctx:ServerContext,shareAs
       return;
     }
     if(!ipAllowed(config,ip)) return conceal(reply,config.disguise);
+    // Each registered model proxy route authenticates its own scoped Bearer credential.
+    if (["/v1/responses","/v1/chat/completions","/v1/messages","/v1/models"].includes(route)) {
+      if(invalidOrigin(req)) return reply.code(403).send({error:"Invalid request origin."});
+      return;
+    }
     const entry=config.entry_enabled && req.method==="GET" && pathname===config.entry_path;
     const machine=route.startsWith("/api/v1/") || route==="/api/dl/*";
     const invite=/^\/guest\/[A-Za-z0-9_-]{43}$/.test(pathname) && ["GET","POST"].includes(req.method);

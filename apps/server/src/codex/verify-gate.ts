@@ -8,7 +8,8 @@ import {verifyGateConfigSchema,type VerifyGateConfig,type VerifyGateResult} from
 import type {ServerContext} from "../app.js";
 import {fileError,openWorkspaceFile} from "../files/sandbox.js";
 import type {SecretMasker} from "../security/secret-masker.js";
-import {executorRuntime,projectMountSource} from "./isolated-runner.js";
+import {executorRuntime} from "./execution-environment.js";
+import {projectMountSource} from "./isolated-runner.js";
 import {OutputMasker} from "./output-masker.js";
 
 export function readVerifyConfig(ctx:Pick<ServerContext,"native">,id:string):VerifyGateConfig {
@@ -45,7 +46,7 @@ export async function detectVerifyCommands(root:string) {
   return commands;
 }
 
-type GateOptions={root:string;data:string;config:VerifyGateConfig;env:Record<string,string>;masker:SecretMasker;
+type GateOptions={db?:ServerContext["native"];root:string;data:string;config:VerifyGateConfig;env:Record<string,string>;masker:SecretMasker;
   signal:AbortSignal;attempt:number;progress:(state:VerifyGateResult & {current_command:string})=>void};
 const exec=promisify(execFile);
 const commandMs=120_000;
@@ -54,8 +55,8 @@ async function sandbox(opts:GateOptions) {
   const root=await realpath(opts.root),data=await realpath(opts.data),name="codexdeck-verify-"+randomUUID();
   const unit=name+".service",uid=process.getuid!(),gid=process.getgid!();
   const env:NodeJS.ProcessEnv={PATH:process.env.PATH};
-  if(process.env.CODEXDECK_DEPLOYMENT_NETWORK || process.env.CODEXDECK_EXECUTOR_IMAGE) {
-    const {id,mounts}=await executorRuntime();
+  const {id,mounts}=await executorRuntime(opts.db);
+  if(id) {
     const source=projectMountSource(root,data,mounts);
     if(/[,"\r\n]/.test(source)) throw new Error("Unsupported workspace mount path.");
     env.DOCKER_HOST=process.env.DOCKER_HOST;

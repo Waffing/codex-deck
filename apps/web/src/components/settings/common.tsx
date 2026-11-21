@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { AlertCircle, CheckCircle2, DatabaseZap, Loader2 } from "lucide-react";
 import type { ProbeResult, ProviderPreset } from "@codexdeck/shared";
 
-export type Preset = { id: ProviderPreset; label: string; defaultBaseUrl: string | null };
+export type Preset = { id: ProviderPreset; label: string; defaultBaseUrl: string | null;protocol_type?:NonNullable<import("@codexdeck/shared").Provider["protocol_type"]>;patch_rules?:import("@codexdeck/shared").Provider["patch_rules"] };
 export type AdminDrawer = { type: "logs" | "preview"; title: string; deploymentId: string; port: number };
 export function useAction() {
   const [busy, setBusy] = useState(false);
@@ -80,6 +80,7 @@ export function Abilities({ probe }: { probe: ProbeResult | null }) {
   if (!probe) return <span className="ad-pill">尚未探测</span>;
   const c = probe.capabilities;
   const names = [
+    c.messages && "Anthropic Messages",
     c.responses && "Responses",
     c.chat && "Chat 转译",
     c.tools && "Tools",

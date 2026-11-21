@@ -18,14 +18,16 @@ export const wsFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("heartbeat"), timestamp: z.string(), free_memory_bytes: z.number(), load: z.array(z.number()),
     cpu_percent:z.number().nullable(),total_memory_bytes:z.number(),running_services:z.number(),gateway_healthy:z.boolean() }),
 ]);
-export const scopeSchema = z.enum(["tasks:write", "tasks:read", "files:download"]);
+import {keyQuotaFields} from "./gateway-policy.js";
+export const scopeSchema = z.enum(["tasks:write", "tasks:read", "files:download","proxy:responses","proxy:chat","proxy:messages","proxy:models"]);
 export const apiKeyCreateSchema = z.object({
+  ...keyQuotaFields,
   name: z.string().trim().min(1).max(120), scopes: z.array(scopeSchema).nonempty(),
-  workspace_ids: z.array(z.string().min(1)).nonempty(), rate_limit_rpm: z.number().int().min(1).max(10000).default(60),
+  workspace_ids: z.array(z.string().min(1)).default([]), rate_limit_rpm: z.number().int().min(1).max(10000).default(60),
   webhook_origins: z.array(z.url({ protocol: /^https?$/ })).default([]),
 });
 export const apiKeySchema = apiKeyCreateSchema.extend({ id: z.string(), prefix: z.string(), created_at: z.string(), revoked_at: z.string().nullable() });
-export const apiKeyPatchSchema = apiKeyCreateSchema.pick({ name:true, scopes:true, workspace_ids:true }).partial().extend({
+export const apiKeyPatchSchema = apiKeyCreateSchema.pick({ name:true, scopes:true, workspace_ids:true, allowed_models:true,tpm_limit:true,daily_budget:true,monthly_budget:true }).partial().extend({
   rate_limit_rpm:z.number().int().min(1).max(10000).optional(), webhook_origins:z.array(z.url({protocol:/^https?$/})).optional(),
 });
 export type ApiKey = z.infer<typeof apiKeySchema>;

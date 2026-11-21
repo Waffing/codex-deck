@@ -1,6 +1,7 @@
 import type {ServerContext} from "../app.js";
 import {qualityModelText} from "./quality-model.js";
 import {completeAnswer} from "./timeline.js";
+import {catalogModel} from "../gateway/catalog-route.js";
 
 const fail=(statusCode:number,message:string)=>Object.assign(new Error(message),{statusCode});
 export async function summarizeContext(ctx:ServerContext,threadId:string,model:string,port:number,handoff?:{focus?:string}) {
@@ -9,7 +10,8 @@ export async function summarizeContext(ctx:ServerContext,threadId:string,model:s
   const baseline=db.prepare("SELECT task_id FROM thread_events WHERE thread_id=? AND type='context_compacted' ORDER BY sequence DESC LIMIT 1").pluck().get(threadId) as string|undefined;
   const tasks=db.prepare(`SELECT id,prompt,summary,answer_markdown,turn_diff_json FROM tasks WHERE thread_id=? AND rowid>coalesce((SELECT rowid FROM tasks WHERE id=?),0) ORDER BY rowid`).all(threadId,baseline??null) as {id:string;prompt:string;summary:string;answer_markdown:string|null;turn_diff_json:string|null}[];
   if (!tasks.length && !(handoff && (previous.compacted_summary || previous.handoff_doc))) throw fail(409,"No conversation history to summarize.");
-  const limits=db.prepare("SELECT context_window,max_output_tokens FROM models WHERE alias=?").get(model) as {context_window:number;max_output_tokens:number};
+  const limits=catalogModel(db,model);
+  if(!limits)throw fail(400,"Compaction model unavailable.");
   const outputLimit=Math.min(1024,limits.max_output_tokens,Math.floor(limits.context_window/4));
   const chunkBytes=Math.min(128000,Math.max(256,limits.context_window-outputLimit-512));
   const chunks:string[]=[];

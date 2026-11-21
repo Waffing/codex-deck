@@ -2,7 +2,9 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { promisify } from "node:util";
-import { executorRuntime, projectMountSource } from "../codex/isolated-runner.js";
+import type Database from "better-sqlite3";
+import {executorRuntime,namespaceArgs} from "../codex/execution-environment.js";
+import { projectMountSource } from "../codex/isolated-runner.js";
 import { command } from "../server-ops/probe.js";
 import { fileError } from "./sandbox.js";
 import type { TrackingOperation, TrackingResult } from "./tracking-operations.js";
@@ -23,18 +25,20 @@ export function trackingContainerArgs(options: {
     "--entrypoint", "node", image, "/app/apps/server/dist/files/tracking-entry.js", operation, turnId];
 }
 
-export async function isolatedTracking<K extends TrackingOperation>(root: string, data: string, operation: K, turnId: string): Promise<TrackingResult<K>> {
-  const { id, mounts } = await executorRuntime();
+export async function isolatedTracking<K extends TrackingOperation>(root: string, data: string, operation: K, turnId: string, db?:Database.Database): Promise<TrackingResult<K>> {
+  const { id, mounts } = await executorRuntime(db);
   const name = "codexdeck-files-" + randomUUID();
-  const args = trackingContainerArgs({ source: projectMountSource(root, await realpath(data), mounts), image: id, name,
-    user: process.getuid!() + ":" + process.getgid!(), operation, turnId });
+  const source=projectMountSource(await realpath(root),await realpath(data),mounts);
+  const write=["before","after","restore"].includes(operation);
+  const args = id ? trackingContainerArgs({source,image:id,name,
+    user: process.getuid!() + ":" + process.getgid!(), operation, turnId }) : [...await namespaceArgs(),write?"--bind":"--ro-bind",source,"/workspace","--chdir","/workspace","--","/run/deck-bin/node","/app/apps/server/dist/files/tracking-entry.js",operation,turnId];
   let stdout: string;
   try {
-    ({ stdout } = await exec("docker", args, { env: { PATH: process.env.PATH, DOCKER_HOST: process.env.DOCKER_HOST },
+    ({ stdout } = await exec(id?"docker":"/usr/bin/bwrap", args, { env: { PATH: process.env.PATH,...(id && {DOCKER_HOST:process.env.DOCKER_HOST}) },
       timeout: 120_000, maxBuffer: 32 * 1024 * 1024 }));
   } catch {
     // Killing the local CLI on timeout doesn't necessarily stop the container.
-    await command("docker", ["rm", "-f", name], { timeout: 10_000 }).catch(() => {});
+    if(id) await command("docker", ["rm", "-f", name], { timeout: 10_000 }).catch(() => {});
     throw fileError(503, "Isolated workspace tracking failed.");
   }
   const response = JSON.parse(stdout);

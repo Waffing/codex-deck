@@ -6,6 +6,7 @@ import {fileError,resolveSafeWorkspacePath} from "../files/sandbox.js";
 import {signDownload} from "../files/signed-url.js";
 import type {WorkspaceFiles} from "../files/workspace-files.js";
 import {readPreferences} from "../settings/preferences.js";
+import {pluginEnabled} from "../settings/modules.js";
 
 function category(name:string):ArtifactCategory {
   if(/\.(xlsx?|xlsm|csv|tsv|ods)$/i.test(name))return "spreadsheet";
@@ -39,7 +40,7 @@ export function registerArtifactHub(app:FastifyInstance,ctx:ServerContext,files:
     if(query.workspace_id){filters.push("a.workspace_id=?");values.push(query.workspace_id);}
     if(query.q){filters.push("instr(lower(a.name),lower(?))>0");values.push(query.q);}
     if(query.category!=="all"){filters.push("artifact_category(a.name)=?");values.push(query.category);}
-    if(query.mode==="smart"){
+    if(query.mode==="smart" && pluginEnabled(ctx.native,"smart_artifacts")){
       const ext=readPreferences(ctx.native).artifactExtensions;
       filters.push("a.change_type<>'upload' AND EXISTS (SELECT 1 FROM json_each(?) e WHERE lower(a.name) LIKE '%' || e.value)");
       values.push(JSON.stringify(ext));

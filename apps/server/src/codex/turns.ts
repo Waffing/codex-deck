@@ -34,14 +34,14 @@ function snapshot(db:Database.Database,row:TurnRow,masker:SecretMasker):TurnSnap
     const artifacts=row.artifacts_summary_json===null ? turnArtifacts(db,row) : JSON.parse(row.artifacts_summary_json);
     if(row.artifacts_summary_json===null) db.prepare("UPDATE thread_turns SET artifacts_summary_json=? WHERE id=?").run(JSON.stringify(artifacts),row.id);
     return {...base,assistant_markdown:row.assistant_markdown??"",timeline:JSON.parse(row.timeline_summary_json),
-      artifacts,telemetry:JSON.parse(row.telemetry_json??"null"),summary_only:!!row.summary_only};
+      artifacts,telemetry:JSON.parse(row.telemetry_json??"null"),summary_only:row.state==="completed" && !!row.assistant_markdown?.trim() && !!row.summary_only};
   }
   const frames=rawTurnEvents(db,row.thread_id,row.id,masker,true);
   const view=projectTurn(frames);
   // Credentials are masked again after assembling legacy text split between events.
   const task=db.prepare("SELECT answer_markdown,summary FROM tasks WHERE id=?").get(row.id) as {answer_markdown:string|null;summary:string};
   const answer=masker.maskString(task.answer_markdown || view.answer || task.summary);
-  const summaryOnly=!task.answer_markdown && !view.answer && !!task.summary;
+  const summaryOnly=row.state==="completed" && !task.answer_markdown && !view.answer && !!task.summary.trim();
   const timeline=view.items.map(item=>item.operations?
     {...item,operations:item.operations.map(operation=>({...operation,detail:""}))}:item);
   const telemetry=view.telemetry ? {...view.telemetry,diff:""} : null;

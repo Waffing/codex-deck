@@ -10,6 +10,7 @@ REPOSITORY="${CODEXDECK_REPOSITORY:-}"
 IMAGE="${CODEXDECK_IMAGE:-}"
 RELEASE="${CODEXDECK_VERSION:-}"
 EXPLICIT_IMAGE="$IMAGE"
+EXEC_IMAGE="${CODEXDECK_EXEC_IMAGE:-${CODEXDECK_EXECUTOR_IMAGE:-}}"
 INSTALL_DIR=""
 WORKSPACES=""
 DOMAIN=""
@@ -327,6 +328,7 @@ install_environment_file() {
     update_env_key "$file" CODEXDECK_DEPLOYMENT_NETWORK "codexdeck-net"
     update_env_key "$file" CODEXDECK_DOMAIN "$DOMAIN"
     update_env_key "$file" CODEXDECK_IMAGE "$IMAGE"
+    update_env_key "$file" CODEXDECK_EXEC_IMAGE "$EXEC_IMAGE"
     update_env_key "$file" CODEXDECK_PUBLIC_ENABLED "${PUBLIC:-false}"
     update_env_key "$file" CODEXDECK_ENTRY_PATH "$ENTRY_PATH"
     update_env_key "$file" CODEXDECK_PUBLIC_PORT "$PUBLIC_PORT"
@@ -346,6 +348,7 @@ CODEXDECK_BIND_PORT=$PORT
 CODEXDECK_HOST=0.0.0.0
 CODEXDECK_MASTER_KEY=$master_key
 CODEXDECK_IMAGE=$IMAGE
+CODEXDECK_EXEC_IMAGE=$EXEC_IMAGE
 CODEXDECK_DATA_DIR=/data
 CODEXDECK_WORKSPACES_HOST='$WORKSPACES'
 CODEXDECK_DEPLOYMENT_NETWORK=codexdeck-net
@@ -575,6 +578,17 @@ docker_install() {
   if [ -z "$IMAGE" ]; then select_image; fi
   [[ "$IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]*$ ]] ||
     fail "CODEXDECK_IMAGE is not a valid registry image reference."
+  if [[ -z "$EXEC_IMAGE" && -f "$INSTALL_DIR/.env" ]]; then
+    local old_control old_executor
+    old_control="$(sed -n 's/^CODEXDECK_IMAGE=//p' "$INSTALL_DIR/.env" | tr -d "\"'")"
+    old_executor="$(sed -n 's/^CODEXDECK_EXEC_IMAGE=//p' "$INSTALL_DIR/.env" | tr -d "\"'")"
+    if [[ "$old_executor" != "$old_control" ]]; then EXEC_IMAGE="$old_executor"; fi
+  fi
+  if [[ -z "$EXEC_IMAGE" && "$EXISTING_INSTALL" == 0 && "$ACTION" == install ]]; then
+    prompt_value "完全访问执行镜像" "$IMAGE"; EXEC_IMAGE="$REPLY"
+  fi
+  EXEC_IMAGE="${EXEC_IMAGE:-$IMAGE}"
+  [[ "$EXEC_IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$ ]] || fail "Invalid CODEXDECK_EXEC_IMAGE."
   local current_uid current_gid
   current_uid="$(id -u)"
   current_gid="$(id -g)"
@@ -739,6 +753,7 @@ EOF
     update_systemd_env "$env_dir/codexdeck.env" CODEX_BIN "$codex_bin"
   fi
   as_root chmod 0600 "$env_dir/codexdeck.env"
+  update_systemd_env "$env_dir/codexdeck.env" CODEXDECK_INSTALL_MODE "native"
   update_systemd_env "$env_dir/codexdeck.env" CODEXDECK_PUBLIC_ENABLED "$PUBLIC"
   update_systemd_env "$env_dir/codexdeck.env" CODEXDECK_ENTRY_PATH "$ENTRY_PATH"
   update_systemd_env "$env_dir/codexdeck.env" CODEXDECK_PUBLIC_PORT "$PUBLIC_PORT"

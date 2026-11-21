@@ -1,9 +1,9 @@
+import { listenHttpFixture } from "./fixtures/http-port.js";
 import { randomBytes } from "node:crypto";
 import { mkdtemp, mkdir, readdir, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { openDatabase, readOrCreateFileKey, resolveDataDirectory } from "../src/db/index.js";
 import { generateCodexConfig } from "../src/codex/config-gen.js";
@@ -76,8 +76,7 @@ it("generates isolated Codex homes, selects the configured alias and runs a sign
     res.end(JSON.stringify({ object: "response", status: "completed", output: [] }));
   });
   try {
-    await new Promise<void>(resolve => gateway.listen(0, "127.0.0.1", resolve));
-    const port = (gateway.address() as AddressInfo).port;
+    const port=await listenHttpFixture(gateway);
     const options = { native, workspaceRoot: root, dataDirectory, masterKey, port };
     await expect(generateCodexConfig(options)).rejects.toThrow(/enabled default/);
     native.exec(`INSERT INTO providers(id, name, preset, base_url, headers_json, quirks_json, enabled, created_at, updated_at)

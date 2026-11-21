@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/assets/banner.svg" alt="CodexDeck, a self-hosted control plane for Codex" width="1280">
   <h1>CodexDeck</h1>
-  <p>A self-hosted workbench for Codex CLI. Connect your own models, review code, verify deployments and share the documents or web pages Codex produces.</p>
+  <p>A self-hosted Codex CLI workbench and multi-protocol model gateway. Switch models, approve changes, verify deployments and share finished work from your browser.</p>
   <p><a href="README.md">简体中文</a> · <strong>English</strong></p>
   <p>
     <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/Waffing/codex-deck?style=flat-square"></a>
@@ -12,6 +12,7 @@
     <a href="https://github.com/Waffing/codex-deck/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Waffing/codex-deck?style=flat-square"></a>
   </p>
   <p>
+    <a href="#api-gateway-and-workbench">API gateway</a> ·
     <a href="#features">Features</a> ·
     <a href="#screenshots">Screenshots</a> ·
     <a href="#quick-start">Quick Start</a> ·
@@ -22,9 +23,27 @@
   </p>
 </div>
 
+## API gateway and workbench
+
+Codex CLI, Claude Code and OpenAI-compatible clients can share one gateway. Open **API command center → Providers**, choose from 17 presets, enter the upstream address and credentials, then probe and import its models. Provider credentials stay in the gateway. Give each client its own token, model access and quotas.
+
+<p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/gateway.png" alt="The routing and model library shows aliases, context windows, benchmark results and availability" width="100%"></p>
+
+| Task | Where to do it |
+| --- | --- |
+| Give several clients one stable model name | In **Routing and models**, group upstream targets under a virtual alias. Pick a fixed target, priority failover, weighted round-robin or lowest latency. A switch applies to the next request. |
+| Investigate a slow or failed request | The **Request inspector** shows the actual model, protocol path, time to first token, cost and failover history. Redacted payload capture is off by default and expires automatically. Replay sends a short diagnostic probe. |
+| Connect a CLI or SDK | **External clients and quotas** provides configurations for Codex CLI, Claude Code, the OpenAI SDK and Cursor. Issue the required `proxy:responses`, `proxy:chat`, `proxy:messages` or `proxy:models` scopes and supply the new bearer token on the client. |
+| Control usage | Set model allowlists, requests and tokens per minute, and daily or monthly budgets on client keys. Provider budgets can alert or block. Provider cards show recent request outcomes and circuit state. |
+| Manage the workbench | Open MCP, Skills, plugins, prompts, authorization or usage from the sidebar. Type `/` in the composer, use the arrow keys to select a command and press Enter. |
+
+**Full-access execution.** Select **Full access** in the composer to run commands in the project's isolated environment. The Docker installer records `CODEXDECK_EXEC_IMAGE`. Existing installations can discover the running control image. In **Settings → Execution environment**, inspect the strategy, run detection or select an installed compatible image. The equivalent host commands are `cdx executor detect`, `cdx executor set IMAGE` and `cdx executor auto`.
+
+Native Linux and in-container fallback require a non-root service user, `/usr/bin/bwrap` and a kernel that permits unprivileged user namespaces. Each fallback mounts the project inside separate PID, filesystem and network namespaces. Proxy-aware commands can connect to public HTTPS destinations on port 443. The settings panel reports unavailable kernel capabilities.
+
 ## V1.5 artifact previews and sharing
 
-Build the `main` branch to use V1.5. The one-line Docker installer uses the image from the latest GitHub Release. Check that tag's release notes for its feature set. [Run from source](#development) · [Latest release](https://github.com/Waffing/codex-deck/releases/latest)
+This page describes the `main` branch. The one-line Docker installer uses the image from the latest GitHub Release. Check that tag’s notes for the features included in the image. [Run from source](#development) · [Latest release](https://github.com/Waffing/codex-deck/releases/latest)
 
 <p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/artifact-hub.png" alt="Artifact Hub showing release documents and spreadsheets from multiple conversations" width="100%"></p>
 
@@ -137,6 +156,14 @@ Playwright captures these views using a demo project. After CI passes on a push 
 
 <table>
   <tr>
+    <td width="75%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/workbench-pine.png" alt="Desktop workbench in the pine theme, with labeled sidebar modules and the model and permission controls"></td>
+    <td width="25%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/workbench-paper-mobile.png" alt="Mobile workbench in the paper theme with Plan, permission and send controls"></td>
+  </tr>
+  <tr><td>Desktop · Midnight Pine</td><td>Mobile · Warm Paper</td></tr>
+</table>
+
+<table>
+  <tr>
     <td width="50%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/document-viewer.png" alt="A multi-sheet release checklist open in the document drawer"></td>
     <td width="50%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/global-search.png" alt="The search palette highlights matching words in conversations and artifacts"></td>
   </tr>
@@ -173,12 +200,12 @@ Playwright captures these views using a demo project. After CI passes on a push 
 ```mermaid
 flowchart LR
     client["Browser / API client"]
-    provider["OpenAI-compatible provider"]
+    provider["Responses / Chat / Anthropic Messages / Gemini-compatible endpoints"]
 
     subgraph control["Control plane"]
       api["Fastify API · WebSocket · SSE"]
       db[("SQLite WAL")]
-      gateway["Responses gateway"]
+      gateway["Model routing and protocol translation"]
       preview["Restricted preview proxy"]
       api --> db
       api --> preview
@@ -198,6 +225,7 @@ flowchart LR
     end
 
     client <-->|"Session or scoped API key"| api
+    client -->|"Scoped /v1 requests"| gateway
     api <-->|"JSON-RPC · approvals"| codex
     codex -->|"Signed loopback token"| gateway
     gateway -->|"Provider credential"| provider
@@ -212,6 +240,8 @@ In Docker, the control plane accesses the Docker API through a socket proxy on a
 | Provider preset | Supported path in CodexDeck | Recommended mode |
 | --- | --- | --- |
 | OpenAI | Responses passthrough or Chat translation when the selected model supports it | `auto`, or `responses` for a verified native model |
+| Anthropic | Messages streaming, tool calls and tool results | Select the Anthropic preset and an upstream model ID |
+| Gemini | OpenAI-compatible endpoint | Select the Gemini preset and an upstream model ID |
 | OneAPI / NewAPI | OpenAI-compatible relay. Upstream routing determines which endpoints and features are available. | `auto` after probing. Use `chat` for a Chat-only relay. |
 | OpenRouter | Model-dependent Responses or Chat support | `auto` after probing the selected model |
 | DeepSeek | OpenAI-compatible Chat Completions | `chat`, with tool support verified per model |
@@ -234,7 +264,7 @@ See [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 ## Open API
 
-Create an API key in the console's **Open API 与用量** page. Grant `tasks:write`, `tasks:read` and access to the target workspace. Export `CODEXDECK_API_KEY` and `WORKSPACE_ID` from your local environment. These Bash examples require `curl` and `jq`.
+Create an Open API key in the **Authorization center**. Grant `tasks:write`, `tasks:read` and access to the target workspace. Export `CODEXDECK_API_KEY` and `WORKSPACE_ID` from your local environment. These Bash examples require `curl` and `jq`.
 
 ```bash
 export CODEXDECK_URL=http://127.0.0.1:3000
@@ -282,6 +312,7 @@ Run `pnpm dev:server` and `pnpm dev:web` in separate terminals. The API defaults
 - [x] **V1.3 workbench validation** · Paged history, local caching, optimistic sends and opt-in isolated execution per workspace.
 - [x] **V1.4 quality gates and vault** · Read-only plans, verification and repair, cross-model review, line comments, thread handoffs and scoped workspace secrets.
 - [x] **V1.5 documents and delivery** · File previews, a cross-conversation Artifact Hub, Chinese and English full-text search, revocable public shares and PWA installation.
+- [x] **Workbench and gateway on main** · Four themes, three approval modes, sidebar modules, multi-protocol routing, redacted request inspection and per-client quotas.
 - [ ] **npm distribution** · Choose an available package name and publish the CLI.
 - [ ] **V2 plans** · Strengthen workload isolation, expand provider compatibility coverage and improve deployment recovery.
 

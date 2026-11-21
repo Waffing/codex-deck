@@ -39,12 +39,12 @@ function inputTool(tool: JsonObject): JsonObject {
 
 // Chat accepts flat function names of at most 64 characters. Keep the binding
 // deterministic across turns, even if the model's tool list changes order.
-function chatToolName(name:string, namespace:unknown) {
+export function chatToolName(name:string, namespace:unknown) {
   if (typeof namespace !== "string" || !namespace) return name;
   const hash=createHash("sha256").update(JSON.stringify([namespace,name])).digest("hex").slice(0,20);
   return `ns_${hash}_${name.replace(/[^a-zA-Z0-9_-]/g,"_").slice(0,40)}`;
 }
-function chatTools(tools: JsonObject[] = []) {
+export function chatTools(tools: JsonObject[] = []) {
   const names = new Map<string,{name:string;namespace?:string}>();
   const declarations:JsonObject[]=[];
   function add(tool:JsonObject,namespace?:string) {

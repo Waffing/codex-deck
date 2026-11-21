@@ -24,6 +24,8 @@ export type ChatProps = {
   onRefresh: () => void;
   onOpen: (tab: DrawerTab) => void;
   onHandoff?:()=>void;
+  onCommandPage?:(page:"mcp"|"apps"|"prompts")=>void;
+  onSelectThread?:(thread:Thread)=>void;
   onJumpThread?:(id:string)=>void;
   mobileApprovalId?: string;
   preferences?: ChatPreferences;
@@ -33,7 +35,7 @@ export type ChatProps = {
 export function ChatPane(props:ChatProps){
   return <ChatBody key={props.workspace.id+":"+(props.thread?.id??"new")} {...props}/>;
 }
-function ChatBody({workspace,thread,searchTurn,events,approvals,models,providers,onCreateThread,onRefresh,onOpen,mobileApprovalId,onJumpThread,onHandoff,onSnapshot,preferences=defaultPreferences,onInspect}:ChatProps){
+function ChatBody({workspace,thread,searchTurn,events,approvals,models,providers,onCreateThread,onRefresh,onOpen,mobileApprovalId,onJumpThread,onHandoff,onCommandPage,onSelectThread,onSnapshot,preferences=defaultPreferences,onInspect}:ChatProps){
   const lifecycle=useRef(0);
   const terminal=events.reduce((n,e)=>["task_completed","task_failed","task_cancelled","context_compacted","artifacts_updated"].includes(e.type)?e.seq_id:n,lifecycle.current);
   // A fresh snapshot periodically folds long streams into a compact active turn.
@@ -129,6 +131,6 @@ function ChatBody({workspace,thread,searchTurn,events,approvals,models,providers
     </div>
     {pending.length>0&&<aside className="cd-pending-stack">{pending.map((a,i)=><ApprovalCard key={a.id} approval={a} workspaceName={workspace.name} onResolved={onRefresh} shortcut={i===0}/>)}</aside>}
     {(page.error||error)&&<p role="alert">{page.error||error}</p>}
-    <Composer {...{workspace,thread,models,providers,onCreateThread,onRefresh,latest,running,preferences,onHandoff}} hasTurns={!!turns.length} onSend={submit} refresh={page.refresh} handle={composer}/>
+    <Composer {...{workspace,thread,models,providers,onCreateThread,onRefresh,latest,running,preferences,onHandoff,onCommandPage,onSelectThread,onOpen}} hasTurns={!!turns.length} onSend={submit} refresh={page.refresh} handle={composer}/>
   </div>;
 }

@@ -27,6 +27,7 @@ export async function modelLedgerJourney(page, origin, shot) {
   await library.getByRole("button",{name:/导入选中模型/}).click();
   assert.equal((await (await batch).json()).imported.length,1);
   await library.getByRole("button",{name:"关闭"}).click();
+  await page.getByRole("tab",{name:"虚拟路由与模型库"}).click();
   const board=page.locator(".benchmark-board");
   const modelRow=board.getByRole("row").filter({hasText:"library"});
   await modelRow.getByRole("switch").click();

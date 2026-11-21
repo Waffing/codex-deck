@@ -3,6 +3,7 @@ import { searchQuerySchema } from "@codexdeck/shared";
 import type { ServerContext } from "../app.js";
 import { createRequireAdmin } from "../auth.js";
 import { GlobalSearch } from "../db/global-search.js";
+import {pluginEnabled} from "../settings/modules.js";
 
 export function registerSearchRoute(app: FastifyInstance, ctx: ServerContext) {
   const index = new GlobalSearch(ctx.native,ctx.masker);
@@ -10,7 +11,7 @@ export function registerSearchRoute(app: FastifyInstance, ctx: ServerContext) {
   function next(delay: number) {
     timer = setTimeout(() => {
       let busy = false;
-      try { busy = index.drain() === 24; }
+      try { busy = pluginEnabled(ctx.native,"global_search") && index.drain() === 24; }
       catch { app.log.error("Search indexing failed. Pending records will be retried."); }
       next(busy ? 0 : 500);
     },delay);
@@ -22,6 +23,7 @@ export function registerSearchRoute(app: FastifyInstance, ctx: ServerContext) {
     const parsed = searchQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({error:"Invalid search query."});
     const query = parsed.data;
+    if(!pluginEnabled(ctx.native,"global_search"))return {messages:[],artifacts:[],deployments:[],indexing:false};
     index.drain(8);
     return reply.header("Cache-Control","private, no-store").send(index.search(query));
   });

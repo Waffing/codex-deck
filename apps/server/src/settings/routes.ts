@@ -10,10 +10,17 @@ import { adminAuthorized } from "../security/emergency.js";
 import { workspaceDirectory, workspaceFile } from "../security/paths.js";
 import {clientIp} from "../security/ingress.js";
 import {resetPanelDefaults} from "./defaults.js";
+import {executionStatus,saveExecutorImage} from "../codex/execution-environment.js";
 import { readPreferences, patchPreferences } from "./preferences.js";
 
 export function registerSettingsRoutes(app:FastifyInstance, ctx:ServerContext, manager:ThreadManager, dataDirectory:string) {
   const admin={preHandler:createRequireAdmin(ctx)};
+  app.get("/api/settings/executor",admin,async()=>executionStatus(ctx.native));
+  app.post("/api/settings/executor/detect",admin,async()=>executionStatus(ctx.native,true));
+  app.patch<{Body:{image?:string}}>("/api/settings/executor",admin,async req=>{
+    saveExecutorImage(ctx.native,req.body?.image);
+    return executionStatus(ctx.native);
+  });
   app.get("/api/settings/preferences",admin,async()=>readPreferences(ctx.native));
   app.patch("/api/settings/preferences",admin,async(req,reply)=>{
     const body=req.body;

@@ -13,13 +13,16 @@ import { models, providers } from "../db/schema.js";
 import { encryptSecret } from "../security/crypto.js";
 import { keyFields,keyStatuses,sealHeaders } from "../gateway/credentials.js";
 import { balanceUrl,benchmarkModel,discoverModels,fetchBalance } from "../gateway/model-center.js";
+import {validatePublicFields} from "../gateway/patch-pipeline.js";
 import { providerPresets } from "../gateway/presets.js";
 import { probeProvider } from "../gateway/probe.js";
 import { canSaveCredentialTransport } from "../gateway/transport.js";
 
-function providerDto(row: typeof providers.$inferSelect,context:ServerContext) {
+export function providerDto(row: typeof providers.$inferSelect,context:ServerContext) {
   return providerSchema.parse({
     id: row.id, name: row.name, preset: row.preset, base_url: row.baseUrl,
+    protocol_type:row.protocolType,patch_rules:JSON.parse(row.patchRulesJson),circuit_breaker:JSON.parse(row.circuitBreakerJson),
+    weight:row.weight,rpm_limit:row.rpmLimit,daily_budget:row.dailyBudget,monthly_budget:row.monthlyBudget,budget_action:row.budgetAction,
     api_key_masked: row.apiKeyMasked,
     keys:keyStatuses(row,context),rotation_strategy:row.rotationStrategy,balance_endpoint:row.balanceEndpoint,
     has_balance_token:!!row.balanceTokenEnc,balance_user_id:row.balanceUserId,last_balance:row.lastBalanceJson?JSON.parse(row.lastBalanceJson):null,
@@ -29,7 +32,7 @@ function providerDto(row: typeof providers.$inferSelect,context:ServerContext) {
   });
 }
 
-function modelDto(row: typeof models.$inferSelect) {
+export function modelDto(row: typeof models.$inferSelect) {
   return modelSchema.parse({
     last_probe:row.lastProbeJson ? JSON.parse(row.lastProbeJson) : null,
     context_window:row.contextWindow,max_output_tokens:row.maxOutputTokens,cache_read_price_per_1m:row.cacheReadPricePer1m,
@@ -56,7 +59,8 @@ export function registerProviderRoutes(app: FastifyInstance, context: ServerCont
     const threads=sql.prepare("SELECT count(*) FROM threads WHERE active_model_alias=?").pluck().get(model.alias) as number;
     const fallback=sql.prepare("SELECT alias FROM models WHERE EXISTS(SELECT 1 FROM json_each(fallback_model_ids_json) WHERE value=?)").pluck().all(model.id);
     const isDefault=!!sql.prepare("SELECT 1 FROM settings WHERE key='default_model' AND value=?").get(model.alias);
-    return {threads,fallback,isDefault};
+    const routes=sql.prepare("SELECT slug FROM routing_profiles WHERE EXISTS(SELECT 1 FROM json_each(targets_json) WHERE json_extract(value,'$.model_id')=?)").pluck().all(model.id);
+    return {threads,fallback:[...fallback,...routes],isDefault};
   }
   function inUse(model:typeof models.$inferSelect) {
     const refs=references(model);
@@ -79,6 +83,12 @@ export function registerProviderRoutes(app: FastifyInstance, context: ServerCont
     sql.transaction(()=>{
       sql.prepare("UPDATE threads SET active_model_alias=? WHERE active_model_alias=?").run(replacement.alias,old.alias);
       sql.prepare("UPDATE settings SET value=? WHERE key='default_model' AND value=?").run(replacement.alias,old.alias);
+      for(const route of sql.prepare("SELECT id,targets_json,active_target_index FROM routing_profiles WHERE EXISTS(SELECT 1 FROM json_each(targets_json) WHERE json_extract(value,'$.model_id')=?)").all(old.id) as {id:string;targets_json:string;active_target_index:number}[]){
+        const targets=(JSON.parse(route.targets_json) as {model_id:string;weight?:number}[]).map(t=>({...t,model_id:t.model_id===old.id?replacement.id:t.model_id}));
+        const selected=targets[route.active_target_index]?.model_id;
+        const unique=targets.filter((t,i)=>targets.findIndex(other=>other.model_id===t.model_id)===i);
+        sql.prepare("UPDATE routing_profiles SET targets_json=?,active_target_index=?,updated_at=? WHERE id=?").run(JSON.stringify(unique),Math.max(0,unique.findIndex(t=>t.model_id===selected)),new Date().toISOString(),route.id);
+      }
       for(const row of db.select().from(models).all()) {
         const ids:string[]=JSON.parse(row.fallbackModelIdsJson);
         if(ids.includes(old.id)) db.update(models).set({fallbackModelIdsJson:JSON.stringify([...new Set(ids.map(id=>id===old.id?replacement.id:id).filter(id=>id!==row.id))])}).where(eq(models.id,row.id)).run();
@@ -102,12 +112,16 @@ export function registerProviderRoutes(app: FastifyInstance, context: ServerCont
     const parsed = providerCreateSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid provider." });
     const p = parsed.data;
+    validatePublicFields(p,context.masker);
     if(p.balance_endpoint) balanceUrl(p.base_url,p.balance_endpoint);
     if(!await canSaveCredentialTransport(new URL(p.base_url),!!(p.api_key || p.api_keys?.length || p.balance_token) || Object.values(p.headers).some(Boolean))) return reply.code(400).send({error:"Remote credentials require HTTPS."});
     const now = new Date().toISOString();
     const row = db.insert(providers).values({
       id: randomUUID(), name: p.name, preset: p.preset, baseUrl: p.base_url, ...keyFields({...p,api_key:p.api_key||undefined},context),
       rotationStrategy:p.rotation_strategy,balanceEndpoint:p.balance_endpoint||null,balanceUserId:p.balance_user_id||null,balanceTokenEnc:balanceSecret(p.balance_token??""),
+      protocolType:p.protocol_type===undefined?providerPresets[p.preset].protocol_type:p.protocol_type,
+      patchRulesJson:JSON.stringify(p.patch_rules??providerPresets[p.preset].patch_rules??{}),circuitBreakerJson:JSON.stringify(p.circuit_breaker??{}),
+      weight:p.weight,rpmLimit:p.rpm_limit,dailyBudget:p.daily_budget,monthlyBudget:p.monthly_budget,budgetAction:p.budget_action,
       headersJson: sealHeaders(p.headers, context), quirksJson: JSON.stringify(p.quirks),
       enabled: p.enabled, createdAt: now, updatedAt: now,
     }).returning().get();
@@ -122,6 +136,10 @@ export function registerProviderRoutes(app: FastifyInstance, context: ServerCont
     const base=p.base_url??old.baseUrl;
     const sameOrigin=new URL(base).origin===new URL(old.baseUrl).origin;
     const balanceEndpoint=p.balance_endpoint===undefined?(sameOrigin?old.balanceEndpoint:null):p.balance_endpoint||null;
+    const changedPreset=p.preset && p.preset!==old.preset ? providerPresets[p.preset] : undefined;
+    const protocol=p.protocol_type===undefined && changedPreset ? changedPreset.protocol_type??null : p.protocol_type;
+    const rules=p.patch_rules??(changedPreset ? changedPreset.patch_rules??{} : undefined);
+    validatePublicFields({...p,name:p.name??old.name,base_url:base,balance_endpoint:balanceEndpoint,patch_rules:rules??JSON.parse(old.patchRulesJson)},context.masker);
     if(balanceEndpoint) balanceUrl(base,balanceEndpoint);
     if(!sameOrigin && p.retain_key_ids?.length) {
       return reply.code(409).send({error:"The provider origin changed. Remove retained keys and enter credentials for the new origin."});
@@ -142,10 +160,13 @@ export function registerProviderRoutes(app: FastifyInstance, context: ServerCont
     );
     if(!await canSaveCredentialTransport(new URL(base),hasKey || hasBalanceToken || hasHeaders || implicitMove)) return reply.code(400).send({error:"Remote credentials require HTTPS."});
     if(p.enabled===false && db.select().from(models).where(eq(models.providerId,old.id)).all().some(inUse)) return reply.code(409).send({error:"Migrate the referenced models before disabling this provider."});
-    const clearProbe=base!==old.baseUrl || !!pool || sealedHeaders!==undefined || (p.quirks && JSON.stringify(p.quirks)!==old.quirksJson);
+    const clearProbe=base!==old.baseUrl || (protocol!==undefined && protocol!==old.protocolType) || !!rules || !!pool || sealedHeaders!==undefined || (p.quirks && JSON.stringify(p.quirks)!==old.quirksJson);
     const row = sql.transaction(()=>{
       const updated = db.update(providers).set({
         name: p.name, preset: p.preset, baseUrl: p.base_url, enabled: p.enabled,
+        protocolType:protocol,patchRulesJson:rules&&JSON.stringify(rules),
+        circuitBreakerJson:p.circuit_breaker&&JSON.stringify({...JSON.parse(old.circuitBreakerJson),...p.circuit_breaker}),
+        weight:p.weight,rpmLimit:p.rpm_limit,dailyBudget:p.daily_budget,monthlyBudget:p.monthly_budget,budgetAction:p.budget_action,
         ...pool, rotationStrategy:p.rotation_strategy,balanceEndpoint,
         balanceTokenEnc:p.balance_token!==undefined?balanceSecret(p.balance_token):sameOrigin?undefined:null,
         balanceUserId:p.balance_user_id!==undefined?p.balance_user_id||null:sameOrigin?undefined:null,
@@ -205,6 +226,7 @@ export function registerProviderRoutes(app: FastifyInstance, context: ServerCont
   }
 
   function insertModel(m:ModelCreate) {
+    if(sql.prepare("SELECT 1 FROM routing_profiles WHERE slug=?").get(m.alias)) throw Object.assign(new Error("Alias already in use."),{statusCode:409});
     const now = new Date().toISOString();
     return db.insert(models).values({
       contextWindow:m.context_window,maxOutputTokens:m.max_output_tokens,cacheReadPricePer1m:m.cache_read_price_per_1m,capabilitiesJson:JSON.stringify(m.capabilities),
@@ -230,7 +252,7 @@ export function registerProviderRoutes(app: FastifyInstance, context: ServerCont
       const imported:ReturnType<typeof modelDto>[]=[];
       const skipped:string[]=[];
       const channelModel=sql.prepare("SELECT 1 FROM models WHERE provider_id=? AND model_id=?");
-      const aliasTaken=sql.prepare("SELECT 1 FROM models WHERE alias=?");
+      const aliasTaken=sql.prepare("SELECT 1 FROM (SELECT alias FROM models UNION ALL SELECT slug FROM routing_profiles) WHERE alias=?");
       for(const entry of chosen) {
         if(channelModel.get(provider_id,entry.model_id) || (entry.alias && aliasTaken.get(entry.alias))) {
           skipped.push(entry.model_id);
@@ -280,6 +302,7 @@ export function registerProviderRoutes(app: FastifyInstance, context: ServerCont
     if (!parsed.success) return reply.code(400).send({ error: "Invalid model update." });
     const m = parsed.data;
     const id = request.params.id;
+    if(m.alias && sql.prepare('SELECT 1 FROM routing_profiles WHERE slug=?').get(m.alias)) return reply.code(409).send({error:'Alias already in use.'});
     const old=getModel(id);
     if (!old) return reply.code(404).send({ error: "Model not found." });
     if((m.max_output_tokens??old.maxOutputTokens)>(m.context_window??old.contextWindow)) return reply.code(400).send({error:"Maximum output exceeds model context window."});

@@ -536,6 +536,7 @@
   padding: 3px 10px 9px;
   min-width: 0;
 }
+.cd-compose-actions { display:contents; }
 .cd-compose-controls .cd-attach,
 .cd-model-trigger,
 .cd-compose-controls .cd-stop {
@@ -1059,7 +1060,16 @@
   .cd-question-actions { opacity:1; } .cd-turns { padding-left:21px; }
   .cd-minimap { width:14px;left:0; } .cd-minimap button { padding:2px; }
   .cd-context svg { width:27px;height:27px; } .cd-live-usage { display:none; }
-  .cd-context { margin-left:auto; } .cd-compose-controls .cd-model-picker { max-width:26%; }
+  .cd-compose-controls { flex-wrap:wrap; }
+  .cd-compose-controls :is(.plan-switch,.cd-permission-trigger) { font-size:11px; gap:4px; min-height:34px; }
+  .cd-compose-actions { position:relative; display:flex; align-items:center; justify-content:flex-end; gap:4px; flex:1 1 130px; min-width:0; }
+  .cd-compose-actions:has(.cd-stop) { flex-basis:225px; }
+  .cd-compose-actions .cd-context { position:static; display:flex; flex:none; }
+  .cd-compose-actions .cd-context aside { right:0; width:max-content; max-width:calc(100vw - 36px); }
+  .cd-compose-actions .cd-model-picker { min-width:0; max-width:140px; }
+  .cd-compose-actions .cd-model-trigger { display:flex; gap:3px; }
+  .cd-compose-actions .cd-model-trigger svg { flex:none; }
+  .cd-compose-actions :is(.cd-stop,.cd-send) { flex:none; margin-left:0; white-space:nowrap; }
   .cd-model-menu { left:auto;right:-30px; } .cd-question .cd-prompt { max-width:92%; }
 }
 

@@ -45,7 +45,7 @@ export async function runAdmin(args:string[]) {
     body={action};
     if (id) body[action==="temp-create"?"origin":"id"]=id;
     if (action==="reset-password" || action==="totp-confirm") body.input=await inputText();
-    if (["security-set","preferences-set","channel-create","channel-update","temp-create","temp-extend"].includes(action)) {
+    if (["security-set","preferences-set","executor-set","channel-create","channel-update","temp-create","temp-extend"].includes(action)) {
       try {body.input=JSON.parse(await inputText());} catch {throw new Error("Supply valid JSON on stdin.");}
     }
   }

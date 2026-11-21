@@ -1,0 +1,64 @@
+:root {
+  --ease-out:cubic-bezier(.22,1,.36,1);
+  --ambient:#bfdbd5; --light-edge:#ffffffcf; --shade:#284038;
+  --card-depth:inset 0 1px 0 var(--light-edge),0 1px 3px color-mix(in srgb,var(--shade) 8%,transparent),0 7px 20px -12px color-mix(in srgb,var(--shade) 27%,transparent);
+  --float-depth:inset 0 1px 0 var(--light-edge),0 8px 24px -12px color-mix(in srgb,var(--shade) 35%,transparent),0 24px 70px -24px color-mix(in srgb,var(--shade) 50%,transparent);
+  --glass:color-mix(in srgb,var(--panel) 92%,transparent);
+}
+:root[data-skin=paper] {--ambient:#e3c28d;--shade:#513b21;--light-edge:#fffaf0e0}
+:root[data-skin=obsidian] {--ambient:#805e37;--shade:#000;--light-edge:#fff3df13}
+:root[data-skin=pine] {--ambient:#497662;--shade:#020f09;--light-edge:#e5fff316}
+.deck,.desk-main {background:radial-gradient(ellipse 90% 45% at 35% -14%,color-mix(in srgb,var(--ambient) 40%,transparent),transparent),var(--bg)}
+.deck-top,.deck-sidebar,.deck-bottom {
+  background:color-mix(in srgb,var(--rail) 89%,transparent);backdrop-filter:blur(14px);
+  border-color:color-mix(in srgb,var(--border) 75%,transparent);
+}
+:root[data-frosted=true] .deck-sidebar {background:color-mix(in srgb,var(--rail) 70%,transparent);backdrop-filter:blur(20px)}
+.deck .desk-path {background:color-mix(in srgb,var(--panel) 63%,transparent)}
+.deck .desk-nav {display:flex;flex-flow:column nowrap;gap:2px;overflow-y:auto;min-height:0;flex:0 1 auto}
+.deck .desk-nav button {min-height:30px;flex-shrink:0}
+.nav-bottom-pair {display:grid;grid-template-columns:1fr 1fr;gap:3px;border-top:1px solid var(--border);padding-top:6px;margin-top:6px}
+.nav-collapsed .nav-bottom-pair {grid-template-columns:1fr}
+.nav-usage {margin-left:auto;color:var(--accent);font:10px var(--mono)}
+.nav-collapsed .nav-usage {display:none}
+.module-loading {padding:20px;color:var(--muted)}
+.deck :is(.ad-card,.settings-form,.workshop-group,.cd-composer,.quality-card,.hub-card,.cd-question .cd-prompt) {
+  box-shadow:var(--card-depth);border-color:color-mix(in srgb,var(--border) 78%,transparent);
+}
+.deck :is(input:not([type=range],[type=checkbox],[type=radio]),select,textarea):not(.cd-composer textarea) {
+  box-shadow:inset 0 1px 0 var(--light-edge),0 1px 2px color-mix(in srgb,var(--shade) 9%,transparent);
+}
+.deck .cd-composer {transition:box-shadow 230ms var(--ease-out),border-color 230ms var(--ease-out)}
+.deck .cd-composer:is(:focus-within,[data-mode=plan],:has(.cd-stop)) {
+  border-color:color-mix(in srgb,var(--accent) 56%,var(--border));
+  box-shadow:var(--card-depth),0 0 0 3px color-mix(in srgb,var(--accent) 9%,transparent);
+}
+.deck :is(.deck-menu,.deck-drawer,.cd-suggestions,.cd-context aside,.cd-model-menu,.session-inspector),dialog[open] {
+  background:var(--glass);backdrop-filter:blur(18px);box-shadow:var(--float-depth);animation:deck-appear 200ms var(--ease-out);
+}
+.deck .cd-step-block ol {animation:deck-appear 200ms var(--ease-out)}
+@keyframes deck-appear {from{opacity:0;translate:0 5px}to{opacity:1;translate:0 0}}
+.deck button {transition:scale 160ms var(--ease-out),background-color 180ms var(--ease-out),box-shadow 180ms var(--ease-out)}
+.deck button:active:enabled {scale:.97}
+.cd-segments {position:relative;isolation:isolate}
+.cd-segments::before {content:"";position:absolute;pointer-events:none;left:0;top:0;translate:var(--segment-x,0) var(--segment-y,0);width:var(--segment-w,0);height:var(--segment-h,0);border-radius:8px;background:var(--panel);box-shadow:var(--card-depth);transition:translate 210ms var(--ease-out),width 210ms var(--ease-out)}
+.deck .cd-segments button {position:relative}
+.deck .cd-segments button[aria-checked=true] {background:transparent;box-shadow:none}
+@media(hover:hover) {.deck :is(button.hub-card,.ad-card[role=button]):hover {translate:0 -1px;box-shadow:var(--float-depth)}}
+.status-dot.running {animation:deck-status 2s ease-in-out infinite}
+@keyframes deck-status {50%{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 16%,transparent)}}
+.cd-step-toggle[data-state=failed] svg:first-child {color:light-dark(#ac342c,#ff9287)}
+.deck .cd-chat-pane {min-height:0;flex:1}
+.deck .cd-compose-zone {flex-shrink:0;position:relative;padding-bottom:5px}
+.deck .cd-compose-hint {display:block;line-height:1.4;min-height:1.4em;padding-bottom:0;margin:3px 0 0;text-align:center}
+@media(max-height:600px) {.deck .cd-compose-zone {padding-top:2px}.deck .mobile-overview {max-height:12dvh;overflow:auto}}
+@supports selector(::-webkit-scrollbar) {
+  *::-webkit-scrollbar {width:5px;height:5px}
+  *::-webkit-scrollbar-track,*::-webkit-scrollbar-corner {background:transparent}
+  *::-webkit-scrollbar-thumb {background:transparent;border-radius:4px}
+  :hover::-webkit-scrollbar-thumb,:focus-within::-webkit-scrollbar-thumb {background:color-mix(in srgb,var(--muted) 38%,transparent)}
+}
+@supports not selector(::-webkit-scrollbar) {* {scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--muted) 40%,transparent) transparent}}
+@media(prefers-reduced-motion:reduce) {
+  .deck *, .deck *::before, .deck *::after,dialog[open] {animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+}

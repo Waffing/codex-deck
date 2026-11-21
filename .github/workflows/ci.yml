@@ -34,6 +34,7 @@ jobs:
         run: |
           version=$(sed -n 's/^ARG CODEX_VERSION=//p' deploy/Dockerfile)
           npm install --prefix "$RUNNER_TEMP/codex-fixture" "@openai/codex@$version"
+          CODEX_BIN="$RUNNER_TEMP/codex-fixture/node_modules/.bin/codex" node apps/server/tests/native-runner-smoke.mjs
           CODEX_BIN="$RUNNER_TEMP/codex-fixture/node_modules/.bin/codex" CODEXDECK_REAL_CODEX=1 pnpm --filter @codexdeck/server exec vitest run test/real-bridge.test.ts test/compaction-real.test.ts
       - name: Browser console journeys
         run: |
@@ -61,6 +62,9 @@ jobs:
         working-directory: apps/web/test-results
         run: |
           mkdir "$RUNNER_TEMP/gallery"
+          cp 09-model-center.png       "$RUNNER_TEMP/gallery/gateway.png"
+          cp flagship-pine-desktop.png "$RUNNER_TEMP/gallery/workbench-pine.png"
+          cp flagship-paper-mobile.png "$RUNNER_TEMP/gallery/workbench-paper-mobile.png"
           cp 03-workbench-desktop.png "$RUNNER_TEMP/gallery/workbench.png"
           cp 02-approval-desktop.png  "$RUNNER_TEMP/gallery/approval.png"
           cp 04-approval-mobile.png   "$RUNNER_TEMP/gallery/mobile.png"

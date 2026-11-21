@@ -166,7 +166,7 @@ test("shares workbench defaults with new workspaces and exports a consistent res
     expect(copy.prepare("SELECT id FROM workspaces WHERE id=?").pluck().get(w.id)).toBe(w.id);
   }finally{copy.close();}
   await app.inject({url:"/api/workspaces/"+w.id,method:"DELETE",headers:{cookie}});
-  expect((await post("/api/settings/preferences/reset")).json()).toMatchObject({automationLevel:"conservative",minimap:true});
+  expect((await post("/api/settings/preferences/reset")).json()).toMatchObject({automationLevel:"semi",minimap:true});
   expect((await post("/api/settings/reset")).json()).toMatchObject({reset:true});
   expect((await get("/api/security/config")).statusCode).toBe(401);
   expect(db.native.prepare("SELECT count(*) FROM audit_logs WHERE event=\x27settings.reset\x27").pluck().get()).toBe(1);

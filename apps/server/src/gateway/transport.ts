@@ -5,7 +5,7 @@ import { isIP } from "node:net";
 import ipaddr from "ipaddr.js";
 import { Agent, fetch as request } from "undici";
 
-function privateAddress(address:string) {
+export function privateAddress(address:string) {
   const value=ipaddr.process(address.split("%")[0]);
   return value.range()!=="unicast" || Object.values(networkInterfaces()).flat()
     .some(entry=>entry && ipaddr.process(entry.address.split("%")[0]).toNormalizedString()===value.toNormalizedString());
@@ -38,6 +38,13 @@ function addressAgent(accept:(address:string)=>boolean) {
   }}});
 }
 const publicAgent=addressAgent(address=>!privateAddress(address));
+export function publicMcpProbe(url:URL,body:string,signal:AbortSignal) {
+  const host=url.hostname.replace(/^\[|\]$/g,"");
+  if(url.protocol!=="https:" || url.username || url.password || host==="localhost" ||
+     (isIP(host) && privateAddress(host)) || url.port==="22")throw new Error("Expected a public HTTPS MCP endpoint.");
+  return request(url,{method:"POST",headers:{"content-type":"application/json",accept:"application/json, text/event-stream"},
+    body,signal,redirect:"error",dispatcher:publicAgent});
+}
 const privateAgent=addressAgent(trustedPrivate);
 export function targetPolicy(url:URL,credentials:boolean,controlPorts:(number|undefined)[]) {
   if(!allowCredentialTransport(url,credentials)) throw new Error("Remote credentials require HTTPS.");

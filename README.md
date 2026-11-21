@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/assets/banner.svg" alt="CodexDeck · 自托管 Codex 控制台" width="1280">
   <h1>CodexDeck</h1>
-  <p>自托管 Codex CLI 工作台。在浏览器里接入自己的模型、审阅代码、验证部署，把生成的文档和网页分享给读者。</p>
+  <p>自托管 Codex CLI 工作台与多协议模型网关。在浏览器里切换模型、审批代码操作、验证部署，把成品分享给读者。</p>
   <p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
   <p>
     <a href="LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/github/license/Waffing/codex-deck?style=flat-square"></a>
@@ -12,6 +12,7 @@
     <a href="https://github.com/Waffing/codex-deck/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/Waffing/codex-deck?style=flat-square"></a>
   </p>
   <p>
+    <a href="#api-指挥中心与工作台">API 指挥中心</a> ·
     <a href="#核心功能">核心功能</a> ·
     <a href="#界面预览">界面预览</a> ·
     <a href="#快速开始">快速开始</a> ·
@@ -22,9 +23,27 @@
   </p>
 </div>
 
+## API 指挥中心与工作台
+
+Codex CLI、Claude Code 和 OpenAI 兼容客户端可以使用同一个网关。在 **API 指挥中心 → 厂商切换台** 从 17 个预设中选择渠道，填写上游地址和凭证，探测连接后导入模型。供应商密钥保存在网关，各客户端使用独立的授权令牌与配额。
+
+<p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/gateway.png" alt="API 指挥中心的虚拟路由与模型库，显示模型别名、上下文窗口、测速和可用性" width="100%"></p>
+
+| 操作 | 入口与结果 |
+| --- | --- |
+| 给多个客户端提供稳定的模型名 | **虚拟路由与模型库** 将多个实际模型编为一个虚拟模型。支持手动固定、优先级故障转移、加权轮询和最低延迟。切换目标从下一个请求生效。 |
+| 诊断失败或慢请求 | **请求检视器** 显示实际模型、协议、首字延迟、成本和切流过程。临时抓包默认关闭，管理员开启后可查看脱敏报文，到期自动关闭。重放使用短探针。 |
+| 接入 CLI 或 SDK | **外部接入与配额** 可复制 Codex CLI、Claude Code、OpenAI SDK 和 Cursor 的配置。为客户端分配所需的 `proxy:responses`、`proxy:chat`、`proxy:messages` 或 `proxy:models` 权限；在客户端填写签发的 Bearer Token。 |
+| 管理成本和可用性 | 设置 Key 的模型白名单、每分钟请求数、每分钟 Token 数、日／月预算。厂商可选预算告警或阻断，健康点阵和熔断状态显示在厂商卡片上。 |
+| 管理工作台 | 从侧栏进入 MCP、Skills、插件、提示词、授权中心和用量统计。在输入框使用 `/` 选择命令，方向键和 Enter 可完成操作。 |
+
+**完全访问的执行环境。** 在输入框选择 **完全访问权限**，服务使用项目隔离环境执行命令。Docker 安装会记录 `CODEXDECK_EXEC_IMAGE`，已有安装也能从当前容器探测执行镜像。管理员可在 **设置 → 执行环境** 查看策略、探测或指定已安装的兼容镜像，SSH 中可用 `cdx executor detect`、`cdx executor set IMAGE` 和 `cdx executor auto`。
+
+Linux 原生安装和容器内受控回退需要非 root 服务账户、`/usr/bin/bwrap` 和可创建非特权用户命名空间的内核。完全访问在独立 PID、文件系统和网络命名空间中挂载当前项目。支持代理的命令可通过 HTTPS 连接公网 443 端口。若内核限制了命名空间，设置页会报告缺失能力。
+
 ## V1.5 成品预览与分享
 
-从 `main` 构建即可使用 V1.5。Docker 一键安装命令使用最新 GitHub Release 对应的镜像，具体功能以该标签的发布说明为准。[从源码运行](#本地开发) · [最新正式版](https://github.com/Waffing/codex-deck/releases/latest)
+本文展示 `main` 的功能。Docker 一键安装命令使用最新 GitHub Release 对应的镜像，具体功能见该标签的发布说明。[从源码运行](#本地开发) · [最新正式版](https://github.com/Waffing/codex-deck/releases/latest)
 
 <p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/artifact-hub.png" alt="成品资产箱按卡片展示不同会话生成的发布文档与表格" width="100%"></p>
 
@@ -135,6 +154,14 @@ Playwright 在演示项目中拍摄以下界面。主分支推送通过 CI 后�
 
 <table>
   <tr>
+    <td width="75%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/workbench-pine.png" alt="午夜松林皮肤桌面工作台，左侧模块图标与名称对齐，输入框显示权限和当前模型"></td>
+    <td width="25%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/workbench-paper-mobile.png" alt="暖纸阅读皮肤下的手机工作台，输入栏含 Plan、权限选择和发送按钮"></td>
+  </tr>
+  <tr><td>桌面 · 午夜松林</td><td>手机 · 暖纸阅读</td></tr>
+</table>
+
+<table>
+  <tr>
     <td width="50%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/document-viewer.png" alt="右侧文档抽屉打开多工作表的发布检查清单"></td>
     <td width="50%"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/global-search.png" alt="全局搜索面板高亮对话和成品文件中命中的关键词"></td>
   </tr>
@@ -171,12 +198,12 @@ Playwright 在演示项目中拍摄以下界面。主分支推送通过 CI 后�
 ```mermaid
 flowchart LR
     client["浏览器 / API 客户端"]
-    provider["兼容 OpenAI 的模型供应商"]
+    provider["Responses / Chat / Anthropic Messages / Gemini 兼容端点"]
 
     subgraph control["控制平面"]
       api["Fastify API · WebSocket · SSE"]
       db[("SQLite WAL")]
-      gateway["Responses 网关"]
+      gateway["模型路由与协议转译"]
       preview["受限预览代理"]
       api --> db
       api --> preview
@@ -196,6 +223,7 @@ flowchart LR
     end
 
     client <-->|"会话或有作用域的 API Key"| api
+    client -->|"带作用域的 /v1 请求"| gateway
     api <-->|"JSON-RPC · 审批"| codex
     codex -->|"短期回环令牌"| gateway
     gateway -->|"供应商凭证"| provider
@@ -210,6 +238,8 @@ Docker 模式下，控制平面通过独立内部网络上的 socket proxy 调�
 | 供应商预设 | CodexDeck 接入能力 | 推荐模式 |
 | --- | --- | --- |
 | OpenAI | 根据所选模型使用 Responses 透传或 Chat 转译 | `auto`，或对已验证的原生模型使用 `responses` |
+| Anthropic | Messages 流式输出、工具调用和工具结果 | 使用 Anthropic 预设及对应的真实模型 ID |
+| Gemini | OpenAI 兼容端点 | 使用 Gemini 预设及对应的真实模型 ID |
 | OneAPI / NewAPI | 兼容 OpenAI 的中转，端点和功能由上游路由决定 | 探测后用 `auto`，仅支持 Chat 的中转用 `chat` |
 | OpenRouter | 可用的 Responses / Chat 端点取决于所选模型 | 探测所选模型后使用 `auto` |
 | DeepSeek | 兼容 OpenAI 的 Chat Completions | `chat`，工具调用能力按模型确认 |
@@ -232,7 +262,7 @@ Docker 模式下，控制平面通过独立内部网络上的 socket proxy 调�
 
 ## Open API
 
-在控制台的**Open API 与用量**页面创建 Key，并授权 `tasks:write`、`tasks:read` 与目标工作区。将 Key 和工作区 ID 放入本地环境变量 `CODEXDECK_API_KEY` 和 `WORKSPACE_ID`。以下 Bash 示例需要 `curl` 与 `jq`。
+在**授权中心**创建 Open API Key，并授权 `tasks:write`、`tasks:read` 与目标工作区。将 Key 和工作区 ID 放入本地环境变量 `CODEXDECK_API_KEY` 和 `WORKSPACE_ID`。以下 Bash 示例需要 `curl` 与 `jq`。
 
 ```bash
 export CODEXDECK_URL=http://127.0.0.1:3000
@@ -280,6 +310,7 @@ pnpm test
 - [x] **V1.3 工作台验收** · 历史分页、本地缓存、即时发送和按工作区启用的隔离执行。
 - [x] **V1.4 质量门禁与保险箱** · 只读计划、自动质检和修复、跨模型复审、逐行批注、会话交接、项目密钥按用途注入。
 - [x] **V1.5 文档与交付** · 文档直览、跨会话资产箱、中英文全文检索、可吊销的成品分享和 PWA 安装。
+- [x] **主分支工作台与模型网关** · 四套皮肤、三档审批、模块导航、多协议路由、脱敏请求检视与按客户端配置的配额。
 - [ ] **npm 分发** · 选定可用包名并发布 CLI。
 - [ ] **V2 规划** · 加强业务容器隔离、扩充供应商兼容性覆盖并改进部署恢复。
 

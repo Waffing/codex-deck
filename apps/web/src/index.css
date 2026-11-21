@@ -27,9 +27,9 @@
 .thread-actions small{display:block;margin:.55rem}
 .thread-actions input{border:1px solid var(--border);padding:.25rem}
 .deck-sidebar .nav-label{display:none}
-.deck-sidebar .desk-nav{border-top:1px solid var(--border);padding:.65rem 0;display:flex;justify-content:space-between;gap:1px}
-.desk-nav button{width:auto;flex:1;justify-content:center;padding:.4rem .2rem}
-.deck-sidebar .desk-nav span{position:absolute;width:1px;height:1px;clip-path:inset(50%)}
+.deck-sidebar .desk-nav{border-top:1px solid var(--border);padding:.65rem 0}
+.desk-nav button{justify-content:flex-start;min-width:0}
+.desk-nav button>svg{flex:none}
 .side-foot{margin-top:0}
 .nav-collapsed .desk-nav{flex-direction:column}
 .nav-collapsed .thread-directory .session-list,.nav-collapsed .thread-search{display:none}

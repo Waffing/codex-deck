@@ -59,7 +59,7 @@ function setup() {
     created_at: "",
     updated_at: "",
   });
-  const fetcher = vi.fn(async () => new Response(JSON.stringify(thread)));
+  const fetcher = vi.fn(async (url:RequestInfo|URL) => new Response(JSON.stringify(String(url).endsWith("/routing-profiles")?[]:thread)));
   vi.stubGlobal("fetch", fetcher);
   const onRefresh = vi.fn(),
     onCreateThread = vi.fn(async () => thread);

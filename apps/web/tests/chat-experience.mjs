@@ -47,7 +47,10 @@ export async function chatExperienceJourney(page,submit,shot) {
   await box.fill("/rev");
   await page.getByRole("option",{name:"/review",exact:true}).waitFor();
   await box.press("Enter");
-  assert.match(await box.inputValue(),/审查当前工作区改动/);
+  await page.locator(".drawer-tabs button").filter({hasText:"Git Diff"}).first().waitFor();
+  await page.getByText("工作区没有 Git 差异",{exact:true}).waitFor();
+  assert.equal(await box.inputValue(),"");
+  await page.getByRole("button",{name:"关闭抽屉",exact:true}).click();
   await box.fill("@res");
   await page.getByRole("option",{name:"result.txt",exact:true}).waitFor();
   await box.press("Enter");
@@ -178,17 +181,17 @@ export async function mobileExperienceJourney(page, shot, fits) {
   assert.equal(compaction.status(),200,await compaction.text());
   await page.locator(".cd-context-notice").getByText(/上下文已压缩/).waitFor();
   await fits(page);
-  await openMobileView("系统与通知");
+  await openMobileView("设置");
   await page.getByLabel("开发者原始 JSON 调试").click();
   await nav.getByRole("button",{name:"工作台"}).tap();
   await page.getByRole("button",{name:/原始协议调试/}).tap();
   const debug=page.getByRole("dialog",{name:"原始协议调试"});
   await debug.locator("pre").filter({hasText:"thread/status/changed"}).first().waitFor();
   await debug.getByRole("button",{name:"关闭原始协议"}).tap();
-  await openMobileView("系统与通知");
+  await openMobileView("设置");
   await page.getByLabel("开发者原始 JSON 调试").click();
 
-  await openMobileView("第三方 API 与模型");
+  await openMobileView("API 指挥中心");
   const card=page.locator("article.ad-card").first();
   await card.getByLabel("已保存密钥").locator(".ad-pill").nth(1).waitFor();
   assert.equal(await card.getByLabel("已保存密钥").locator(".ad-pill").count(),2);
@@ -198,6 +201,7 @@ export async function mobileExperienceJourney(page, shot, fits) {
   await library.getByText("lab/library",{exact:false}).first().waitFor();
   await fits(page);
   await library.getByRole("button",{name:"关闭"}).tap();
+  await page.getByRole("tab",{name:"虚拟路由与模型库"}).tap();
   const board=page.locator(".benchmark-board");
   await board.getByRole("switch",{name:/选择测速 .*library/}).click();
   const measured=page.waitForResponse(r=>r.url().endsWith("/api/models/benchmark") && r.status()===200);
@@ -205,7 +209,7 @@ export async function mobileExperienceJourney(page, shot, fits) {
   await measured;
   await board.getByRole("row").filter({hasText:"library"}).getByText("样本不足",{exact:true}).waitFor();
   await fits(page);
-  await openMobileView("Open API 与用量");
+  await openMobileView("用量统计");
   const ledger=page.getByRole("region",{name:"用量账本"});
   await ledger.getByRole("button",{name:"按月"}).tap();
   await ledger.getByLabel("账本分组").selectOption("model");

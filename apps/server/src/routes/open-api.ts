@@ -11,10 +11,12 @@ import { encryptSecret } from "../security/crypto.js";
 import { callbackUrl, TaskWebhooks, webhookSecret } from "../notifications/task-webhook.js";
 
 type KeyRow = {id:string; name:string; prefix:string; scopes_json:string; workspace_ids_json:string; rate_limit_rpm:number;
+  allowed_models_json:string;tpm_limit:number;daily_budget:number;monthly_budget:number;
   webhook_origins_json:string; created_at:string; revoked_at:string|null};
 type Task = { id:string; workspace_id:string; thread_id:string; status:string; summary:string; created_at:string; updated_at:string };
 function keyDto(row:KeyRow): ApiKey {
   return {id:row.id,name:row.name,prefix:row.prefix,scopes:JSON.parse(row.scopes_json),workspace_ids:JSON.parse(row.workspace_ids_json),
+    allowed_models:JSON.parse(row.allowed_models_json),tpm_limit:row.tpm_limit,daily_budget:row.daily_budget,monthly_budget:row.monthly_budget,
     rate_limit_rpm:row.rate_limit_rpm,webhook_origins:JSON.parse(row.webhook_origins_json),created_at:row.created_at,revoked_at:row.revoked_at};
 }
 function fail(statusCode:number,message:string):never { throw Object.assign(new Error(message),{statusCode}); }
@@ -64,9 +66,10 @@ export function registerOpenApi(app:FastifyInstance,ctx:ServerContext,files:Work
     if (p.workspace_ids?.some(id => !db.prepare("SELECT 1 FROM workspaces WHERE id=?").get(id))) return fail(400,"Unknown workspace.");
     const updated = db.prepare(`UPDATE api_keys SET name=coalesce(?,name),scopes_json=coalesce(?,scopes_json),
       workspace_ids_json=coalesce(?,workspace_ids_json), rate_limit_rpm=coalesce(?,rate_limit_rpm),
+      allowed_models_json=coalesce(?,allowed_models_json),tpm_limit=coalesce(?,tpm_limit),daily_budget=coalesce(?,daily_budget),monthly_budget=coalesce(?,monthly_budget),
       webhook_origins_json=coalesce(?,webhook_origins_json) WHERE id=? AND revoked_at IS NULL RETURNING *`).get(
       p.name ?? null,p.scopes ? JSON.stringify(p.scopes) : null,p.workspace_ids ? JSON.stringify(p.workspace_ids) : null,
-      p.rate_limit_rpm ?? null,p.webhook_origins ? JSON.stringify(p.webhook_origins.map(v=>new URL(v).origin)) : null,req.params.id,
+      p.rate_limit_rpm ?? null,p.allowed_models?JSON.stringify(p.allowed_models):null,p.tpm_limit??null,p.daily_budget??null,p.monthly_budget??null,p.webhook_origins ? JSON.stringify(p.webhook_origins.map(v=>new URL(v).origin)) : null,req.params.id,
     ) as KeyRow | undefined;
     if (!updated) return fail(404,"Unknown active key.");
     return keyDto(updated);
@@ -79,9 +82,9 @@ export function registerOpenApi(app:FastifyInstance,ctx:ServerContext,files:Work
     const id = randomUUID();
     const token = "cdk_live_" + randomBytes(32).toString("base64url");
     const origins = options.webhook_origins.map(origin => new URL(origin).origin);
-    const record = db.prepare(`INSERT INTO api_keys(id,name,key_hash,scopes_json,created_at,prefix,workspace_ids_json,rate_limit_rpm,webhook_origins_json)
-      VALUES(?,?,?,?,?,?,?,?,?) RETURNING *`).get(id,options.name,createHash("sha256").update(token).digest("hex"),JSON.stringify(options.scopes),
-        new Date().toISOString(),token.slice(0,16),JSON.stringify(options.workspace_ids),options.rate_limit_rpm,JSON.stringify(origins)) as KeyRow;
+    const record = db.prepare(`INSERT INTO api_keys(id,name,key_hash,scopes_json,created_at,prefix,workspace_ids_json,rate_limit_rpm,webhook_origins_json,allowed_models_json,tpm_limit,daily_budget,monthly_budget)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *`).get(id,options.name,createHash("sha256").update(token).digest("hex"),JSON.stringify(options.scopes),
+        new Date().toISOString(),token.slice(0,16),JSON.stringify(options.workspace_ids),options.rate_limit_rpm,JSON.stringify(origins),JSON.stringify(options.allowed_models??['*']),options.tpm_limit??0,options.daily_budget??0,options.monthly_budget??0) as KeyRow;
     const signing = webhookSecret(ctx,id);
     ctx.masker.register(token);
     ctx.masker.register(signing);

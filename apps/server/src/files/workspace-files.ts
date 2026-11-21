@@ -53,7 +53,7 @@ export class WorkspaceFiles {
 
   async track<K extends TrackingOperation>(workspaceId: string, operation: K, turnId = ""): Promise<TrackingResult<K>> {
     const root = await this.getRoot(workspaceId);
-    if (this.isIsolatedRoot(root)) return isolatedTracking(root, this.dataDirectory, operation, turnId);
+    if (this.isIsolatedRoot(root)) return isolatedTracking(root, this.dataDirectory, operation, turnId,this.context.native);
     // Synchronous registration with the marker check makes the transition atomic
     // with respect to other requests in this control process.
     const pending = this.hostTracking.get(root) ?? new Set<Promise<unknown>>();

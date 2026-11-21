@@ -6,10 +6,11 @@ import {PreferenceControls,type PreferenceProps} from "../layout/Preferences";
 import {SecurityPanel} from "./SecurityPanel";
 import {TemporaryAccess} from "./TemporaryAccess";
 import {useAction,Feedback} from "./common";
+import {ExecutionEnvironment} from "./ExecutionEnvironment";
 import {System} from "./System";
 import "./settings-center.css";
 
-const tabs=["外观与工作台","安全中心","临时访问管理","自动化与审批","系统与备份"] as const;
+const tabs=["外观与工作台","安全中心","临时访问管理","自动化与审批","系统与备份","执行环境"] as const;
 function Backup(){
   const action=useAction();
   const [version,setVersion]=useState(""),[error,setError]=useState("");
@@ -45,6 +46,6 @@ export function SettingsCenter({workspaces,...p}:PreferenceProps&{workspaces:Wor
     {tab===tabs[2]&&<TemporaryAccess workspaces={workspaces}/>}
     {tab===tabs[3]&&<><section className="ad-card settings-form"><h2>审批策略</h2><label>新工作区默认权限<AutomationControl label="新工作区默认权限" value={p.prefs.automationLevel} onChange={automationLevel=>p.update({automationLevel})}/></label>
       <CapabilityNote/><label><span>审批等待时间（秒）<small>新发起的审批到期后自动结束。</small></span><NumberControl min={10} max={86400} key={p.prefs.approvalTimeoutSeconds} defaultValue={p.prefs.approvalTimeoutSeconds} onBlur={e=>{if(e.target.validity.valid&&e.target.value)p.update({approvalTimeoutSeconds:e.target.valueAsNumber});}}/></label>
-      <button className="ad-button" onClick={()=>p.update({automationLevel:"conservative",approvalTimeoutSeconds:600})}>恢复审批默认值</button></section><System section="notifications"/></>}
-    {tab===tabs[4]&&<Backup/>}</div></section>;
+      <button className="ad-button" onClick={()=>p.update({automationLevel:"semi",approvalTimeoutSeconds:600})}>恢复审批默认值</button></section><System section="notifications"/></>}
+    {tab===tabs[4]&&<Backup/>}{tab===tabs[5]&&<ExecutionEnvironment/>}</div></section>;
 }

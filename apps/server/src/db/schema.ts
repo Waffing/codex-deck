@@ -11,6 +11,10 @@ export const providers = sqliteTable("providers", {
   name: text("name").notNull(),
   preset: text("preset").notNull(),
   baseUrl: text("base_url").notNull(),
+  protocolType:text("protocol_type"),patchRulesJson:text("patch_rules_json").notNull().default("{}"),
+  circuitBreakerJson:text("circuit_breaker_json").notNull().default("{}"),weight:integer("weight").notNull().default(100),
+  rpmLimit:integer("rpm_limit").notNull().default(0),dailyBudget:real("daily_budget").notNull().default(0),
+  monthlyBudget:real("monthly_budget").notNull().default(0),budgetAction:text("budget_action").notNull().default("alert"),
   apiKeyCiphertext: text("api_key_ciphertext"),
   apiKeysEnc: text("api_keys_enc"),
   balanceEndpoint: text("balance_endpoint"),
@@ -138,6 +142,8 @@ export const deployments = sqliteTable("deployments", {
 export const apiKeys = sqliteTable("api_keys", {
   prefix: text("prefix").notNull().default(""),
   workspaceIdsJson: text("workspace_ids_json").notNull().default("[]"),
+  allowedModelsJson:text("allowed_models_json").notNull().default('["*"]'),
+  tpmLimit:integer("tpm_limit").notNull().default(0),dailyBudget:real("daily_budget").notNull().default(0),monthlyBudget:real("monthly_budget").notNull().default(0),
   rateLimitRpm: integer("rate_limit_rpm").notNull().default(60),
   webhookOriginsJson: text("webhook_origins_json").notNull().default("[]"),
   id: text("id").primaryKey(),
@@ -296,7 +302,22 @@ export const publicShareReads = sqliteTable("public_share_reads", {
   expiresAt:integer("expires_at").notNull(),
 });
 
+export const routingProfiles=sqliteTable("routing_profiles",{
+  id:text("id").primaryKey(),slug:text("slug").notNull().unique(),name:text("name").notNull(),description:text("description").notNull(),
+  strategy:text("strategy").notNull(),targetsJson:text("targets_json").notNull(),activeTargetIndex:integer("active_target_index").notNull(),
+  isGlobalDefault:integer("is_global_default",{mode:"boolean"}).notNull(),enabled:integer("enabled",{mode:"boolean"}).notNull(),
+  createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),
+});
+export const gatewayRequestLogs=sqliteTable("gateway_request_logs",{
+  id:text("id").primaryKey(), requestId:text("request_id").notNull().unique(),sourceType:text("source_type").notNull(),apiKeyId:text("api_key_id"),
+  threadId:text("thread_id"),virtualModel:text("virtual_model").notNull(),providerId:text("provider_id"),actualModel:text("actual_model"),
+  inboundProtocol:text("inbound_protocol").notNull(),outboundProtocol:text("outbound_protocol"),failoverChainJson:text("failover_chain_json").notNull(),
+  statusCode:integer("status_code").notNull(),errorSummary:text("error_summary"),ttftMs:real("ttft_ms"),totalMs:real("total_ms"),
+  tokensPerSec:real("tokens_per_sec"),inputTokens:integer("input_tokens").notNull(),outputTokens:integer("output_tokens").notNull(),
+  cachedTokens:integer("cached_tokens"),costEstimate:real("cost_estimate").notNull(),currency:text("currency"),debugPayloadEnc:text("debug_payload_enc"),createdAt:text("created_at").notNull(),
+});
 export const schema = {
+  routingProfiles,gatewayRequestLogs,
   publicShares,publicShareReads,
   codeReviews,workspaceSecrets,
   tempAccessLinks,guestSessions,

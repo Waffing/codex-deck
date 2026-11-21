@@ -7,10 +7,10 @@ PGID="${PGID:-1000}"
 case "$PUID:$PGID" in
   *[!0-9:]*|:*|*:) printf '%s\n' 'PUID and PGID must be positive integers.' >&2; exit 2 ;;
 esac
-[ "$PUID" -gt 0 ] && [ "$PGID" -gt 0 ] || {
+if ! [ "$PUID" -gt 0 ] || ! [ "$PGID" -gt 0 ]; then
   printf '%s\n' 'PUID and PGID must be positive integers.' >&2
   exit 2
-}
+fi
 
 mkdir -p /data /workspaces /data/caches/npm /data/caches/pip /data/caches/uv /data/home
 chown -R --no-dereference "$PUID:$PGID" /data /workspaces

@@ -437,6 +437,7 @@ export class Deployer {
     return this.ctx.masker.maskString(text);
   }
   async verify(input:VerifyInput,workspace?:string,thread:string|null=null) {
+    if(input.check_browser && !pluginEnabled(this.ctx.native,"playwright"))throw fail(409,"Playwright 验收已在插件中停用。");
     const row=this.get(input.deployment_id,workspace);
     const turn=thread ? this.ctx.native.prepare("SELECT id FROM tasks WHERE thread_id=? AND workspace_id=? AND status='running'").pluck().get(thread,row.workspace_id) as string|undefined : undefined;
     const port=await this.runningPort(this.dto(row).port,row.workspace_id);
@@ -614,3 +615,4 @@ export class Deployer {
     }
   }
 }
+import {pluginEnabled} from "../settings/modules.js";

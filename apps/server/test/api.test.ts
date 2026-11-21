@@ -136,7 +136,7 @@ describe("SQLite migrations and admin APIs", () => {
     const headers = await setupAdmin();
     const presets = await app.inject({ url: "/api/providers/presets", headers });
     expect(presets.json().map((p: { id: string }) => p.id).sort())
-      .toEqual(["openai_official", "oneapi_newapi", "openrouter", "deepseek", "ollama", "custom"].sort());
+      .toEqual(["openai_official", "oneapi_newapi", "openrouter", "deepseek", "ollama", "custom","anthropic","gemini","siliconflow","volcengine","dashscope","kimi","zhipu","groq","together","lm_studio","vllm"].sort());
     const keyValue = "sk-" + randomBytes(16).toString("hex");
     const headerValue = "custom-header-secret-9876";
     const provider = await app.inject({ method: "POST", url: "/api/providers", headers, payload: {

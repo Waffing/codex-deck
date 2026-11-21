@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import {ZodError} from "zod";
 import compress from "@fastify/compress";
 import type Database from "better-sqlite3";
 import { gatewayConfigSchema, type GatewayConfig } from "@codexdeck/shared";
@@ -6,6 +7,7 @@ import type { CodexDeckDatabase } from "./db/index.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerProviderRoutes } from "./routes/providers.js";
 import { registerGatewayRoutes } from "./gateway/server.js";
+import {registerGatewayAdmin} from "./routes/gateway-logs.js";
 import { rotationProof } from "./security/crypto.js";
 import { SecretMasker } from "./security/secret-masker.js";
 import { registerStoredCredentials } from "./gateway/credentials.js";
@@ -63,13 +65,14 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
   // Install model routes after @fastify/compress has registered its onRoute hook.
   app.register(async providers => registerProviderRoutes(providers,context));
   registerGatewayRoutes(app, context);
+  registerGatewayAdmin(app,context);
   if (options) mountPhase2(app, context, options);
   if (options?.webRoot) mountWeb(app,options.webRoot,options.workspaceRoot,shareAssets);
   else if (process.env.NODE_ENV === "production") mountWeb(app,path.join(repositoryRoot,"apps/web/dist"),repositoryRoot,shareAssets);
   app.setErrorHandler((error, request, reply) => {
-    const status = (error as { statusCode?: number }).statusCode;
+    const status = error instanceof ZodError ? 400 : (error as { statusCode?: number }).statusCode;
     const code = status && status >= 400 && status < 500 ? status : 500;
-    const publicMessage=error instanceof Error && code<500 && !("code" in error) ? context.masker.maskString(error.message) : code<500 ? "Invalid request." : "Internal server error.";
+    const publicMessage=error instanceof Error && !(error instanceof ZodError) && code<500 && !("code" in error) ? context.masker.maskString(error.message) : code<500 ? "Invalid request." : "Internal server error.";
     if (code>=500) console.error(JSON.stringify({request_id:request.id,route:request.routeOptions.url,status:code}));
     if (!reply.sent) void reply.code(code).send({ error:publicMessage, request_id:request.id });
   });

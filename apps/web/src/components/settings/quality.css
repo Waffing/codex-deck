@@ -36,4 +36,4 @@
 .quality-diff-lines>div button{display:inline-flex;align-items:center;gap:2px;min-width:35px;color:var(--muted)}
 @media(hover:hover){.quality-diff-lines>div button svg{opacity:0}.quality-diff-lines>div:hover button svg,.quality-diff-lines>div:focus-within button svg{opacity:1}}
 .quality-diff-lines form,.review-comment{padding:8px;background:var(--surface)}.quality-diff-lines form button{margin:4px 12px 0 0}
-@media(max-width:767px){.cd-compose-controls{flex-wrap:wrap}.thread-action-menu{right:5px}.quality-panel{padding:12px}}
+@media(max-width:767px){.thread-action-menu{right:5px}.quality-panel{padding:12px}}

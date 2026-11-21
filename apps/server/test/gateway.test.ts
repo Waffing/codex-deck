@@ -1,8 +1,7 @@
 import {turnMetrics} from "../src/codex/timeline.js";
-import { once } from "node:events";
-import { randomBytes } from "node:crypto";
+import {listenHttpFixture,withTestHttpPort} from "./fixtures/http-port.js";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer as createHttpServer, type IncomingHttpHeaders, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -50,11 +49,9 @@ beforeEach(async () => {
     observed.push({ headers: req.headers, path: req.url!, body,raw:text });
     serve(body, res, req.url!);
   });
-  mock.listen(0, "127.0.0.1");
-  await once(mock, "listening");
-  mockUrl = "http://127.0.0.1:" + (mock.address() as AddressInfo).port + "/v1";
+  mockUrl = "http://127.0.0.1:" + await listenHttpFixture(mock) + "/v1";
   app = createServer(context);
-  url = await app.listen({ host: "127.0.0.1", port: 0 });
+  url = await withTestHttpPort(port=>app.listen({host:"127.0.0.1",port}));
 });
 afterEach(async () => {
   await app.close();
@@ -76,6 +73,126 @@ function addModel(alias: string, protocol: string, fallbacks: string[] = []) {
     createdAt: now, updatedAt: now,
   }).run();
 }
+
+function proxyKey(scopes=["responses","messages","chat","models"]) {
+  const key="cdk_live_"+randomBytes(16).toString("hex");
+  context.native.prepare("INSERT INTO api_keys(id,name,key_hash,scopes_json,created_at,allowed_models_json) VALUES(?,?,?,?,?,?)")
+    .run(key.slice(-10),"test",createHash("sha256").update(key).digest("hex"),JSON.stringify(scopes.map(s=>"proxy:"+s)),new Date().toISOString(),'["alpha"]');
+  return key;
+}
+function external(path:string,body:Record<string,unknown>,key:string){
+  return fetch(url+"/v1/"+path,{method:"POST",headers:{authorization:"Bearer "+key,"content-type":"application/json"},body:JSON.stringify(body)});
+}
+test.each([false,true])("charges the reserved hard budget when a delivered upstream result omits usage (stream=%s)",async(stream)=>{
+  addModel("alpha","responses");
+  context.native.exec("UPDATE providers SET daily_budget=1,budget_action='block'; UPDATE models SET cost_input_usd_per_million=0,cost_output_usd_per_million=1000000");
+  serve=(_body,res)=> {
+    if(stream) res.writeHead(200,{"content-type":"text/event-stream"}).end('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"x"}\n\n');
+    else res.writeHead(200,{"content-type":"application/json"}).end(JSON.stringify({...nativeResult,usage:null}));
+  };
+  const key=proxyKey(),body={model:"alpha",input:"go",stream,max_output_tokens:1};
+  const first=await external("responses",body,key);expect(first.status).toBe(200);
+  await first.text();
+  const second=await external("responses",body,key);expect(second.status).toBe(429);
+  expect(observed).toHaveLength(1);
+  expect(context.native.prepare("SELECT usage_known FROM usage_logs WHERE model_id='alpha'").pluck().get()).toBe(0);
+  expect(context.native.prepare("SELECT amount FROM gateway_budget_usage WHERE owner_type='provider'").pluck().get()).toBe(1);
+});
+test("Messages upstream processes signed thinking and tool history, and accounts cache reads",async()=>{
+  addModel("alpha","auto");
+  context.native.prepare("UPDATE providers SET protocol_type='anthropic_messages'").run();
+  serve=(_body,res)=>res.writeHead(200,{"content-type":"application/json"}).end(JSON.stringify({id:"msg_a",type:"message",role:"assistant",
+    content:[{type:"thinking",thinking:"plan",signature:"signed"},{type:"tool_use",id:"call",name:"probe",input:{x:1}}],
+    usage:{input_tokens:3,cache_read_input_tokens:4,output_tokens:8},stop_reason:"tool_use"}));
+  const response=await external("responses",{model:"alpha",instructions:"Be precise",input:[
+    {role:"user",content:"first"},{type:"reasoning",summary:[{type:"summary_text",text:"choose"}],encrypted_content:"original_signature"},
+    {type:"function_call",call_id:"previous",name:"probe",arguments:'{"x":0}'},{type:"function_call_output",call_id:"previous",output:"ok"}
+  ],tools:[{type:"function",name:"probe",parameters:{type:"object"}}],tool_choice:"required"},proxyKey());
+  expect(response.status).toBe(200);
+  expect(observed[0]).toMatchObject({path:"/v1/messages",headers:{"x-api-key":upstreamKey,"anthropic-version":"2023-06-01"},
+    body:{model:"real-alpha",system:"Be precise",messages:[{role:"user"},{role:"assistant",content:[
+      {type:"thinking",thinking:"choose",signature:"original_signature"},{type:"tool_use",id:"previous",input:{x:0}}]},
+      {role:"user",content:[{type:"tool_result",tool_use_id:"previous",content:[{text:"ok"}]}]}],tool_choice:{type:"any"}}});
+  expect(observed[0]!.headers.authorization).toBeUndefined();
+  expect(await response.json()).toMatchObject({output:[{type:"reasoning",encrypted_content:"signed"},{type:"function_call",arguments:'{"x":1}'}],
+    usage:{input_tokens:7,output_tokens:8,input_tokens_details:{cached_tokens:4}}});
+  expect(context.native.prepare("SELECT * FROM gateway_request_logs").get()).toMatchObject({source_type:"external",inbound_protocol:"responses",outbound_protocol:"anthropic_messages",input_tokens:7,cached_tokens:4});
+});
+
+test("translates Messages stream block boundaries, signed thinking and split tool JSON to Chat and Responses",async()=>{
+  addModel("alpha","auto");context.native.prepare("UPDATE providers SET protocol_type='anthropic_messages'").run();
+  const events=[
+    {type:"message_start",message:{type:"message",id:"msg_a",content:[],usage:{input_tokens:5,output_tokens:1}}},
+    {type:"content_block_start",index:0,content_block:{type:"thinking",thinking:"",signature:""}},
+    {type:"content_block_delta",index:0,delta:{type:"thinking_delta",thinking:"reason"}},
+    {type:"content_block_delta",index:0,delta:{type:"signature_delta",signature:"signed"}},{type:"content_block_stop",index:0},
+    {type:"content_block_start",index:1,content_block:{type:"tool_use",id:"c1",name:"read",input:{}}},
+    {type:"content_block_delta",index:1,delta:{type:"input_json_delta",partial_json:'{"x":'}},
+    {type:"content_block_delta",index:1,delta:{type:"input_json_delta",partial_json:"4}"}},{type:"content_block_stop",index:1},
+    {type:"message_delta",delta:{stop_reason:"tool_use"},usage:{output_tokens:8}},{type:"message_stop"}];
+  serve=(_body,res)=>res.writeHead(200,{"content-type":"text/event-stream"}).end(events.map(e=>"event: "+e.type+"\ndata: "+JSON.stringify(e)+"\n\n").join(""));
+  const key=proxyKey();
+  const result=await jsonEvents(await external("responses",{model:"alpha",input:"go",stream:true},key));
+  expect(result.at(-1)).toMatchObject({type:"response.completed",response:{usage:{input_tokens:5,output_tokens:8},
+    output:[{type:"reasoning",encrypted_content:"signed"},{call_id:"c1",arguments:'{"x":4}'}]}});
+  const response=await external("chat/completions",{model:"alpha",messages:[{role:"user",content:"go"}],stream:true,stream_options:{include_usage:true}},key);
+  const frames=[];
+  for await(const f of readSse(response.body!))if(f.data && f.data!=="[DONE]")frames.push(JSON.parse(f.data));
+  expect(frames.at(-1)).toMatchObject({choices:[],usage:{prompt_tokens:5,completion_tokens:8}});
+  expect(frames.flatMap(c=>c.choices).some(c=>c.delta.reasoning_content==="reason")).toBe(true);
+  expect(frames.flatMap(c=>c.choices).map(c=>c.delta.tool_calls?.[0]?.function.arguments??"").join("")).toBe('{"x":4}');
+});
+
+test("Claude Messages clients consume Responses upstream tool calls and return tool_result in the next request",async()=>{
+  addModel("alpha","responses");const key=proxyKey();
+  const item={type:"function_call",id:"fc_1",call_id:"c1",name:"check",arguments:""};
+  const events=[{type:"response.created",response:{...nativeResult,usage:null}},
+    {type:"response.output_item.added",output_index:0,item},
+    {type:"response.function_call_arguments.delta",output_index:0,item_id:item.id,delta:'{"a":2}'},
+    {type:"response.output_item.done",output_index:0,item:{...item,arguments:'{"a":2}'}},
+    {type:"response.completed",response:{...nativeResult,output:[{...item,arguments:'{"a":2}'}]}}];
+  serve=(body,res)=>body.stream?res.writeHead(200,{"content-type":"text/event-stream"}).end(events.map(e=>"data: "+JSON.stringify(e)+"\n\n").join(""))
+    :res.writeHead(200,{"content-type":"application/json"}).end(JSON.stringify({...nativeResult,output:[{type:"message",content:[{type:"output_text",text:"done"}]}]}));
+  const result=await jsonEvents(await external("messages",{model:"alpha",max_tokens:12,messages:[{role:"user",content:"go"}],stream:true},key));
+  expect(result.map(e=>e.type)).toEqual(["message_start","content_block_start","content_block_delta","content_block_stop","message_delta","message_stop"]);
+  expect(result[2]).toMatchObject({delta:{type:"input_json_delta",partial_json:'{"a":2}'}});
+  expect(result[4]).toMatchObject({delta:{stop_reason:"tool_use"}});
+  const response=await external("messages",{model:"alpha",max_tokens:12,messages:[{role:"assistant",content:[{type:"tool_use",id:"c1",name:"check",input:{a:2}}]},
+    {role:"user",content:[{type:"tool_result",tool_use_id:"c1",content:"success"}]}]},key);
+  expect(await response.json()).toMatchObject({type:"message",content:[{type:"text",text:"done"}]});
+  expect(observed[1]!.body.input).toEqual([{type:"function_call",call_id:"c1",name:"check",arguments:'{"a":2}'},{type:"function_call_output",call_id:"c1",output:"success"}]);
+});
+test("all public proxy endpoints require independent scopes and filter model access",async()=>{
+  addModel("alpha","responses");addModel("hidden","responses");
+  const key=proxyKey(["models","responses"]);
+  for(const path of ["responses","chat/completions","messages"])expect((await external(path,{},"invalid")).status).toBe(401);
+  expect((await fetch(url+"/v1/models")).status).toBe(401);
+  const res=await fetch(url+"/v1/models",{headers:{authorization:"Bearer "+key}});
+  expect((await res.json()).data.map((m:{id:string})=>m.id)).toEqual(["alpha"]);
+  expect((await external("messages",{},key)).status).toBe(403);
+  expect((await external("responses",{model:"hidden",input:"go"},key)).status).toBe(403);
+  expect(observed).toHaveLength(0);
+});
+
+test("external quota rejects requests with Retry-After before contacting the upstream and filters Gemini Chat patches",async()=>{
+  addModel("alpha","auto");
+  context.native.prepare("UPDATE providers SET protocol_type='gemini_openai', patch_rules_json=?")
+    .run(JSON.stringify({developer_to_system:true,map_max_tokens:true,strip_fields:["reasoning_effort"],extra_body:{custom_hint:true}}));
+  const key=proxyKey();
+  context.native.prepare("UPDATE api_keys SET rate_limit_rpm=1").run();
+  serve=(_body,res)=>res.writeHead(200,{"content-type":"application/json"}).end(JSON.stringify({choices:[{message:{content:"ok"},finish_reason:"stop"}],usage:{prompt_tokens:2,completion_tokens:1}}));
+  const body={model:"alpha",messages:[{role:"developer",content:"do"},{role:"user",content:"go"}],max_tokens:7,reasoning_effort:"low"};
+  const first=await external("chat/completions",body,key);
+  expect(first.status).toBe(200);
+  expect(observed[0]).toMatchObject({path:"/v1/chat/completions",body:{messages:[{role:"system"},{role:"user"}],max_tokens:7,custom_hint:true}});
+  expect(observed[0]!.body).not.toHaveProperty("reasoning_effort");
+  expect(observed[0]!.body).not.toHaveProperty("max_completion_tokens");
+  expect(await first.json()).toMatchObject({choices:[{message:{content:"ok"}}],usage:{total_tokens:3}});
+  const limit=await external("chat/completions",body,key);
+  expect(limit.status).toBe(429);
+  expect(Number(limit.headers.get("retry-after"))).toBeGreaterThan(0);
+  expect(observed).toHaveLength(1);
+});
 
 function post(model: string, extra: Record<string, unknown> = {}, bearer = token) {
   return fetch(url + "/internal/v1/responses", {

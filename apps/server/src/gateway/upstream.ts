@@ -8,9 +8,12 @@ export function upstreamUrl(baseUrl: string, endpoint: string): URL {
   return url;
 }
 
-export function upstreamHeaders(custom: Record<string, string>, apiKey: string): Headers {
+export function upstreamHeaders(custom: Record<string, string>, apiKey: string, protocol?:string|null): Headers {
   const headers = new Headers(custom);
   headers.set("content-type", "application/json");
-  if (apiKey) headers.set("authorization", "Bearer " + apiKey);
+  if(protocol==="anthropic_messages") {
+    if(apiKey) headers.set("x-api-key",apiKey);
+    if(!headers.has("anthropic-version")) headers.set("anthropic-version","2023-06-01");
+  } else if (apiKey) headers.set("authorization", "Bearer " + apiKey);
   return headers;
 }

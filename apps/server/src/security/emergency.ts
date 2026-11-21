@@ -7,6 +7,7 @@ import { authenticated, revokeSessions } from "../auth.js";
 import { patchPreferences, readPreferences } from "../settings/preferences.js";
 import { resetPanelDefaults } from "../settings/defaults.js";
 import { createTempLink, listTempLinks, liveGuests, revokeTempLink, extendTempLink } from "../temp-access/service.js";
+import {executionStatus,saveExecutorImage} from "../codex/execution-environment.js";
 import { readSecurityConfig, updateSecurityConfig, resetSecurityConfig } from "./config.js";
 import { clientIp, directLocal } from "./ingress.js";
 import { securityEvent } from "./activity.js";
@@ -18,7 +19,7 @@ const bodySchema = z.object({
   action: z.enum(["security", "security-set", "security-reset", "preferences", "preferences-set", "preferences-reset",
     "reset-password", "bans", "unban", "totp-enroll", "totp-confirm", "two-factor-off", "sessions", "session-revoke",
     "defaults-reset", "channels", "channel-create", "channel-update", "channel-delete",
-    "workspaces", "audit", "temp-live", "temp-list", "temp-create", "temp-revoke", "temp-extend"]),
+    "executor", "executor-set", "workspaces", "audit", "temp-live", "temp-list", "temp-create", "temp-revoke", "temp-extend"]),
   input: z.unknown().optional(), id: z.string().min(1).max(128).optional(), origin: z.url().optional(),
 }).strict();
 const digest = (body:unknown) => createHash("sha256").update(JSON.stringify(body ?? null)).digest("hex");
@@ -45,6 +46,8 @@ export async function emergency(ctx:ServerContext, raw:unknown, ip?:string) {
   const req=bodySchema.parse(raw), db=ctx.native;
   const id=()=>z.string().min(1).parse(req.id);
   switch (req.action) {
+    case "executor": return executionStatus(db,true);
+    case "executor-set": saveExecutorImage(db,req.input); return executionStatus(db);
     case "security": return readSecurityConfig(db);
     case "preferences": return readPreferences(db);
     case "channels": return new Notifications(ctx).channels();

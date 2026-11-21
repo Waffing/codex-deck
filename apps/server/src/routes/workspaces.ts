@@ -69,6 +69,7 @@ export function registerWorkspaceRoutes(app: FastifyInstance, ctx: ServerContext
     if (!p.success) throw fileError(400, "Invalid instructions.");
     const root = await files.instructionRoot(req.params.id,p.data.scope);
     const revision = await writeEditable(root,"AGENTS.md",p.data.content,req.headers["if-match"],ctx.masker);
+    ctx.native.prepare("INSERT OR REPLACE INTO settings VALUES('modules.instructions.revision',?,?)").run(revision,new Date().toISOString());
     return {...p.data,revision};
   });
   app.get<ById>("/api/workspaces/:id/git/status", auth, async req => ctx.masker.maskObject(await files.track(req.params.id, "status")));

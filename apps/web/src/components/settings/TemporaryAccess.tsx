@@ -24,7 +24,7 @@ export function TemporaryAccess({workspaces}:{workspaces:Workspace[]}) {
   </nav>{tab==="guest"?<GuestInvitations workspaces={workspaces}/>:<PublicShares/>}</>;
 }
 
-function GuestInvitations({workspaces}:{workspaces:Workspace[]}) {
+export function GuestInvitations({workspaces}:{workspaces:Workspace[]}) {
   const [links,setLinks]=useState<TempAccessLink[]>([]),[live,setLive]=useState<Live[]>([]),[audit,setAudit]=useState<Audit[]>([]);
   const [invite,setInvite]=useState(""),[editing,setEditing]=useState<TempAccessLink>(),[create,setCreate]=useState(false);
   const a=useAction();

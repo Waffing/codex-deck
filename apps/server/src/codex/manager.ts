@@ -98,21 +98,20 @@ export class ThreadManager {
   list(workspaceId?: string) {
     const sql = `SELECT t.*,${threadUsageColumns} AS model_changed_seq,${effectiveWindow} AS effective_context_window, (SELECT s.status FROM tasks s WHERE s.thread_id=t.id
       ORDER BY CASE s.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,s.created_at DESC,s.rowid DESC
-      LIMIT 1) AS task_status FROM threads t` + (workspaceId ? " WHERE t.workspace_id=?" : "") + " ORDER BY t.created_at,t.id";
+      LIMIT 1) AS task_status FROM threads t WHERE t.archived=0` + (workspaceId ? " AND t.workspace_id=?" : "") + " ORDER BY t.created_at,t.id";
     const rows = this.context.native.prepare(sql).all(...workspaceId ? [workspaceId] : []) as (ThreadRow & {task_status:string|null})[];
     return rows.map(row=>threadSchema.parse({...row,status:["queued","running","failed"].includes(row.task_status ?? "") ? row.task_status : row.status}));
   }
 
   private modelName(preferred?: string) {
-    const model = this.context.native.prepare(`SELECT m.alias FROM models m JOIN providers p ON p.id=m.provider_id
-      WHERE p.enabled AND m.enabled AND (? IS NULL OR m.alias=?) ORDER BY m.created_at,m.id LIMIT 1`).pluck().get(preferred ?? null,preferred ?? null);
+    const model = catalogModel(this.context.native,preferred)?.alias;
     if (!model) throw error(400,"No matching enabled model.");
     return String(model);
   }
 
   createThread(workspaceId: string, modelAlias?: string, title = "New thread"): Thread {
     if (!this.context.native.prepare("SELECT id FROM workspaces WHERE id=?").get(workspaceId)) throw error(404,"Workspace unavailable.");
-    const preferred = modelAlias ?? this.context.native.prepare("SELECT value FROM settings WHERE key='default_model'").pluck().get() as string | undefined;
+    const preferred = modelAlias;
     const id = randomUUID(), now = new Date().toISOString();
     this.context.native.prepare(`INSERT INTO threads(id,workspace_id,title,status,active_model_alias,created_at,updated_at)
       VALUES(?,?,?,'idle',?,?,?)`).run(id,workspaceId,title,this.modelName(preferred),now,now);
@@ -163,6 +162,7 @@ export class ThreadManager {
     const now = new Date().toISOString();
     const safePrompt = this.context.masker.maskString(prompt);
     const workspace=row.workspace_id;
+    if(this.context.native.prepare("SELECT archived FROM threads WHERE id=?").pluck().get(threadId))throw error(409,"请先恢复已归档的会话。");
     const db=this.context.native;
     const mode=opts.mode??row.execution_mode??"execute";
     const requestHash=clientMsgId && createHash("sha256").update(JSON.stringify([clientMsgId,guestId??null,prompt,imageIds,...(opts.mode==="plan"?["plan"]:[])])).digest("hex");
@@ -368,12 +368,12 @@ export class ThreadManager {
         let unlock:(()=>void)|undefined;
         try {
           const config=readVerifyConfig(this.context,workspaceId);
-          if(config.auto_verify_enabled || task.verify_only) {
+          if((config.auto_verify_enabled && pluginEnabled(db,"auto_verify")) || task.verify_only) {
             const pending=!!db.prepare("SELECT verify_external_pending FROM workspaces WHERE id=?").pluck().get(workspaceId);
             const requiresReview=!!task.external || (pending && !task.verify_only);
             if(!requiresReview) unlock=beginReviewedVerification(workspaceId);
             turn.verifyAbort=new AbortController();
-            const result=await (this.options.verifyGate??runVerifyGate)({root:await this.files.getRoot(workspaceId),data:this.options.dataDirectory,
+            const result=await (this.options.verifyGate??runVerifyGate)({db:this.context.native,root:await this.files.getRoot(workspaceId),data:this.options.dataDirectory,
               config,env:requiresReview?{}:workspaceSecretEnv(this.context,workspaceId,"verify"),masker:this.context.masker,signal:turn.verifyAbort.signal,
               attempt:task.verify_attempt,progress:p=>this.events.append(threadId,"verify_gate_progress",{...p,requires_review:requiresReview,turn_id:taskId},taskId)});
             if(turn.cancelled || this.stopping || result.status==="cancelled") {terminal="cancelled";result.status="cancelled";}
@@ -452,8 +452,11 @@ export class ThreadManager {
   }
 
   private catalogLimits(threadId:string) {
-    const model=this.context.native.prepare("SELECT m.context_window,m.max_output_tokens,m.last_probe_json FROM threads t JOIN models m ON m.alias=t.active_model_alias WHERE t.id=?").get(threadId);
-    return JSON.stringify(model);
+    const alias=this.context.native.prepare("SELECT active_model_alias FROM threads WHERE id=?").pluck().get(threadId) as string;
+    const model=catalogModel(this.context.native,alias);
+    const external=this.context.native.prepare("SELECT 1 FROM tasks WHERE thread_id=? AND status='running' AND (api_key_id IS NOT NULL OR guest_link_id IS NOT NULL)").pluck().get(threadId);
+    return JSON.stringify([model?.context_window,model?.max_output_tokens,model?.last_probe_json,!!external,mcpEntries(this.context.native).map(m=>[m.id,m.url,m.enabled]),
+      this.context.native.prepare("SELECT value FROM settings WHERE key='modules.instructions.revision'").pluck().get()]);
   }
 
   private async open(threadId: string, mode:ExecutorMode) {
@@ -468,7 +471,9 @@ export class ThreadManager {
     const configHome=readOnly || container ? await workspaceDirectory(this.options.dataDirectory,(readOnly?"plan-config/":"executor-config/")+threadId,true) : row.codex_home;
     const cfg = await generateCodexConfig({ ...this.options,native:this.context.native,masterKey:this.context.masterKey,
       port:container ? 3141 : port, defaultModel:row.active_model_alias ?? undefined,tokenTtlSeconds:ttl,
-      thread:{ id:threadId,workspaceId,home:configHome,isolated:container,unrestricted,readOnly,globalInstructions:this.context.masker.maskString(globalInstructions),opsEntry:this.options.opsEntry
+      thread:{ id:threadId,workspaceId,home:configHome,isolated:container,unrestricted,readOnly,
+        external:!!this.context.native.prepare("SELECT 1 FROM tasks WHERE thread_id=? AND status='running' AND (api_key_id IS NOT NULL OR guest_link_id IS NOT NULL)").get(threadId),
+        globalInstructions:this.context.masker.maskString(globalInstructions),opsEntry:this.options.opsEntry
         ?? fileURLToPath(new URL("../../../../packages/ops-mcp/dist/index.js",import.meta.url)) },
     });
     const leases = {model:"cdlease_"+randomBytes(32).toString("hex"),ops:"cdlease_"+randomBytes(32).toString("hex")};
@@ -479,7 +484,7 @@ export class ThreadManager {
     if (this.stopping) throw error(503,"Manager closed.");
     let owner:Session|undefined;
     const output=new OutputMasker(this.context.masker,(method,params)=>this.notify(threadId,method,params,owner));
-    const runner=container ? await isolatedRunner({workspace:cwd,data:this.options.dataDirectory,config:cfg.codexHome,threadId,workspaceId,leases,port,reviewed:!unrestricted,readOnly}) : undefined;
+    const runner=container ? await isolatedRunner({db:this.context.native,workspace:cwd,data:this.options.dataDirectory,config:cfg.codexHome,threadId,workspaceId,leases,port,reviewed:!unrestricted,readOnly}) : undefined;
     if(unrestricted && runner) {
       try {await this.files.markIsolatedHistory(workspaceId);}
       catch(e) {await runner.dispose();throw e;}
@@ -751,3 +756,5 @@ export class ThreadManager {
     await this.queue.drain();
   }
 }
+import {mcpEntries,pluginEnabled} from "../settings/modules.js";
+import {catalogModel} from "../gateway/catalog-route.js";

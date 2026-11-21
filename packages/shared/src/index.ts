@@ -1,4 +1,5 @@
 export * from "./schemas.js";
+export * from "./gateway-policy.js";
 export * from "./preferences.js";
 export * from "./phase2.js";
 export * from "./files.js";
@@ -16,3 +17,4 @@ export * from "./workspace-vault.js";
 export * from "./diff-lines.js";
 export * from "./search.js";
 export * from "./artifact-hub.js";
+export * from "./modules.js";
