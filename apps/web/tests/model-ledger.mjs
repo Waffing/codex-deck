@@ -14,7 +14,9 @@ export async function modelLedgerJourney(page, origin, shot) {
   await editor.getByLabel("余额管理令牌").fill("manage-"+randomBytes(12).toString("hex"));
   await editor.getByRole("button",{name:"保存渠道"}).click();
   await editor.waitFor({state:"hidden"});
-  assert.equal(await card.getByLabel("已保存密钥").locator(".ad-pill").count(),2);
+  const savedKeys=card.getByLabel("已保存密钥").locator(".ad-pill");
+  await savedKeys.nth(1).waitFor();
+  assert.equal(await savedKeys.count(),2);
   assert.ok(!(await page.locator("body").innerText()).includes(key));
   await card.getByRole("button",{name:"刷新余额"}).click();
   await card.getByText("24.5 USD",{exact:true}).waitFor();
