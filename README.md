@@ -5,8 +5,9 @@
   <p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
   <p>
     <a href="LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/github/license/Waffing/codex-deck?style=flat-square"></a>
-    <a href="https://github.com/Waffing/codex-deck/actions/workflows/ci.yml"><img alt="CI 状态" src="https://img.shields.io/github/actions/workflow/status/Waffing/codex-deck/ci.yml?branch=main&amp;label=CI&amp;style=flat-square"></a>
-    <a href="https://github.com/Waffing/codex-deck/pkgs/container/codex-deck"><img alt="GHCR 镜像发布版本" src="https://img.shields.io/github/v/release/Waffing/codex-deck?label=GHCR&amp;style=flat-square"></a>
+    <a href="https://github.com/Waffing/codex-deck/actions/workflows/ci.yml?query=branch%3Amain"><img alt="main 构建与测试" src="https://github.com/Waffing/codex-deck/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+    <a href="https://github.com/Waffing/codex-deck/releases/latest"><img alt="最新正式版" src="https://img.shields.io/github/v/release/Waffing/codex-deck?label=Release&amp;style=flat-square"></a>
+    <a href="https://github.com/Waffing/codex-deck/commits/main/"><img alt="main 最近提交" src="https://img.shields.io/github/last-commit/Waffing/codex-deck/main?label=main&amp;style=flat-square"></a>
     <a href="#本地开发"><img alt="Node.js 22+" src="https://img.shields.io/badge/Node.js-22%2B-339933?style=flat-square"></a>
     <a href="https://github.com/Waffing/codex-deck/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/Waffing/codex-deck?style=flat-square"></a>
   </p>
@@ -20,15 +21,28 @@
   </p>
 </div>
 
+## V1.3 工作台
+
+V1.3 已通过候选版验收，可从下方的已验证源码试用。Docker 一键安装使用顶部 **Release** 徽章所示的正式版。
+
+| 使用场景 | 操作与效果 |
+| --- | --- |
+| 继续昨天的长对话 | 首屏先显示最近 12 轮，上滑再加载更早记录。管理员可使用本地缓存，访客记录只在页面内存中保留。 |
+| 网络慢时发送任务 | 按回车即可看到提问和等待指示。发送失败可在原消息旁重试，同一条提问只创建一个任务。 |
+| 在自己的项目中免审执行 | 在对话输入框选择 **工作区权限 → 完全访问**，下一轮起管理员可直接运行命令、测试和已启用的部署操作。需要 Linux 非 root 控制面和可用的 Docker 隔离执行器。访客和 Open API 任务沿用各自的审批策略。 |
+| 只看交付结果 | 默认优先展示文档、图片、压缩包等成品。源码归入本轮改动，可展开查看。四套皮肤可选，默认只为新审批和报错播放提示音。 |
+
+浏览器验收在 120 轮对话中连续输入 40 次，已完成回合重渲染 0 次。真实 Codex 在隔离容器中完成了测试、预发布、上线和回滚。[V1.3 验收记录](https://github.com/Waffing/codex-deck/actions/runs/44880378042) · [已验证源码](https://github.com/Waffing/codex-deck/tree/c392f5d0341d4dd0b8d8f6dda3936e78106fb69e)
+
 ## 快速开始
 
-**Linux Docker Compose（amd64 或 arm64）**
+**安装最新正式版 · Linux Docker Compose（amd64 或 arm64）**。下面的命令始终安装最新 GitHub Release 对应的镜像。[发布说明](https://github.com/Waffing/codex-deck/releases/latest) · [GHCR 镜像与标签](https://github.com/Waffing/codex-deck/pkgs/container/codex-deck)
 
 ```sh
 release=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffing/codex-deck/releases/latest) && tag=${release##*/} && curl -fsSL "https://raw.githubusercontent.com/Waffing/codex-deck/$tag/deploy/install.sh" | CODEXDECK_VERSION="$tag" bash
 ```
 
-V1.2 安装器默认只监听 `127.0.0.1:3000`。通过 SSH 执行 `cdx password` 设置管理员密码，复制安装后的隧道命令，登录面板后配置模型和工作区。非交互安装可传入 `--local-only`。选择 `--public` 会额外开启高位 HTTPS 端口并生成 8 位随机入口。使用 IP 登录前，通过 SSH 运行 `cdx status`，核对自签名证书的 SHA-256 指纹。以上参数要求安装包含 V1.2 的发布版本。
+**首次登录**请按安装器输出的地址和初始化命令操作。使用 `v0.1.1` 的 Docker 安装时，在安装目录执行 `docker compose exec codexdeck cat /data/setup-code`，将一次性代码填入设置向导并创建管理员密码。使用包含 V1.2 宿主机工具的版本时，通过 SSH 运行 `cdx password`。公网入口和证书指纹的核对方法见[宿主机运维指南](deploy/HOST-ADMIN.md)。
 
 `tag` 让安装脚本、Compose 文件和镜像使用同一已发布版本。指定版本时，把 `tag` 改成已发布的 `vX.Y.Z`。需要 Chromium 验收时追加 `--with-playwright`。
 
@@ -218,7 +232,10 @@ pnpm test
 
 - [x] **V1 基础能力** · 协议网关、凭证隔离、审批、签名产物、Open API 和部署验收。
 - [x] **V1 控制台** · 桌面工作台、移动端审批、供应商探测和可续传事件。
-- [ ] **发布验证** · 跟踪两个目标架构的发布 CI 和冒烟结果，确定可用的 npm 包名。
+- [x] **V1.1 模型与账本** · 多 Key 轮询、模型测速、上下文压缩和按回合统计用量。
+- [x] **V1.2 访问控制** · 公网入口、设备会话管理和限定工作区的访客链接。
+- [x] **V1.3 工作台验收** · 历史分页、本地缓存、即时发送和按工作区启用的隔离执行。
+- [ ] **npm 分发** · 选定可用包名并发布 CLI。
 - [ ] **V2 规划** · 加强业务容器隔离、扩充供应商兼容性覆盖并改进部署恢复。
 
 ## 贡献与许可证

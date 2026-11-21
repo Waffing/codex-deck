@@ -5,8 +5,9 @@
   <p><a href="README.md">简体中文</a> · <strong>English</strong></p>
   <p>
     <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/Waffing/codex-deck?style=flat-square"></a>
-    <a href="https://github.com/Waffing/codex-deck/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/Waffing/codex-deck/ci.yml?branch=main&amp;label=CI&amp;style=flat-square"></a>
-    <a href="https://github.com/Waffing/codex-deck/pkgs/container/codex-deck"><img alt="GHCR image release version" src="https://img.shields.io/github/v/release/Waffing/codex-deck?label=GHCR&amp;style=flat-square"></a>
+    <a href="https://github.com/Waffing/codex-deck/actions/workflows/ci.yml?query=branch%3Amain"><img alt="Build and tests on main" src="https://github.com/Waffing/codex-deck/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+    <a href="https://github.com/Waffing/codex-deck/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Waffing/codex-deck?label=Release&amp;style=flat-square"></a>
+    <a href="https://github.com/Waffing/codex-deck/commits/main/"><img alt="Last commit on main" src="https://img.shields.io/github/last-commit/Waffing/codex-deck/main?label=main&amp;style=flat-square"></a>
     <a href="#development"><img alt="Node.js 22 or newer" src="https://img.shields.io/badge/Node.js-22%2B-339933?style=flat-square"></a>
     <a href="https://github.com/Waffing/codex-deck/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Waffing/codex-deck?style=flat-square"></a>
   </p>
@@ -20,15 +21,28 @@
   </p>
 </div>
 
+## V1.3 workbench
+
+The V1.3 candidate passed its acceptance tests. Use the tested source linked below to try it. The one-line Docker installer follows the official version shown in the **Release** badge above.
+
+| When you want to… | What happens |
+| --- | --- |
+| Pick up a long conversation | Open the latest 12 turns and scroll up for earlier ones. Administrators can cache recent conversations locally. Guest history stays in page memory. |
+| Send a task on a slow connection | Press Enter to see your message and its pending indicator immediately. Retry a failed send from the same message without creating a second task. |
+| Run your own project without approval prompts | Select **工作区权限 → 完全访问** (Workspace permissions → Full access) in the composer. From the next turn, administrator commands, tests and enabled deployment actions run in a dedicated container. This requires a non-root Linux controller and a working Docker executor. Guests and Open API callers keep their own approval policies. |
+| Find the deliverable | Documents, images and archives appear below the reply. Expand the turn’s changed files for source code. Choose from four skins. By default, only new approvals and errors play a sound. |
+
+In the browser test, 40 inputs in a 120-turn conversation triggered zero re-renders of completed turns. In the Docker test, Codex ran project tests, staged and promoted releases, and performed a rollback. [V1.3 test run](https://github.com/Waffing/codex-deck/actions/runs/44880378042) · [Tested source](https://github.com/Waffing/codex-deck/tree/c392f5d0341d4dd0b8d8f6dda3936e78106fb69e)
+
 ## Quick Start
 
-**Docker Compose on Linux (amd64 or arm64)**
+**Install the latest release with Docker Compose on Linux (amd64 or arm64).** This command installs the image corresponding to the latest GitHub Release. [Release notes](https://github.com/Waffing/codex-deck/releases/latest) · [GHCR images and tags](https://github.com/Waffing/codex-deck/pkgs/container/codex-deck)
 
 ```sh
 release=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffing/codex-deck/releases/latest) && tag=${release##*/} && curl -fsSL "https://raw.githubusercontent.com/Waffing/codex-deck/$tag/deploy/install.sh" | CODEXDECK_VERSION="$tag" bash
 ```
 
-The V1.2 installer defaults to a loopback console on `127.0.0.1:3000`. Set the first administrator password over SSH with `cdx password`, open the printed SSH tunnel, then sign in and choose a provider and workspace. Pass `--local-only` to select this mode in scripts. Select `--public` for an additional high-port HTTPS listener and an eight-character entrance path. For direct IP access, compare the certificate fingerprint against `cdx status` over SSH before trusting the certificate. These options require a release containing V1.2.
+**First sign-in.** Follow the address and setup instructions printed by your installer. For Docker release `v0.1.1`, run `docker compose exec codexdeck cat /data/setup-code` in the installation directory. Enter the one-time code in the setup wizard and create your administrator password. Versions that include the V1.2 host tools use `cdx password` over SSH. For public access and certificate fingerprint checks, see the [host operations guide](deploy/HOST-ADMIN.md).
 
 Managed application containers default to 1 CPU, 512 MiB of memory, and 128 processes. `CODEXDECK_RELEASE_KEEP` retains five recent snapshots by default, while the live release and its immediate rollback predecessor stay protected. On restart the controller adopts only containers carrying CodexDeck ownership labels.
 
@@ -220,7 +234,10 @@ Run `pnpm dev:server` and `pnpm dev:web` in separate terminals. The API defaults
 
 - [x] **V1 foundations** · Protocol gateway, provider key isolation, approvals, signed artifacts, Open API and deployment verification.
 - [x] **V1 console** · Desktop workbench, mobile approvals, provider probes and resumable events.
-- [ ] **Release validation** · Track release-specific CI results and smoke tests on both target architectures. Select an available npm package name.
+- [x] **V1.1 models and usage** · Multi-key rotation, model benchmarks, context compaction and per-turn usage.
+- [x] **V1.2 access control** · Public access, device session management and workspace-scoped guest invitations.
+- [x] **V1.3 workbench validation** · Paged history, local caching, optimistic sends and opt-in isolated execution per workspace.
+- [ ] **npm distribution** · Choose an available package name and publish the CLI.
 - [ ] **V2 plans** · Strengthen workload isolation, expand provider compatibility coverage and improve deployment recovery.
 
 ## Contributing & License
