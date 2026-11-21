@@ -59,8 +59,14 @@ export async function performanceJourney(browser,context,origin,db,instrument){
     await page.evaluate(()=>{window.__historyTurnCalls=0;});
     await debuggerSession.send("Debugger.setBreakpointOnFunctionCall",{objectId:result.objectId,
       condition:"(window.__historyTurnCalls++, false)"});
-    const earlier=page.getByRole("button",{name:"加载更早的记录"});
-    for(let i=0;i<9;i++)await earlier.click();
+    // Scrolling to the button can itself load a page. Wait for the mounted history
+    // to grow after each upward gesture, including on the last page.
+    const history=page.locator("article[data-turn]");
+    await page.locator(".cd-chat-scroll").hover();
+    for(let count=await history.count();count<120;count=await history.count()) {
+      await page.mouse.wheel(0,-100000);
+      await page.waitForFunction(previous=>document.querySelectorAll("article[data-turn]").length>previous,count);
+    }
     await page.getByText("历史样本 1",{exact:true}).waitFor();
     assert.equal(await page.locator("article[data-turn]").count(),120);
     // Positive control: all 108 newly mounted history items must have called the component.
