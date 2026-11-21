@@ -127,6 +127,13 @@ For key rotation, back up first, stop the service and supply the new random 32-b
 
 *Screenshots show the local console with synthetic test data.*
 
+### Using the V1.4 quality gates
+
+1. Select **Plan** in the composer. Review the proposed files and checks, then approve the plan to start coding or request a revision.
+2. Open workspace settings to detect or enter verification commands and choose a repair limit from 0 to 5. Verification is opt-in and runs offline by default in a copy of the workspace. Docker installations run each gate in a separate container. Native Linux installations need a running systemd user manager and `/usr/bin/bwrap`.
+3. Import the project's `.env` into the workspace vault and select which values verification or deployment may use. Automatic checks for external tasks use a credential-free environment. An administrator can review the workspace and explicitly rerun checks with the selected credentials.
+4. Annotate changed lines in **Git Diff** or select a different model to review the patch. Send selected findings back to Codex together. Use the thread menu to start a fresh conversation with an architecture handoff.
+
 ## Architecture
 
 ```mermaid

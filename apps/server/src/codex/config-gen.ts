@@ -16,7 +16,7 @@ interface ConfigOptions {
   port: number;
   defaultModel?: string;
   tokenTtlSeconds?: number;
-  thread?: { id: string; workspaceId?:string; home?: string | null; opsEntry: string; globalInstructions: string };
+  thread?: { id: string; workspaceId?:string; home?: string | null; opsEntry: string; globalInstructions: string; isolated?:boolean; unrestricted?:boolean; readOnly?:boolean };
 }
 
 /** The returned env is a complete child environment. Do not merge process.env into it. */
@@ -82,7 +82,8 @@ export async function generateCodexConfig(options: ConfigOptions) {
   // JSON-quoted strings escape Windows paths, quotes and newlines in TOML basic strings.
   const caches:Record<string,string> = {};
   let cacheRoot:string|undefined;
-  if (options.thread && process.platform !== "win32") {
+  const isolated = options.thread?.isolated === true;
+  if (options.thread && !options.thread.readOnly && !isolated && process.platform !== "win32") {
     const scope = options.thread.workspaceId ?? options.thread.id;
     if (!/^[A-Za-z0-9_-]+$/.test(scope)) throw new Error("Invalid workspace cache identifier.");
     cacheRoot=await workspaceDirectory(base,path.join("caches",scope),true);
@@ -94,17 +95,18 @@ export async function generateCodexConfig(options: ConfigOptions) {
     `model_context_window = ${model.context_window}`,
     ...(publicSummaries?['model_reasoning_summary = "auto"']:[]),
     'model_provider = "codexdeck"',
-    `model_catalog_json = ${JSON.stringify(catalogPath)}`,
+    `model_catalog_json = ${JSON.stringify(isolated ? "/run/deck-config/models.json" : catalogPath)}`,
     "",
     ...(options.thread ? [
-      'sandbox_mode = "workspace-write"', 'approval_policy = "on-request"',
+      options.thread.readOnly ? 'sandbox_mode = "read-only"' : options.thread.unrestricted && isolated ? 'sandbox_mode = "danger-full-access"' : 'sandbox_mode = "workspace-write"',
+      options.thread.readOnly || options.thread.unrestricted && isolated ? 'approval_policy = "never"' : 'approval_policy = "on-request"',
       '[shell_environment_policy]', 'inherit = "core"',
       'exclude = ["*TOKEN*", "*KEY*", "CODEX_HOME", "CODEXDECK_*"]',
       ...(cacheRoot ? ["[shell_environment_policy.set]",...Object.entries(caches).map(([k,v])=>`${k} = ${JSON.stringify(v)}`),
         "[sandbox_workspace_write]",`writable_roots = [${JSON.stringify(cacheRoot)}]`] : []),
-      '[mcp_servers.codexdeck_ops]', "command = " + JSON.stringify(process.execPath),
-      "args = [" + JSON.stringify(options.thread.opsEntry) + "]",
-      'env_vars = ["CODEXDECK_OPS_TOKEN", "CODEXDECK_OPS_URL"]',
+      ...(options.thread.readOnly ? [] : ['[mcp_servers.codexdeck_ops]', "command = " + JSON.stringify(isolated ? "/usr/local/bin/node" : process.execPath),
+      "args = [" + JSON.stringify(isolated ? "/app/packages/ops-mcp/dist/index.js" : options.thread.opsEntry) + "]",
+      'env_vars = ["CODEXDECK_OPS_TOKEN", "CODEXDECK_OPS_URL"]']),
     ] : []),
     "[model_providers.codexdeck]",
     'name = "CodexDeck"',
@@ -131,8 +133,10 @@ export async function generateCodexConfig(options: ConfigOptions) {
       env[name] = value;
     }
     const now = Math.floor(Date.now()/1000);
-    env.CODEXDECK_OPS_URL = "http://127.0.0.1:" + port + "/internal/ops";
-    env.CODEXDECK_OPS_TOKEN = signPayload({ aud: "codexdeck-ops", thread_id: options.thread.id, iat: now, exp: now + ttl }, options.masterKey);
+    if (!options.thread.readOnly) {
+      env.CODEXDECK_OPS_URL = "http://127.0.0.1:" + port + "/internal/ops";
+      env.CODEXDECK_OPS_TOKEN = signPayload({ aud: "codexdeck-ops", thread_id: options.thread.id, iat: now, exp: now + ttl }, options.masterKey);
+    }
     await writeFile(await workspaceFile(dataRoot, path.join(codexHome, "AGENTS.md")), masker.maskString(options.thread.globalInstructions),
       { flag, mode: 0o600 });
   }

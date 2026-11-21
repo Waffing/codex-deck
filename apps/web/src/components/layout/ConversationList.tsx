@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Folder, Pin, Ellipsis, Plus, Search } from "lucide-react";
 import type { Thread, Workspace } from "@codexdeck/shared";
 import { api, json } from "../../lib/api";
@@ -9,6 +9,15 @@ interface Props {
   onError: (error: unknown) => void;
 }
 export function ConversationList({workspaces,threads,activeId,pending,open,create,refresh,onError}: Props) {
+  const [now,setNow]=useState(Date.now);
+  useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),60000);return ()=>clearInterval(timer);},[]);
+  function recent(timestamp:string) {
+    const minutes=Math.max(0,Math.floor((now-Date.parse(timestamp))/60000));
+    if(minutes<1)return "刚刚";
+    if(minutes<60)return minutes+" 分钟前";
+    if(minutes<1440)return Math.floor(minutes/60)+" 小时前";
+    return Math.floor(minutes/1440)+" 天前";
+  }
   const [search,setSearch] = useState("");
   const [closed,setClosed] = useState<string[]>([]);
   const [menu,setMenu] = useState<string|null>(null);
@@ -27,7 +36,7 @@ export function ConversationList({workspaces,threads,activeId,pending,open,creat
   function row(t:Thread) {
     return <div key={t.id} className="thread-line">
       <button title={t.title} className={t.id===activeId?"active":""} onClick={()=>open(t)}>
-        <i className={"status-dot "+(pending.has(t.id)?"pending":t.status)}/><span>{t.title}</span>
+        <i className={"status-dot "+(pending.has(t.id)?"pending":t.status)}/><span>{t.title}</span><time dateTime={t.updated_at} title={new Date(t.updated_at).toLocaleString()}>{recent(t.updated_at)}</time>
       </button>
       <button className="thread-menu-toggle" aria-label={"管理 "+t.title} aria-expanded={menu===t.id}
         onClick={()=>{setMenu(menu===t.id?null:t.id);setEdit(null);setTitle(t.title)}}><Ellipsis size={14}/></button>

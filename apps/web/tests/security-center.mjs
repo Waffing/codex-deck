@@ -16,10 +16,10 @@ export async function securityCenterJourney(admin,browser,shot,instrument,passwo
   await tabs.getByRole("button",{name:"安全中心"}).click();
   await admin.getByRole("heading",{name:"活跃设备"}).waitFor();
   await admin.getByRole("button",{name:/填入我当前 IP/}).click();
-  await admin.getByLabel("IP 访问规则").selectOption("allow");
+  await admin.getByRole("radiogroup",{name:"IP 访问规则"}).getByRole("radio",{name:"白名单"}).click();
   await admin.getByRole("button",{name:"保存安全策略"}).click();
   await admin.getByText("安全策略已保存").waitFor();
-  await admin.getByLabel("IP 访问规则").selectOption("off");
+  await admin.getByRole("radiogroup",{name:"IP 访问规则"}).getByRole("radio",{name:"关闭"}).click();
   await admin.getByRole("button",{name:"保存安全策略"}).click();
   await admin.getByText("安全策略已保存").waitFor();
   await admin.getByRole("heading",{name:"设置与安全中心"}).scrollIntoViewIfNeeded();
@@ -28,7 +28,7 @@ export async function securityCenterJourney(admin,browser,shot,instrument,passwo
   await tabs.getByRole("button",{name:"临时访问管理"}).click();
   await admin.getByRole("button",{name:"创建临时链接"}).click();
   await admin.getByLabel("邀请名称").fill("设计评审");
-  await admin.getByLabel("console-lab").check();
+  await admin.getByLabel("console-lab").click();
   await admin.getByLabel("轮次上限").fill("2");
   await admin.getByRole("button",{name:"生成邀请"}).click();
   const [url,codeText]=(await admin.getByLabel("邀请文案").inputValue()).split("\n");
@@ -48,7 +48,7 @@ export async function securityCenterJourney(admin,browser,shot,instrument,passwo
     await page.locator(".md-document").first().waitFor();
     const article=admin.locator("article").filter({hasText:"设计评审"});
     await article.getByRole("button",{name:"续期 / 加额"}).click();
-    await admin.getByLabel("延长有效期").selectOption("6");
+    await admin.getByRole("radio",{name:"+6 小时",exact:true}).click();
     await admin.getByLabel("追加轮次").fill("3");
     await admin.getByRole("button",{name:"保存增量"}).click();
     await article.getByText("轮次 0 / 5").waitFor();

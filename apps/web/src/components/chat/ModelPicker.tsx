@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Cpu, SlidersHorizontal } from "lucide-react";
 import type { Model, Provider, Thread, Workspace } from "@codexdeck/shared";
 import { api, json } from "../../lib/api";
-export const automationLabels = { conservative: "保守", semi: "半自动", full: "全自动" };
+export const automationLabels = { conservative: "保守", semi: "半自动", full: "全自动", unrestricted:"完全权限" };
 export function ModelPicker({
   thread,
   models,

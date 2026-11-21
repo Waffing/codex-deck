@@ -1,3 +1,4 @@
+import {SegmentedControl,NumberControl} from "./Controls";
 import { useEffect, useState } from "react";
 import { Download } from "lucide-react";
 import type { AnalyticsQuery, AnalyticsReport, BudgetAlert, UsageBudget } from "@codexdeck/shared";
@@ -15,8 +16,8 @@ function Trend({data}:{data:AnalyticsReport["trend"]}) {
   if(!points.length)return <p className="ad-detail">网关完成请求后，这里显示用量趋势。</p>;
   const max=Math.max(...points.map(p=>p.value),0);
   return <figure className="usage-trend"><div className="ad-labelrow"><figcaption>用量趋势 <small>UTC · 最近 {points.length} 个有记录的周期</small></figcaption>
-    <select aria-label="趋势指标" value={metric} onChange={e=>setMetric(e.target.value as typeof metric)}>
-      <option value="tokens">Token</option><option value="cost_usd">USD</option><option value="cost_cny">CNY</option></select></div>
+    <SegmentedControl aria-label="趋势指标" value={metric} onValueChange={next=>setMetric(next as typeof metric)}>
+      <option value="tokens">Token</option><option value="cost_usd">USD</option><option value="cost_cny">CNY</option></SegmentedControl></div>
     <div className="usage-bars" aria-label="历史趋势图">{points.map(p=><div key={p.date} tabIndex={0} title={`${p.date} · ${format(p.value,8)} ${metric}`}
       aria-label={`${p.date} ${p.value}`} style={{height:`${max?p.value/max*100:0}%`}}/>)}</div>
     <div className="ad-labelrow"><small>{points[0].date}</small><small>{points.at(-1)?.date}</small></div></figure>;
@@ -56,7 +57,7 @@ export function UsageLedger() {
     <details className="ad-form-panel ad-form"><summary>预算告警</summary>
       {budget&&<form onSubmit={e=>{e.preventDefault();void a.run(async()=>{await api("/api/usage/budget",json("PUT",budget));await loadBudget()},"预算已保存")}}>
         <div className="ad-form-grid">{(Object.keys(limitNames) as (keyof UsageBudget)[]).map(k=><label key={k}>{limitNames[k]}
-          <input type="number" step="any" min="0" placeholder="未设置" value={budget[k]??""} onChange={e=>setBudget({...budget,[k]:e.target.value===""?null:Number(e.target.value)})}/></label>)}</div>
+          <NumberControl step="any" min="0" placeholder="未设置" value={budget[k]??""} onChange={e=>setBudget({...budget,[k]:e.target.value===""?null:Number(e.target.value)})}/></label>)}</div>
         <p className="ad-detail">按 UTC 结算。达到上限时写入一次告警并通知已启用的渠道。</p><button className="ad-button" disabled={a.busy}>保存预算</button></form>}
     </details>
     {alerts.map(v=><p key={v.kind} className="ad-message caution">{v.period} · {limitNames[v.kind]} 达到预算 {format(v.limit,8)}，已用 {format(v.spent,8)}</p>)}

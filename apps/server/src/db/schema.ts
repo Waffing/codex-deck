@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text, primaryKey } from "drizzle-orm/sqlite-core";
+import { blob, integer, real, sqliteTable, text, primaryKey, unique, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
@@ -34,6 +34,7 @@ export const models = sqliteTable("models", {
   capabilitiesJson: text("capabilities_json").notNull().default("[]"),
   lastBenchmarkJson: text("last_benchmark_json"),
   lastProbeJson: text("last_probe_json"),
+  confirmedFree: integer("confirmed_free", {mode:"boolean"}).notNull().default(false),
   pricingCurrency: text("pricing_currency").notNull().default("USD"),
   costInputCnyPerMillion: real("cost_input_cny_per_million").notNull().default(0),
   costOutputCnyPerMillion: real("cost_output_cny_per_million").notNull().default(0),
@@ -51,6 +52,12 @@ export const models = sqliteTable("models", {
 });
 
 export const workspaces = sqliteTable("workspaces", {
+  verifyCommandsJson: text("verify_commands_json").notNull().default("[]"),
+  autoVerifyEnabled: integer("auto_verify_enabled",{mode:"boolean"}).notNull().default(false),
+  verifyNetworkEnabled: integer("verify_network_enabled",{mode:"boolean"}).notNull().default(false),
+  verifyExternalPending:integer("verify_external_pending",{mode:"boolean"}).notNull().default(false),
+  maxSelfHealRetries: integer("max_self_heal_retries").notNull().default(2),
+  reviewModelAlias: text("review_model_alias"),
   automationLevel: text("automation_level").notNull().default("conservative"),
   status: text("status").notNull().default("ready"),
   id: text("id").primaryKey(),
@@ -61,6 +68,11 @@ export const workspaces = sqliteTable("workspaces", {
 });
 
 export const threads = sqliteTable("threads", {
+  executionMode: text("execution_mode").notNull().default("execute"),
+  parentThreadId: text("parent_thread_id").references(():AnySQLiteColumn=>threads.id,{onDelete:"set null"}),
+  handoffDoc: text("handoff_doc"),
+  planTurnId: text("plan_turn_id"),
+  executorMode: text("executor_mode").notNull().default("standard"),
   pinned: integer("pinned", {mode:"boolean"}).notNull().default(false),
   lastContextTokens: integer("last_context_tokens"),
   compactedSummary: text("compacted_summary"),
@@ -100,6 +112,7 @@ export const approvals = sqliteTable("approvals", {
 });
 
 export const artifacts = sqliteTable("artifacts", {
+  sizeBytes: integer("size_bytes"),
   contentSha256: text("content_sha256"),
   workspaceId: text("workspace_id").references(() => workspaces.id, { onDelete: "cascade" }),
   turnId: text("turn_id"),
@@ -149,6 +162,7 @@ export const usageLogs = sqliteTable("usage_logs", {
   requestedAlias: text("requested_alias").notNull(),
   inputTokens: integer("input_tokens").notNull(),
   outputTokens: integer("output_tokens").notNull(),
+  pricedCurrency: text("priced_currency"),
   costUsd: real("cost_usd").notNull(),
   latencyMs: integer("latency_ms"),
   statusCode: integer("status_code"),
@@ -183,6 +197,11 @@ export const guestSessions = sqliteTable("guest_sessions", {
   lastSeenAt:text("last_seen_at").notNull(),workspaceId:text("workspace_id"),
 });
 export const tasks = sqliteTable("tasks", {
+  executionMode:text("execution_mode").notNull().default("execute"),
+  verifyRootId:text("verify_root_id"), verifyAttempt:integer("verify_attempt").notNull().default(0),
+  planSourceId:text("plan_source_id").unique(),
+  reviewFeedbackHash:text("review_feedback_hash"),
+  verifyOnly:integer("verify_only",{mode:"boolean"}).notNull().default(false),
   guestLinkId:text("guest_link_id").references(()=>tempAccessLinks.id),
   answerMarkdown: text("answer_markdown"),
   turnDiffJson: text("turn_diff_json"),
@@ -200,6 +219,36 @@ export const tasks = sqliteTable("tasks", {
   webhookNextAt: integer("webhook_next_at").notNull().default(0),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
+});
+
+export const codeReviews = sqliteTable("code_reviews", {
+  id:text("id").primaryKey(), threadId:text("thread_id").notNull().references(()=>threads.id,{onDelete:"cascade"}),
+  turnId:text("turn_id").references(()=>tasks.id,{onDelete:"cascade"}),
+  workspaceId:text("workspace_id").notNull().references(()=>workspaces.id,{onDelete:"cascade"}),
+  reviewerModelAlias:text("reviewer_model_alias").notNull(), diffHash:text("diff_hash").notNull(),
+  summary:text("summary").notNull(), findingsJson:text("findings_json").notNull(),
+  truncated:integer("truncated",{mode:"boolean"}).notNull().default(false), createdAt:text("created_at").notNull(),
+});
+export const workspaceSecrets = sqliteTable("workspace_secrets", {
+  id:text("id").primaryKey(), workspaceId:text("workspace_id").notNull().references(()=>workspaces.id,{onDelete:"cascade"}),
+  keyName:text("key_name").notNull(), valueEnc:text("value_enc").notNull(), description:text("description").notNull().default(""),
+  injectOnVerify:integer("inject_on_verify",{mode:"boolean"}).notNull().default(false),
+  injectOnDeploy:integer("inject_on_deploy",{mode:"boolean"}).notNull().default(false),
+  createdAt:text("created_at").notNull(), updatedAt:text("updated_at").notNull(),
+}, table=>[unique().on(table.workspaceId,table.keyName)]);
+
+export const threadTurns = sqliteTable("thread_turns", {
+  id:text("id").primaryKey().references(()=>tasks.id,{onDelete:"cascade"}),
+  threadId:text("thread_id").notNull().references(()=>threads.id,{onDelete:"cascade"}),
+  turnIndex:integer("turn_index").notNull(), clientMsgId:text("client_msg_id"), requestHash:text("request_hash"),
+  userContent:text("user_content").notNull(), assistantMarkdown:text("assistant_markdown"),
+  timelineSummaryJson:text("timeline_summary_json"), artifactsSummaryJson:text("artifacts_summary_json"),
+  telemetryJson:text("telemetry_json"), summaryOnly:integer("summary_only",{mode:"boolean"}).notNull().default(false),
+  status:text("status").notNull(), latestSeqId:integer("latest_seq_id").notNull().default(0),
+  createdAt:text("created_at").notNull(), updatedAt:text("updated_at").notNull(),
+});
+export const turnAnswerReplay = sqliteTable("turn_answer_replay", {
+  turnId:text("turn_id").primaryKey().references(()=>threadTurns.id,{onDelete:"cascade"}),frames:blob("frames").notNull(),
 });
 
 export const checkpoints = sqliteTable("checkpoints", {
@@ -233,9 +282,10 @@ export const auditLogs=sqliteTable("audit_logs",{
   detailsJson:text("details_json").notNull(),createdAt:text("created_at").notNull(),
 });
 export const schema = {
+  codeReviews,workspaceSecrets,
   tempAccessLinks,guestSessions,
   taskSubmissions,adminAudit,userSessions,loginBans,auditLogs,
-  tasks,
+  tasks,threadTurns,turnAnswerReplay,
   checkpoints,
   settings,
   providers,

@@ -12,7 +12,7 @@ afterEach(() => {
 it("移到掌上布局时移除首页已展示的同一张审批卡和它的 Enter 快捷键", async () => {
   const media = Object.assign(new EventTarget(), { matches: false });
   vi.stubGlobal("matchMedia", () => media);
-  const fetcher = vi.fn(async () => Response.json({ tasks: [], artifacts: [] }));
+  const fetcher = vi.fn(async () => Response.json({turns:[],active_turn:null,has_more:false,latest_seq_id:0}));
   vi.stubGlobal("fetch", fetcher);
   const time = new Date().toISOString();
   const workspace = workspaceSchema.parse({

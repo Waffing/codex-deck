@@ -8,6 +8,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+import {harnessResponse,qualityJourney} from "./quality-harness.mjs";
+import {performanceJourney} from "./performance.mjs";
 import {securityCenterJourney} from "./security-center.mjs";
 import {modelLedgerJourney} from "./model-ledger.mjs";
 import { createServer, parseGatewayConfig } from "../../server/dist/app.js";
@@ -31,6 +33,12 @@ const mock = httpServer(async (req,res) => {
   for await (const chunk of req) chunks.push(chunk);
   const body = JSON.parse(Buffer.concat(chunks).toString());
   const native = req.url === "/v1/responses";
+  const harness=harnessResponse(native?body.instructions:body.messages?.find(m=>m.role==="system")?.content);
+  if(harness){
+    const usage={input_tokens:17,output_tokens:12};
+    const result=native?{id:"resp_harness",status:"completed",output:[{type:"message",content:[{type:"output_text",text:harness}]}],usage}:{choices:[{message:{content:harness}}],usage:{prompt_tokens:17,completion_tokens:12}};
+    return res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify(result));
+  }
   if (native && body.instructions?.includes("structured handoff")) {
     return res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({
       id:"resp_compact",status:"completed",model:body.model,output:[{type:"message",content:[{type:"output_text",text:"已核对说明与测试，下一步复查部署。"}]}],
@@ -117,7 +125,9 @@ try {
   await submit(desktop,"检查工作区并生成验收摘要");
   await desktop.getByText("正在检查工作区。",{exact:true}).waitFor();
   const card=desktop.locator(".cd-pending-stack").getByTestId("approval-card");
-  await card.waitFor();await shot(desktop,"02-approval-desktop");
+  await card.waitFor();
+  await desktop.waitForFunction(()=>document.querySelector('link[rel="icon"]')?.dataset.state==="approval");
+  await shot(desktop,"02-approval-desktop");
   await approve(card);
   const answer="正在检查工作区。已生成验收摘要。";
   await desktop.getByText(answer,{exact:true}).waitFor();
@@ -126,6 +136,20 @@ try {
   await desktop.getByText("执行命令 · 1 次操作").click();
   await desktop.locator(".cd-step-block pre").filter({hasText:"working tree clean"}).waitFor();
   await toggle.click();
+  const files=desktop.locator(".cd-artifacts");
+  await files.getByRole("button",{name:/^report\.docx/}).waitFor();
+  assert.equal(await files.locator('[data-kind="word"]').count(),1);
+  assert.equal(await files.getByText("Dockerfile",{exact:true}).count(),0);
+  const changed=desktop.locator(".cd-turn-changes").last();
+  await changed.locator("summary").click();
+  await changed.getByText("Dockerfile",{exact:true}).waitFor();
+  await changed.locator("summary").click();
+  await desktop.waitForFunction(()=>document.querySelector('link[rel="icon"]')?.dataset.state==="idle");
+  const fileMode=desktop.getByRole("radiogroup",{name:"底部文件栏"});
+  await fileMode.getByRole("radio",{name:"关闭文件栏"}).click();
+  await files.waitFor({state:"hidden"});
+  await fileMode.getByRole("radio",{name:"全部文件"}).click();
+  await files.getByText("Dockerfile",{exact:true}).waitFor();
   await desktop.getByRole("button",{name:/^result\.txt/}).click();
   await desktop.locator(".deck-drawer").getByText("CodexDeck test artifact",{exact:true}).waitFor();
   await shot(desktop,"03-workbench-desktop");
@@ -169,6 +193,12 @@ try {
   await modelLedgerJourney(desktop,origin,shot);
   step="移动端主题、协议抽屉、IME、压缩、测速和账本";
   await mobileExperienceJourney(mobile,shot,fits);
+  for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
+    step="V1.4 计划、批注、复审、交接与保险箱 "+viewport.width;
+    await qualityJourney({browser,context,origin,instrument,submit,shot,viewport});
+  }
+  step="V1.3 缓存、上滑分页、输入帧与乐观发送";
+  await performanceJourney(browser,context,origin,db.native,instrument);
   step="V1.2 设置、管理员与访客双会话";
   await securityCenterJourney(desktop,browser,shot,instrument,testPassword);
   assert.deepEqual(failures,{pageErrors:[],consoleErrors:[],http5xx:[]});

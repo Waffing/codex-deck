@@ -11,47 +11,29 @@ export function mergeEvents(prev:ThreadEvent[],batch:ThreadEvent[],thread:string
   for(const e of batch) if(e.thread_id===thread && !records.has(e.seq_id)) records.set(e.seq_id,e);
   return [...records.values()].sort((a,b)=>a.seq_id-b.seq_id);
 }
-export function lastContiguous(events:ThreadEvent[],from=0){
-  let seq=from;
-  for(const e of events) {if(e.seq_id<=seq) continue;if(e.seq_id!==seq+1) break;seq=e.seq_id;}
-  return seq;
-}
-function restore(id:string):{events:ThreadEvent[];cursor:number} {
-  try {
-    const data=JSON.parse(sessionStorage.getItem(prefix+id)??"[]");
-    const parsed=threadEventSchema.array().safeParse(Array.isArray(data)?data:data.events);
-    if (parsed.success) {
-      const events=mergeEvents([],parsed.data,id).slice(-512);
-      return {events,cursor:Array.isArray(data)?lastContiguous(parsed.data):Math.max(0,Number(data.cursor)||0)};
-    }
-  }catch{/* A fresh client can replay from the beginning. */}
-  return {events:[],cursor:0};
+export function discardThrough(thread:string,seq:number){
+  const current=useRealtime.getState();
+  if(current.thread===thread && current.events.some(e=>e.seq_id<=seq)){
+    useRealtime.setState({events:current.events.filter(e=>e.seq_id>seq)});
+  }
 }
 export function clearRealtime(){
   for(const key of Object.keys(sessionStorage)) if(key.startsWith(prefix)) sessionStorage.removeItem(key);
   useRealtime.setState({thread:"",events:[],state:"offline",heartbeat:null,approvals:null});
 }
-export function connectEvents(thread:string,onChange:()=>void,onUnauthorized:()=>void,debug=false){
+export function connectEvents(thread:string,onChange:()=>void,onUnauthorized:()=>void,initialCursor:number,debug=false){
   let closed=false, attempt=0, socket:WebSocket|undefined;
   let retry:ReturnType<typeof setTimeout>|undefined, flush:ReturnType<typeof setTimeout>|undefined;
   let refresh:ReturnType<typeof setTimeout>|undefined;
   let pending:ThreadEvent[]=[];
-  const saved=debug?{events:[],cursor:0}:restore(thread);
-  let cursor=saved.cursor;
-  useRealtime.setState({thread,events:saved.events,state:"connecting"});
+  let cursor=initialCursor;
+  useRealtime.setState({thread,events:[],state:"connecting"});
   function apply(){
     clearTimeout(flush);flush=undefined;
     if(!pending.length)return;
     const combined=mergeEvents(useRealtime.getState().events,pending,thread);
-    cursor=lastContiguous(combined,cursor);
-    const events=combined.slice(-512);
-    pending=[];useRealtime.setState({events});
-    if(debug)return;
-    try{
-      let keep=events, snapshot=JSON.stringify({cursor,events:keep});
-      while(snapshot.length>256*1024 && keep.length){keep=keep.slice(Math.ceil(keep.length/2));snapshot=JSON.stringify({cursor,events:keep});}
-      sessionStorage.setItem(prefix+thread,snapshot);
-    }catch{/* On reload the server replays from the last complete saved snapshot. */}
+    cursor=Math.max(cursor,combined.at(-1)?.seq_id??0);
+    pending=[];useRealtime.setState({events:combined});
   }
   function changed(){if(!refresh)refresh=setTimeout(()=>{refresh=undefined;onChange();},35);}
   function open(){
@@ -61,7 +43,7 @@ export function connectEvents(thread:string,onChange:()=>void,onUnauthorized:()=
     if(thread){url.searchParams.set("thread_id",thread);url.searchParams.set("last_seq_id",String(cursor));}
     if(debug)url.searchParams.set("debug","true");
     const ws=new WebSocket(url);socket=ws;
-    ws.onopen=()=>{attempt=0;useRealtime.setState({state:"online"});changed();};
+    ws.onopen=()=>{if(attempt>0)changed();attempt=0;useRealtime.setState({state:"online"});};
     ws.onmessage=({data})=>{
       let frame;
       try{frame=JSON.parse(String(data));}catch{return;}
@@ -72,7 +54,8 @@ export function connectEvents(thread:string,onChange:()=>void,onUnauthorized:()=
         apply();cursor=Math.max(cursor,frame.seq_id);
       }else if(frame.type==="approvals_count"){useRealtime.setState({approvals:frame.count});changed();}
       else if(frame.type==="heartbeat"){useRealtime.setState({heartbeat:frame});}
-      else if(frame.type==="thread_changed"){changed();}
+      else if(frame.type==="thread_changed"||frame.type==="thread_updated"){changed();}
+      else if(frame.type==="activity"){window.dispatchEvent(new CustomEvent("codexdeck:activity",{detail:frame}));}
     };
     ws.onclose=(event)=>{
       if(closed)return;
@@ -84,5 +67,5 @@ export function connectEvents(thread:string,onChange:()=>void,onUnauthorized:()=
   open();
   window.addEventListener("pagehide",apply);
   return ()=>{closed=true;clearTimeout(retry);clearTimeout(refresh);window.removeEventListener("pagehide",apply);apply();
-    if(socket){socket.onclose=null;socket.onmessage=null;socket.onopen=null;socket.close();}};
+    if(socket){socket.onclose=null;socket.onmessage=null;if(socket.readyState===WebSocket.CONNECTING)socket.onopen=()=>socket?.close();else{socket.onopen=null;socket.close();}}};
 }

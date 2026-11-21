@@ -6,18 +6,65 @@ import { Transform } from "node:stream";
 import { lookup } from "mime-types";
 import type { ChangeType, Workspace, Artifact } from "@codexdeck/shared";
 import type { ServerContext } from "../app.js";
-import { checkpointDiff,cloneRepository, createCheckpoint, restoreCheckpoint } from "./git.js";
+import { cloneRepository } from "./git.js";
+import { isolatedTracking } from "./isolated-tracking.js";
+import { trackingOperations, type TrackingOperation, type TrackingResult } from "./tracking-operations.js";
 import { ensureDirectory, fileError, missing, openWorkspaceFile, resolveSafeWorkspacePath, saveWorkspaceFile } from "./sandbox.js";
 import { signDownload } from "./signed-url.js";
-import { snapshotFiles, type FileSnapshot } from "./tracker.js";
+import type { FileSnapshot } from "./tracker.js";
+
+function isolationKey(root: string) {
+  return "executor.isolated.path." + createHash("sha256").update(root).digest("hex");
+}
 
 export class WorkspaceFiles {
   private readonly clones = new Map<string, { abort: AbortController; done: Promise<void> }>();
   private readonly activeCheckpoints = new Map<string, string>();
+  private readonly hostTracking = new Map<string, Set<Promise<unknown>>>();
   private readonly workspaceRoot: string;
   constructor(private readonly context: ServerContext, private readonly dataDirectory: string,
     private readonly append: (thread: string, type: string, payload: unknown) => unknown, managedWorkspaceDirectory?: string) {
     this.workspaceRoot = managedWorkspaceDirectory ?? path.join(dataDirectory, "workspaces");
+    // Upgrade installations whose first isolated sessions predate the path marker.
+    const previous = context.native.prepare("SELECT DISTINCT w.path FROM workspaces w JOIN threads t ON t.workspace_id=w.id WHERE t.executor_mode='isolated'").all() as {path:string}[];
+    for (const {path: root} of previous) this.storeIsolation(root);
+  }
+
+  private storeIsolation(root: string) {
+    this.context.native.prepare("INSERT OR IGNORE INTO settings(key,value,updated_at) VALUES(?,'1',?)")
+      .run(isolationKey(root), new Date().toISOString());
+  }
+
+  private isIsolatedRoot(root: string) {
+    return !!this.context.native.prepare("SELECT 1 FROM settings WHERE key=?").pluck().get(isolationKey(root));
+  }
+
+  async hasIsolatedHistory(workspaceId: string) {
+    return this.isIsolatedRoot(await this.getRoot(workspaceId));
+  }
+
+  async markIsolatedHistory(workspaceId: string) {
+    const root = await this.getRoot(workspaceId);
+    this.storeIsolation(root);
+    // New operations now dispatch to Docker. Drain previously started host Git
+    // before a writable, fully privileged project session can get its mount.
+    await Promise.allSettled(this.hostTracking.get(root) ?? []);
+  }
+
+  async track<K extends TrackingOperation>(workspaceId: string, operation: K, turnId = ""): Promise<TrackingResult<K>> {
+    const root = await this.getRoot(workspaceId);
+    if (this.isIsolatedRoot(root)) return isolatedTracking(root, this.dataDirectory, operation, turnId);
+    // Synchronous registration with the marker check makes the transition atomic
+    // with respect to other requests in this control process.
+    const pending = this.hostTracking.get(root) ?? new Set<Promise<unknown>>();
+    this.hostTracking.set(root, pending);
+    const work = trackingOperations[operation](root, turnId);
+    pending.add(work);
+    try { return await work as TrackingResult<K>; }
+    finally {
+      pending.delete(work);
+      if (!pending.size) this.hostTracking.delete(root);
+    }
   }
 
   private async managedRoot() {
@@ -28,7 +75,7 @@ export class WorkspaceFiles {
   }
 
   list(): Workspace[] {
-    return this.context.native.prepare("SELECT * FROM workspaces ORDER BY created_at, id").all() as Workspace[];
+    return this.context.native.prepare("SELECT id,name,path,status,automation_level,created_at,updated_at FROM workspaces ORDER BY created_at, id").all() as Workspace[];
   }
 
   async availableLocalDirectories() {
@@ -130,11 +177,12 @@ export class WorkspaceFiles {
     const directory = await ensureDirectory(this.dataDirectory, "artifact-blobs");
     const temporary = await resolveSafeWorkspacePath(directory, "capture-" + randomUUID());
     const hash = createHash("sha256");
+    let sizeBytes = 0;
     try {
       const output = await open(temporary, "wx", 0o600);
       try {
         await pipeline(handle.createReadStream(), new Transform({
-          transform(chunk, _encoding, done) { hash.update(chunk); done(null,chunk); },
+          transform(chunk, _encoding, done) { sizeBytes+=chunk.length; hash.update(chunk); done(null,chunk); },
         }), output.createWriteStream());
       } finally { await output.close(); }
     } catch (error) {
@@ -150,9 +198,23 @@ export class WorkspaceFiles {
     const rel = path.relative(root, target).split(path.sep).join("/");
     const row: Artifact = { id: randomUUID(), workspace_id: workspaceId, thread_id: threadId, turn_id: turnId,
       name: path.basename(target), path: rel, mime_type: lookup(target) || "application/octet-stream",
-      change_type: changeType, created_at: new Date().toISOString() };
-    this.context.native.prepare("INSERT INTO artifacts(id,workspace_id,thread_id,turn_id,name,path,mime_type,change_type,created_at,content_sha256) VALUES(@id,@workspace_id,@thread_id,@turn_id,@name,@path,@mime_type,@change_type,@created_at,@digest)").run({...row,digest});
+      change_type: changeType, size_bytes:sizeBytes, created_at: new Date().toISOString() };
+    this.context.native.prepare("INSERT INTO artifacts(id,workspace_id,thread_id,turn_id,name,path,mime_type,change_type,created_at,content_sha256,size_bytes) VALUES(@id,@workspace_id,@thread_id,@turn_id,@name,@path,@mime_type,@change_type,@created_at,@digest,@size_bytes)").run({...row,digest});
     return row;
+  }
+
+  async backfillArtifactSizes(turnIds:string[]) {
+    const read=this.context.native.prepare("SELECT id,content_sha256 FROM artifacts WHERE turn_id=? AND size_bytes IS NULL AND content_sha256 IS NOT NULL");
+    const store=this.context.native.prepare("UPDATE artifacts SET size_bytes=? WHERE id=? AND size_bytes IS NULL");
+    for (const turnId of turnIds) {
+      for (const row of read.all(turnId) as {id:string;content_sha256:string}[]) {
+        if (!/^[0-9a-f]{64}$/.test(row.content_sha256)) continue;
+        try {
+          const file=await openWorkspaceFile(this.dataDirectory,"artifact-blobs/"+row.content_sha256);
+          try {store.run((await file.stat()).size,row.id);} finally {await file.close();}
+        } catch(error) {if(!missing(error) && (error as {statusCode?:number}).statusCode!==404) throw error;}
+      }
+    }
   }
 
   async openArtifact(id:string) {
@@ -162,22 +224,20 @@ export class WorkspaceFiles {
   }
 
   async beforeTurn(workspaceId: string, threadId: string, turnId: string): Promise<FileSnapshot> {
-    const root = await this.getRoot(workspaceId);
     if (this.activeCheckpoints.has(workspaceId)) throw fileError(409, "Workspace has an active turn.");
     this.activeCheckpoints.set(workspaceId, turnId);
     try {
-      const snapshot = await snapshotFiles(root);
-      const ref = await createCheckpoint(root, turnId);
+      const { entries, ref } = await this.track(workspaceId, "before", turnId);
       if (ref) this.context.native.prepare("INSERT INTO checkpoints(turn_id,workspace_id,thread_id,ref,created_at) VALUES(?,?,?,?,?)")
         .run(turnId, workspaceId, threadId, ref, new Date().toISOString());
-      return snapshot;
+      return new Map(entries);
     } catch (error) { this.activeCheckpoints.delete(workspaceId); throw error; }
   }
 
   async afterTurn(workspaceId: string, threadId: string, turnId: string, previous: FileSnapshot): Promise<Artifact[]> {
     try {
-      const root = await this.getRoot(workspaceId);
-      const current = await snapshotFiles(root);
+      const { entries, changes } = await this.track(workspaceId, "after", turnId);
+      const current = new Map(entries);
       const artifacts = this.context.native.prepare("SELECT * FROM artifacts WHERE workspace_id=? AND thread_id=? AND turn_id=?")
         .all(workspaceId,threadId,turnId) as Artifact[];
       const registered = new Set(artifacts.map(item=>item.path));
@@ -186,7 +246,6 @@ export class WorkspaceFiles {
           artifacts.push(await this.registerArtifact(workspaceId, threadId, turnId, name, previous.has(name) ? "modified" : "added"));
         }
       }
-      const changes=await checkpointDiff(root,turnId);
       const recorded=this.context.native.prepare("SELECT turn_diff_json FROM tasks WHERE id=?").pluck().get(turnId);
       if (changes || !recorded) {
         const all=new Set([...current.keys(),...previous.keys()]);
@@ -199,14 +258,13 @@ export class WorkspaceFiles {
   }
 
   async restore(workspaceId: string, requestedRef: string) {
-    const root = await this.getRoot(workspaceId);
     const turnId = requestedRef.replace(/^refs\/codexdeck\/checkpoints\//, "");
     const row = this.context.native.prepare("SELECT thread_id FROM checkpoints WHERE workspace_id=? AND turn_id=?").get(workspaceId, turnId) as { thread_id: string } | undefined;
     if (!row) throw fileError(404, "Checkpoint not found.");
     if (this.activeCheckpoints.has(workspaceId)) throw fileError(409, "Workspace has an active turn.");
     this.activeCheckpoints.set(workspaceId, turnId);
     try {
-      await restoreCheckpoint(root, turnId);
+      await this.track(workspaceId, "restore", turnId);
       await this.append(row.thread_id, "checkpoint_restored", { turn_id: turnId });
     } finally { this.activeCheckpoints.delete(workspaceId); }
   }

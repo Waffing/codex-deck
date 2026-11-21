@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 const config = await readFile(join(process.env.CODEX_HOME,"config.toml"),"utf8");
 const base = /^base_url = "(.*?)"/m.exec(config)[1];
 const alias = /^model = "(.*?)"/m.exec(config)[1];
-let threadId, turnId;
+let threadId, turnId, readOnly=false;
 let approvalId;
 let consoleItem;
 const emit = frame => process.stdout.write(JSON.stringify(frame) + "\n");
@@ -26,8 +26,10 @@ async function receive(msg) {
   }
   if (method === "thread/start" || method === "thread/resume") {
     threadId = params.threadId ?? randomUUID();
+    readOnly=params.sandbox==="read-only";
     reply({thread:{id:threadId}});
-    notify("fixture/process",{pid:process.pid,method});
+    notify("fixture/process",{pid:process.pid,method,sandbox:params.sandbox,approvalPolicy:params.approvalPolicy,
+      hasOps:!!process.env.CODEXDECK_OPS_TOKEN,opsConfigured:config.includes("[mcp_servers.codexdeck_ops]")});
     return;
   }
   if (method === "turn/start") {
@@ -35,6 +37,12 @@ async function receive(msg) {
     reply({turn:{id:turnId,status:"inProgress",items:[]}});
     notify("turn/started",{turn:{id:turnId,status:"inProgress"}});
     const prompt = params.input[0].text;
+    if(readOnly) {
+      if(params.sandboxPolicy?.type!=="readOnly" || params.approvalPolicy!=="never" || process.env.CODEXDECK_OPS_TOKEN)
+        {end("failed");return;}
+      delta("## 改动文件\n- result.txt\n\n## 实现思路\n按计划实现。\n\n## 风险与验收\n运行项目测试。");
+      end();return;
+    }
     if(prompt==="test effective window") {
       notify("thread/tokenUsage/updated",{turnId,tokenUsage:{modelContextWindow:64000,last:{totalTokens:16000}}});
       delta("Window confirmed.");end();return;
@@ -107,6 +115,8 @@ async function receive(msg) {
     notify("fixture/approval",{decision:msg.result?.decision});
     if (consoleItem && ["accept","acceptForSession"].includes(msg.result?.decision)) {
       await writeFile(join(process.cwd(),"result.txt"),"CodexDeck test artifact\n");
+      await writeFile(join(process.cwd(),"report.docx"),"Fixture for artifact metadata");
+      await writeFile(join(process.cwd(),"Dockerfile"),"FROM scratch\n");
       notify("item/completed",{turnId,item:{...consoleItem,status:"completed",exitCode:0,aggregatedOutput:"working tree clean"}});
       delta("已生成验收摘要。");
     }

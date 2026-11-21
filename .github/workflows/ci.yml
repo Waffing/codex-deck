@@ -24,6 +24,12 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test
+      - name: Verify native Linux quality gate
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          sudo systemctl start "user@$(id -u).service"
+          CODEXDECK_VERIFY_SMOKE=native node apps/server/tests/verify-sandbox.mjs
       - name: Verify real Codex approvals and compaction recovery
         run: |
           version=$(sed -n 's/^ARG CODEX_VERSION=//p' deploy/Dockerfile)
@@ -77,3 +83,7 @@ jobs:
           export CODEXDECK_SMOKE_CONTAINER=$(docker compose "${files[@]}" ps -q codexdeck)
           docker exec "$CODEXDECK_SMOKE_CONTAINER" sh -c 'test "$(sed -n "s/^Uid:[[:space:]]*\([0-9]*\).*/\1/p" /proc/1/status)" = "$PUID"'
           node apps/server/tests/docker-deployment-smoke.mjs
+          if [[ "$CODEXDECK_REQUIRE_BROWSER" == 0 ]]; then node apps/server/tests/isolated-runner-smoke.mjs; fi
+          if [[ "$CODEXDECK_REQUIRE_BROWSER" == 0 ]]; then
+            docker exec -i --workdir /app/apps/server/dist --user 1000:1000 --env TMPDIR=/workspaces --env CODEXDECK_VERIFY_SMOKE=docker "$CODEXDECK_SMOKE_CONTAINER" node --input-type=module - < apps/server/tests/verify-sandbox.mjs
+          fi

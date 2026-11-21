@@ -1,3 +1,4 @@
+import {ToggleSwitch,SegmentedControl,NumberControl} from "./Controls";
 import {useEffect,useState} from "react";
 import {QRCodeSVG} from "qrcode.react";
 import type {SecurityConfig,SecurityPatch} from "@codexdeck/shared";
@@ -33,21 +34,21 @@ export function SecurityPanel() {
         ["captcha_enabled","登录图形验证码","登录时额外验证图片上的字符。"],
         ["single_session","仅允许一台设备登录","新登录成功后退出其他设备。"],
         ["basic_enabled","外层 HTTP Basic 认证","浏览器会先要求输入独立的外层凭据。"]] as const).map(([key,label,hint])=>
-        <label key={key}><span>{label}<small>{hint}</small></span><input aria-label={label} type="checkbox" checked={value[key]} onChange={e=>change({[key]:e.target.checked})}/></label>)}
+        <label key={key}><span>{label}<small>{hint}</small></span><ToggleSwitch aria-label={label} checked={value[key]} onCheckedChange={next=>change({[key]:next})}/></label>)}
       <label>安全入口路径<input value={value.entry_path} minLength={9} maxLength={65} onChange={e=>change({entry_path:e.target.value})}/></label>
       <button className="ad-button" type="button" onClick={()=>change({entry_path:"/"+Array.from(crypto.getRandomValues(new Uint8Array(8)),n=>"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-"[n%64]).join("")})}>随机入口</button>
-      <label>未授权访问页<select value={value.disguise} onChange={e=>change({disguise:e.target.value as SecurityConfig["disguise"]})}><option value="nginx_404">Nginx 404</option><option value="blank_200">白页 200</option><option value="forbidden_403">拒绝访问 403</option></select></label>
-      <label>连续失败次数<input type="number" min="1" max="100" required value={value.max_failures} onChange={e=>change({max_failures:e.target.valueAsNumber})}/></label>
-      <label>封禁分钟数<input type="number" min="1" max="10080" required value={value.ban_minutes} onChange={e=>change({ban_minutes:e.target.valueAsNumber})}/></label>
-      <label>会话有效期<select value={value.session_hours} onChange={e=>change({session_hours:Number(e.target.value) as SecurityConfig["session_hours"]})}>{([2,24,168,720] as const).map((n,i)=><option key={n} value={n}>{["2 小时","24 小时","7 天","30 天"][i]}</option>)}</select></label>
-      <label>IP 访问规则<select value={value.ip_mode} onChange={e=>change({ip_mode:e.target.value as SecurityConfig["ip_mode"]})}><option value="off">关闭</option><option value="allow">白名单</option><option value="deny">黑名单</option></select></label>
+      <label>未授权访问页<SegmentedControl value={value.disguise} onValueChange={next=>change({disguise:next as SecurityConfig["disguise"]})}><option value="nginx_404">Nginx 404</option><option value="blank_200">白页 200</option><option value="forbidden_403">拒绝访问 403</option></SegmentedControl></label>
+      <label>连续失败次数<NumberControl min="1" max="100" required value={value.max_failures} onChange={e=>change({max_failures:e.target.valueAsNumber})}/></label>
+      <label>封禁分钟数<NumberControl min="1" max="10080" required value={value.ban_minutes} onChange={e=>change({ban_minutes:e.target.valueAsNumber})}/></label>
+      <label>会话有效期<SegmentedControl value={value.session_hours} onValueChange={next=>change({session_hours:Number(next) as SecurityConfig["session_hours"]})}>{([2,24,168,720] as const).map((n,i)=><option key={n} value={n}>{["2 小时","24 小时","7 天","30 天"][i]}</option>)}</SegmentedControl></label>
+      <label>IP 访问规则<SegmentedControl value={value.ip_mode} onValueChange={next=>change({ip_mode:next as SecurityConfig["ip_mode"]})}><option value="off">关闭</option><option value="allow">白名单</option><option value="deny">黑名单</option></SegmentedControl></label>
       <label>IP 或 CIDR 网段<textarea value={ranges} placeholder="每行一个 IP 或网段" onChange={e=>{setRanges(e.target.value);change({ip_ranges:e.target.value.split(/[\s,]+/).filter(Boolean)});}}/></label>
       <button type="button" className="ad-button" onClick={()=>{const list=[...new Set([...value.ip_ranges,myIp])];setRanges(list.join("\n"));change({ip_ranges:list});}}>填入我当前 IP · {myIp}</button>
       {value.ip_mode==="allow"&&<small>保存前请确认列表包含当前 IP，避免自己失去访问权限。</small>}
       {value.basic_enabled&&<><label>外层用户名<input required value={value.basic_user} onChange={e=>change({basic_user:e.target.value})}/></label>
         <label>外层密码<input type="password" minLength={12} autoComplete="new-password" placeholder="留空保留现有密码" value={draft.basic_password??""} onChange={e=>change({basic_password:e.target.value||undefined})}/></label></>}
       <h2>通知渠道订阅</h2>
-      {(Object.keys(alerts) as (keyof typeof alerts)[]).map(key=><label key={key}>{alerts[key]}<input type="checkbox" checked={value.alerts.includes(key)} onChange={e=>change({alerts:e.target.checked?[...value.alerts,key]:value.alerts.filter(k=>k!==key)})}/></label>)}
+      {(Object.keys(alerts) as (keyof typeof alerts)[]).map(key=><label key={key}>{alerts[key]}<ToggleSwitch checked={value.alerts.includes(key)} onCheckedChange={next=>change({alerts:next?[...value.alerts,key]:value.alerts.filter(k=>k!==key)})}/></label>)}
       <button className="ad-primary" disabled={action.busy}>保存安全策略</button>
     </form>
     <section className="ad-card settings-form"><h2>双重验证</h2>

@@ -39,12 +39,17 @@ export class RpcClient {
   private readonly pending = new Map<number, { resolve: (r: Json) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   private readonly exited: Promise<void>;
 
-  static async start(cwd: string, env: Record<string,string>, callbacks: RpcCallbacks, binary?: string) {
+  static async start(cwd: string, env: Record<string,string>, callbacks: RpcCallbacks, binary?: string,
+    runner?:{args:string[];env:NodeJS.ProcessEnv;dispose:()=>Promise<void>}) {
+    if (runner) {
+      return new RpcClient(spawn("docker",runner.args,{cwd,env:runner.env,stdio:"pipe"}),callbacks,runner.dispose);
+    }
     const [file, args] = await command(binary);
     return new RpcClient(spawn(file, args, { cwd, env, stdio: "pipe", windowsHide: true }), callbacks);
   }
 
-  private constructor(private readonly proc: ChildProcessWithoutNullStreams, private readonly callbacks: RpcCallbacks) {
+  private constructor(private readonly proc: ChildProcessWithoutNullStreams, private readonly callbacks: RpcCallbacks,
+    private readonly dispose?:()=>Promise<void>) {
     this.exited = new Promise(resolve => proc.once("close", () => { this.end(); resolve(); }));
     proc.once("error", () => this.end());
     proc.stdin.on("error", () => this.end());
@@ -96,6 +101,7 @@ export class RpcClient {
   private end() {
     if (this.closed) return;
     this.closed = true;
+    void this.dispose?.();
     for (const waiter of this.pending.values()) {
       clearTimeout(waiter.timer); waiter.reject(new Error("Codex process exited."));
     }
@@ -104,13 +110,20 @@ export class RpcClient {
   }
 
   async close(force = false) {
-    this.proc.stdin.end();
-    if (!force && await Promise.race([this.exited.then(() => true), delay(1200, false, { ref: false })])) return;
+    if (this.dispose) { this.proc.stdin.end(); await this.dispose(); await this.exited; return; }
+    if (this.proc.exitCode!==null || this.proc.signalCode!==null) return this.exited;
     if (process.platform === "win32" && this.proc.pid) {
+      // EOF lets Codex exit before its helpers. Windows needs the live parent
+      // PID to close the whole tree and release its workspace handles.
       const killer = spawn(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
         ["/F", "/T", "/PID", String(this.proc.pid)], { stdio: "ignore", windowsHide: true });
       killer.once("error", () => this.proc.kill());
-    } else this.proc.kill("SIGKILL");
+      killer.once("exit", code => {if (code && this.alive) this.proc.kill();});
+    } else {
+      this.proc.stdin.end();
+      if (!force && await Promise.race([this.exited.then(() => true), delay(1200, false, { ref: false })])) return;
+      this.proc.kill("SIGKILL");
+    }
     await this.exited;
   }
 }

@@ -750,8 +750,8 @@ EOF
   as_root tee "$service_file" >/dev/null <<EOF
 [Unit]
 Description=CodexDeck local AI workbench
-After=network-online.target
-Wants=network-online.target
+After=network-online.target user@$(id -u "$service_user").service
+Wants=network-online.target user@$(id -u "$service_user").service
 
 [Service]
 Type=simple

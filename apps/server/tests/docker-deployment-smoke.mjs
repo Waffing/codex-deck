@@ -14,6 +14,8 @@ async function exercise() {
   const { openDatabase } = await import("./dist/db/index.js");
   const { WorkspaceFiles } = await import("./dist/files/workspace-files.js");
   const { SecretMasker } = await import("./dist/security/secret-masker.js");
+  const { encryptSecret } = await import("./dist/security/crypto.js");
+  const { registerStoredWorkspaceSecrets } = await import("./dist/security/workspace-secrets.js");
   const { command } = await import("./dist/server-ops/probe.js");
   const { registerOps } = await import("./dist/server-ops/routes.js");
   const fixture = await mkdtemp("/data/deploy-smoke-");
@@ -21,6 +23,11 @@ async function exercise() {
   const ctx = { ...db, masker: new SecretMasker(), masterKey: randomBytes(32), gatewayConfig:{port:3000} };
   const files = new WorkspaceFiles(ctx, fixture, () => {});
   const workspace = (await files.create("Release smoke", "semi")).id;
+  const deployValue = randomBytes(24).toString("base64url")+"$literal";
+  const insertSecret = db.native.prepare("INSERT INTO workspace_secrets(id,workspace_id,key_name,value_enc,inject_on_deploy,created_at,updated_at) VALUES(?,?,?,?,?,'','')");
+  insertSecret.run(randomUUID(),workspace,"APP_CREDENTIAL",encryptSecret(deployValue,ctx.masterKey),1);
+  insertSecret.run(randomUUID(),workspace,"VERIFY_ONLY",encryptSecret(randomUUID(),ctx.masterKey),0);
+  registerStoredWorkspaceSecrets(ctx);
   const root = await files.getRoot(workspace);
   const page = marker => `<!doctype html><html><head><link rel="icon" href="data:,"></head><body>${marker}</body></html>`;
   await mkdir(root+"/public");
@@ -38,10 +45,43 @@ async function exercise() {
     assert.equal(res.status,200);
     return res.text();
   };
-  const stage = opts => service.deployer.stage(workspace,null,stagingInput.parse(opts),service.getProfile());
+  const stage = opts => service.deployer.stage(workspace,null,stagingInput.parse(opts),service.getProfile(),true);
+  async function checkVault(deployment) {
+    const env = JSON.parse(await command("docker",["inspect","--format","{{json .Config.Env}}","codexdeck-"+deployment.id]));
+    assert.ok(env.includes("APP_CREDENTIAL="+deployValue),"Container did not receive the selected value");
+    assert.ok(!env.some(line=>line.startsWith("VERIFY_ONLY=")),"Unselected variable was injected");
+    if(deployment.mode==="compose") {
+      const manifest = await readFile(fixture+"/releases/"+deployment.id+"/compose.json","utf8");
+      assert.ok(!manifest.includes(deployValue));
+      assert.equal(JSON.parse(manifest).services.app.environment.APP_CREDENTIAL,null);
+    }
+  }
   try {
     await start();
     assert.equal(service.getProfile().docker_available,true,"Control process cannot reach Docker proxy");
+    const tracking = await files.create("Isolated Git tracking", "unrestricted");
+    const checkout = await files.getRoot(tracking.id);
+    const git = args => command("git", args, {cwd:checkout});
+    await git(["init"]);
+    await git(["config","user.name","Smoke Author"]);
+    await writeFile(checkout+"/.gitattributes","*.txt text eol=lf\n");
+    await writeFile(checkout+"/note.txt","before\n");
+    await git(["add",".gitattributes","note.txt"]);
+    await git(["-c","user.email=fixture@localhost","commit","-m","fixture"]);
+    const index = await readFile(checkout+"/.git/index");
+    const head = await git(["rev-parse","HEAD"]);
+    await files.markIsolatedHistory(tracking.id);
+    const checkpoint = await files.track(tracking.id,"before","smoke-checkpoint");
+    assert.equal(checkpoint.ref,"refs/codexdeck/checkpoints/smoke-checkpoint");
+    await writeFile(checkout+"/note.txt","after\n");
+    assert.match((await files.track(tracking.id,"status")).porcelain,/note\.txt/);
+    assert.match(await files.track(tracking.id,"diff"),/\+after/);
+    const captured = await files.track(tracking.id,"after","smoke-checkpoint");
+    assert.deepEqual(captured.changes.files,[{path:"note.txt",added:1,removed:1}]);
+    await files.track(tracking.id,"restore","smoke-checkpoint");
+    assert.equal(await readFile(checkout+"/note.txt","utf8"),"before\n");
+    assert.deepEqual(await readFile(checkout+"/.git/index"),index);
+    assert.equal(await git(["rev-parse","HEAD"]),head);
     const proxy=process.env.DOCKER_HOST.replace(/^tcp:/,"http:");
     const inventory=new URL("/volumes",proxy);
     inventory.searchParams.set("filters",JSON.stringify({label:{["com.docker.compose.project=codexdeck-"+randomUUID()]:true}}));
@@ -53,6 +93,7 @@ async function exercise() {
     const marker = randomUUID();
     await writeFile(root+"/public/index.html",page("live-A-"+marker));
     const a = await stage({mode:"docker"});
+    await checkVault(a);
     const check = criteria(a.id,{expected_content:"live-A-"+marker,check_browser:process.env.CODEXDECK_REQUIRE_BROWSER==="1"});
     const first = await service.deployer.promote(check);
     assert.equal(first.verification.ok,true,JSON.stringify(first.verification));
@@ -67,6 +108,7 @@ async function exercise() {
     assert.match(await live(),/live-A-/);
     await writeFile(root+"/public/index.html",page("live-B-"+marker));
     const b = await stage({mode:"compose"});
+    await checkVault(b);
     let verifying=true;
     const observed=(async()=>{const seen=[];do {seen.push(await live());await delay(10);} while(verifying);return seen;})();
     let rejected;
@@ -85,10 +127,12 @@ async function exercise() {
     await writeFile(root+"/public/main.mjs",[
       'import http from "node:http"; import { lookup } from "node:dns/promises";',
       'const management=await lookup("docker-socket-proxy").then(()=>"visible",()=>"isolated");',
-      'console.log("fixture started"); console.error("UncaughtException fixture");',
+      'console.log("fixture started",process.env.APP_CREDENTIAL); console.error("UncaughtException fixture");',
       'http.createServer((req,res)=>res.end(management)).listen(Number(process.env.PORT),process.env.HOST);',
     ].join("\n"));
     const entry=await stage({mode:"auto",entry:"main.mjs",public_dir:"public"});
+    const entryLogs = await service.deployer.logs(entry.id);
+    assert.ok(entryLogs.includes("fixture started [REDACTED]") && !entryLogs.includes(deployValue));
     const report=await service.deployer.promote(criteria(entry.id,{expected_content:"isolated"}));
     assert.equal(report.verification.http.status,200);
     assert.equal(report.verification.http.content_match,true);
@@ -102,6 +146,13 @@ async function exercise() {
     assert.equal(spec.HostConfig.NanoCpus,1e9);
     await assert.rejects(stage({mode:"local",entry:"main.mjs",public_dir:"public"}),{statusCode:403});
     assert.ok((await live()).includes("live-A-"+marker));
+    await app.close();
+    db.native.prepare("DELETE FROM workspace_secrets WHERE workspace_id=? AND key_name='APP_CREDENTIAL'").run(workspace);
+    ctx.masker=new SecretMasker();
+    registerStoredWorkspaceSecrets(ctx);
+    await start();
+    const recoveredLog=await service.deployer.logs(entry.id);
+    assert.ok(recoveredLog.includes("fixture started [REDACTED]") && !recoveredLog.includes(deployValue));
   } catch(error) {
     if(service) for(const row of service.deployer.rows().filter(row=>row.status==="failed")) {
       console.error("Failed deployment",row.id,(await service.deployer.logs(row.id).catch(()=>"Log unavailable.")).slice(-2048));

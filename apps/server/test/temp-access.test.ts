@@ -2,6 +2,7 @@ import {afterAll,beforeAll,expect,test} from "vitest";
 import {mkdir,mkdtemp,rm,writeFile,readFile} from "node:fs/promises";
 import path from "node:path";
 import {tmpdir} from "node:os";
+import {fileURLToPath} from "node:url";
 import {randomBytes,createHash} from "node:crypto";
 import {createServer as mockServer} from "node:http";
 import {once} from "node:events";
@@ -32,11 +33,11 @@ beforeAll(async()=>{
   const now=new Date().toISOString();
   ctx.orm.insert(providers).values({id:"p",name:"p",preset:"custom",enabled:true,headersJson:"{}",quirksJson:"{}",baseUrl:"http://127.0.0.1:"+(mock.address() as AddressInfo).port+"/v1",createdAt:now,updatedAt:now}).run();
   ctx.orm.insert(models).values({id:"m",providerId:"p",alias:"m",modelId:"m",enabled:true,fallbackModelIdsJson:"[]",protocol:"responses",costInputUsdPerMillion:10,costOutputUsdPerMillion:20,createdAt:now,updatedAt:now}).run();
-  app=createServer(ctx,{workspaceRoot:root,dataDirectory:data});
+  app=createServer(ctx,{workspaceRoot:root,dataDirectory:data,codexBin:fileURLToPath(new URL("../tests/fixtures/fake-app-server.mjs",import.meta.url))});
   base=await app.listen({host:"127.0.0.1",port:0});
   const setup=await req("POST","/api/auth/setup","",{password:"FixtureGuestApprovalPassword",setup_code:installationCode(db.native,ctx.masterKey)});
   expect(setup.statusCode).toBe(200);admin=cookieOf(setup);
-  a=(await req("POST","/api/workspaces",admin,{name:"visible",automation_level:"full"})).json().id;
+  a=(await req("POST","/api/workspaces",admin,{name:"visible",automation_level:"unrestricted"})).json().id;
   b=(await req("POST","/api/workspaces",admin,{name:"other"})).json().id;
   ta=(await req("POST","/api/threads",admin,{workspace_id:a})).json().id;
   tb=(await req("POST","/api/threads",admin,{workspace_id:b})).json().id;
@@ -66,11 +67,15 @@ test("scopes guest REST, preview, signed artifacts and live subscriptions; revok
   expect(exported).not.toContain(link.route.slice(7));expect(exported).not.toContain('"code":"'+link.code+'"');
   expect((await req("GET","/api/workspaces",visitor)).json().map((w:{id:string})=>w.id)).toEqual([a]);
   expect((await req("GET","/api/threads",visitor)).json().map((w:{id:string})=>w.id)).toEqual([ta]);
-  for(const url of ["/api/threads/"+tb+"/history","/api/workspaces/"+b+"/files/tree","/api/threads/"+ta+"/history?debug=true",
+  for(const url of ["/api/threads/"+tb+"/history","/api/threads/"+tb+"/turns","/api/workspaces/"+b+"/files/tree","/api/threads/"+ta+"/history?debug=true",
       "/api/providers","/api/admin/runtime/tasks","/api/workspaces/local-directories","/preview/3000/","/live/"+b+"/"]){
     expect((await req("GET",url,visitor)).statusCode,url).toBe(403);
   }
   expect((await req("GET","/api/threads/"+ta+"/history",visitor)).statusCode).toBe(200);
+  expect((await req("GET","/api/threads/"+ta+"/turns",visitor)).statusCode).toBe(200);
+  expect((await req("POST","/api/threads/"+ta+"/warmup",visitor,{})).statusCode).toBe(403);
+  ctx.native.prepare("INSERT INTO tasks(id,thread_id,workspace_id,prompt,created_at,updated_at,status) VALUES('private-turn',?,?,'','','','completed')").run(tb,b);
+  expect((await req("GET","/api/turns/private-turn/steps/%24diff",visitor)).statusCode).toBe(403);
   expect((await req("POST","/api/threads/"+ta+"/messages",visitor,{prompt:"x"})).statusCode).toBe(403);
   const workspace=ctx.native.prepare("SELECT path FROM workspaces WHERE id=?").pluck().get(a) as string;
   await writeFile(path.join(workspace,"result.txt"),"allowed");
@@ -107,7 +112,7 @@ test("a guest turn uses the local gateway, bills actual usage, denies another tu
   const extended=await req("PATCH","/api/temp-access/"+link.id+"/extend",admin,{turns:2,tokens:20,cost:0.001,hours:1});
   expect(extended.json()).toMatchObject({status:"active",max_turns:3,max_tokens:2520});expect((await req("GET","/api/guest/session",visitor)).statusCode).toBe(200);
 });
-test("full visitors cannot approve their own write; administrator approves the exact proposed workspace write",async()=>{
+test("an unrestricted project still requires administrator approval for a full visitor's exact workspace write",async()=>{
   const inv=await create({permission:"full_with_approval"}),v=await enter(inv.route);
   output=p=>p.input.some((x:{type:string})=>x.type==="function_call_output")?{output:[{type:"message",content:[{type:"output_text",text:"done"}]}],usage:{input_tokens:2,output_tokens:1}}:
     {output:[{type:"function_call",name:"write_file",call_id:"write",arguments:JSON.stringify({path:"reviewed.txt",revision:"missing",content:"reviewed"})}],usage:{input_tokens:1,output_tokens:1}};
@@ -120,6 +125,27 @@ test("full visitors cannot approve their own write; administrator approves the e
   await expect.poll(()=>getLink(ctx,inv.link.id).used_turns).toBe(1);
   const workspace=ctx.native.prepare("SELECT path FROM workspaces WHERE id=?").pluck().get(a) as string;
   expect(await readFile(path.join(workspace,"reviewed.txt"),"utf8")).toBe("reviewed");
+});
+
+test("workspace-scoped Open API tasks on an unrestricted project use the standard executor and require approval",async()=>{
+  const key=await req("POST","/api/api-keys",admin,{name:"review fixture",workspace_ids:[a],scopes:["tasks:write"]});
+  expect(key.statusCode).toBe(201);
+  const {id,api_key}=key.json();
+  const headers={authorization:"Bearer "+api_key};
+  const submission=await app.inject({method:"POST",url:"/api/v1/tasks",headers,
+    payload:{workspace_id:a,thread_id:ta,prompt:"approve:printf reviewed"}});
+  expect(submission.statusCode).toBe(202);
+  const taskId=submission.json().task_id;
+  expect(ctx.native.prepare("SELECT api_key_id FROM tasks WHERE id=?").pluck().get(taskId)).toBe(id);
+  const pending=()=>ctx.native.prepare(`SELECT a.id FROM approvals a JOIN thread_events e ON a.id=json_extract(e.payload_json,'$.id')
+    WHERE e.task_id=? AND e.type='approval_req' AND a.action='item/commandExecution/requestApproval' AND a.status='pending'`).pluck().get(taskId);
+  await expect.poll(pending,{timeout:6000}).toBeTypeOf("string");
+  expect(ctx.native.prepare("SELECT executor_mode FROM threads WHERE id=?").pluck().get(ta)).toBe("standard");
+  const url="/api/approvals/"+pending()+"/decision";
+  expect((await app.inject({method:"POST",url,headers,payload:{decision:"approve"}})).statusCode).toBe(401);
+  expect((await req("POST",url,admin,{decision:"deny_guide"})).statusCode).toBe(204);
+  await expect.poll(()=>ctx.native.prepare("SELECT json_extract(payload_json,'$.decision') FROM thread_events WHERE task_id=? AND type='fixture/approval'").pluck().get(taskId)).toBe("decline");
+  await expect.poll(()=>ctx.native.prepare("SELECT status FROM tasks WHERE id=?").pluck().get(taskId)).toBe("completed");
 });
 
 test("expiry, admission reserves and missing upstream usage can be repaired on the same invitation",async()=>{

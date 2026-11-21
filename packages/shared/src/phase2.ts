@@ -9,6 +9,8 @@ export const subscriptionSchema = z.object({
   type: z.literal("subscribe"), debug:z.boolean().default(false), thread_id: z.string().optional(), last_seq_id: z.number().int().nonnegative().default(0),
 });
 export const wsFrameSchema = z.discriminatedUnion("type", [
+  z.object({type:z.literal("activity"),thread_id:z.string(),task_id:z.string().nullable(),seq_id:z.number().int().positive(),
+    kind:z.enum(["running","completed","approval","failed","cancelled"])}),
   z.object({type:z.literal("cursor"),seq_id:z.number().int().positive(),thread_id:z.string()}),
   z.object({ type: z.literal("event"), event: threadEventSchema }),
   z.object({ type: z.literal("approvals_count"), count: z.number().int().nonnegative() }),

@@ -20,6 +20,8 @@ import { signPayload } from "../src/security/crypto.js";
 import { schema } from "../src/db/schema.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { resolveSafeWorkspacePath } from "../src/files/sandbox.js";
+import { trackingContainerArgs } from "../src/files/isolated-tracking.js";
+import { hasIsolatedRunner, projectMountSource } from "../src/codex/isolated-runner.js";
 
 const exec = promisify(execFile);
 let fixture: string;
@@ -97,6 +99,62 @@ it("keeps global instructions isolated and unregisters without erasing project f
   expect(invalidClone.statusCode).toBe(400);
   expect((await app.inject({method:"DELETE",url:pathBase,headers:{cookie}})).statusCode).toBe(204);
   expect(await readFile(path.join(root,"AGENTS.md"),"utf8")).toBe("project");
+});
+
+it("keeps isolated history across downgrade, restart and re-registration of the same directory", async () => {
+  expect(await files.hasIsolatedHistory(workspace)).toBe(false);
+  await files.markIsolatedHistory(workspace);
+  await files.markIsolatedHistory(workspace);
+  const downgrade = await app.inject({method:"PATCH",url:pathBase,headers:{cookie},payload:{automation_level:"conservative"}});
+  expect(downgrade.statusCode).toBe(200);
+  await files.unregister(workspace);
+  const imported = await files.importLocal({directory:path.basename(root), automation_level:"conservative"});
+  expect(imported.id).not.toBe(workspace);
+  expect(await files.hasIsolatedHistory(imported.id)).toBe(true);
+  const otherRoot = await files.create("Independent", "conservative");
+  expect(await files.hasIsolatedHistory(otherRoot.id)).toBe(false);
+
+  // A database created by the first v8 build has an executor_mode but no path marker.
+  native.prepare("UPDATE threads SET workspace_id=?,executor_mode='isolated' WHERE id='thread'").run(otherRoot.id);
+  const ctx = { native, orm:drizzle(native,{schema}), masterKey:key, masker:new SecretMasker(), gatewayConfig:gatewayConfigSchema.parse({port:3210}) };
+  const reopened = new WorkspaceFiles(ctx, path.join(fixture,"data"),()=>{});
+  expect(await reopened.hasIsolatedHistory(imported.id)).toBe(true);
+  expect(await reopened.hasIsolatedHistory(otherRoot.id)).toBe(true);
+});
+
+it("runs isolated tracking offline with only the selected project mounted", () => {
+  const mounts = [
+    {Type:"bind",Source:"/srv/projects",Destination:"/workspaces"},
+    {Type:"bind",Source:"/srv/projects/selected/control",Destination:"/data"},
+  ];
+  expect(() => projectMountSource("/workspaces/selected","/data",mounts)).toThrow();
+  expect(projectMountSource("/workspaces/other","/data",mounts)).toBe(path.join("/srv/projects","other"));
+  for (const operation of ["status","snapshot","diff","before","after","restore"] as const) {
+    const args = trackingContainerArgs({source:"/srv/test",name:"fixture",image:"fixture-image",user:"1001:1002",operation,turnId:"fixture"});
+    expect(args[args.indexOf("--network")+1]).toBe("none");
+    expect(args[args.indexOf("--user")+1]).toBe("1001:1002");
+    expect(args[args.indexOf("--cap-drop")+1]).toBe("ALL");
+    expect(args).toContain("--read-only");
+    expect(args.filter(s=>s.startsWith("type=bind,"))).toEqual(["type=bind,src=/srv/test,dst=/workspace"+(["status","snapshot","diff"].includes(operation)?",readonly":"")]);
+    expect(args.filter((_,i)=>args[i-1]==="--env")).toEqual(["HOME=/tmp"]);
+  }
+});
+
+it("dispatches a marked project's real repository through its executor or fails closed when unavailable", async () => {
+  const git = (...args:string[]) => exec("git",args,{cwd:root,windowsHide:true});
+  await git("init");
+  await git("config","user.name","Fixture Author");
+  await writeFile(path.join(root,".gitattributes"),"*.txt text eol=lf\n");
+  await writeFile(path.join(root,"note.txt"),"fixture\n");
+  expect(await files.track(workspace,"status")).toMatchObject({porcelain:expect.stringContaining("note.txt")});
+  await files.markIsolatedHistory(workspace);
+  if (await hasIsolatedRunner()) {
+    expect(await files.track(workspace,"snapshot")).toContainEqual(["note.txt",expect.any(String)]);
+  } else {
+    for (const operation of ["status","diff","before","after","snapshot","restore"] as const) {
+      await expect(files.track(workspace, operation, "fixture")).rejects.toThrow();
+    }
+  }
 });
 
 it("starts clone asynchronously and exposes a failed Git checkout without serving its partial files", async () => {

@@ -1,9 +1,9 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it } from "vitest";
-import type { ThreadEvent } from "@codexdeck/shared";
+import type { ThreadEvent, TurnSnapshot } from "@codexdeck/shared";
 import { AnswerDocument } from "./AnswerDocument";
-import { collectTurns, type TaskHistory } from "./Timeline";
+import {collectSnapshots} from "./turns";
 
 afterEach(cleanup);
 it("renders GFM and colours prose without rewriting fenced source or fetching remote images", async () => {
@@ -27,9 +27,10 @@ it("keeps the complete answer when WS contains only the tail and merges duplicat
     {...base,seq_id:1,type:"answer_delta",payload:{id:"a",text:"开头"}},
     {...base,seq_id:2,type:"answer_delta",payload:{id:"a",text:"结尾"}},
   ];
-  const task:TaskHistory={id:"task",status:"completed",updated_at:"2026-01-02",created_at:"2026-01-01",events:frames,answer_markdown:text,prompt:"检查",summary:"摘要",checkpoint_ref:null};
-  const [done]=collectTurns({tasks:[task],artifacts:[]},[frames[1]]);
+  const task:TurnSnapshot={id:"task",thread_id:"thread",turn_index:1,latest_seq_id:2,client_msg_id:null,telemetry:null,timeline:[],artifacts:[],summary_only:false,
+    status:"completed",updated_at:"2026-01-02",created_at:"2026-01-01",assistant_markdown:text,user_content:"检查",checkpoint_ref:null};
+  const [done]=collectSnapshots([task],[frames[1]]);
   expect(done.answer).toBe(text);
-  const [active]=collectTurns({tasks:[{...task,status:"running",answer_markdown:undefined}],artifacts:[]},[frames[1]]);
+  const [active]=collectSnapshots([{...task,status:"running",latest_seq_id:1,assistant_markdown:"开头",active_answer_items:[{id:"a",text:"开头"}]}],frames);
   expect(active.answer).toBe("开头结尾");
 });

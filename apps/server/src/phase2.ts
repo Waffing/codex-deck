@@ -15,6 +15,7 @@ import {registerSettingsRoutes} from "./settings/routes.js";
 import {registerEmergencyRoute} from "./security/emergency.js";
 import { registerConsoleRoutes } from "./routes/console.js";
 import { registerUsageRoutes } from "./routes/usage.js";
+import { registerQualityReviews } from "./routes/quality-review.js";
 
 export type Phase2Options = Omit<ManagerOptions,"port"|"profile"> & Pick<OpsOptions,"portPool"|"proxyConfig"> & {managedWorkspaceDirectory?:string};
 
@@ -40,6 +41,7 @@ export function mountPhase2(app: FastifyInstance, ctx: ServerContext, options: P
     registerConsoleRoutes(service,ctx,files);
     registerUsageRoutes(service,ctx,notifications);
     registerThreadRoutes(service,ctx,manager);
+    registerQualityReviews(service,ctx,files,manager);
     registerNotifications(service,ctx,notifications);
     registerOpenApi(service,ctx,files,manager,events);
     const ops = registerOps(service,ctx,files,events,manager,{...options,notifications});

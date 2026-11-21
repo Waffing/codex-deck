@@ -9,6 +9,7 @@ import { lookup } from "mime-types";
 import { artifactSignSchema, filePathQuerySchema, fileSaveSchema, fileTreeQuerySchema } from "@codexdeck/shared";
 import type { ServerContext } from "../app.js";
 import { scopedAccess,scopedGuest } from "../temp-access/routes.js";
+import {beginGuestUpload} from "../security/workspace-review.js";
 import { fileError, ignored, missing, resolveSafeWorkspacePath, saveWorkspaceFile } from "../files/sandbox.js";
 import { readEditable, writeEditable } from "../files/editor.js";
 import { signDownload, validateDownload } from "../files/signed-url.js";
@@ -86,7 +87,9 @@ export function registerFileRoutes(app: FastifyInstance, ctx: ServerContext, fil
     const rel = ".codex-uploads/" + Date.now() + "-" + randomUUID() + "-" + safeName;
     const buffer = await part.toBuffer();
     if (part.file.truncated) throw fileError(413, "File exceeds upload limit.");
-    await saveWorkspaceFile(root, rel, buffer);
+    const finish=scopedGuest(req) && beginGuestUpload(ctx,req.params.id);
+    try {await saveWorkspaceFile(root,rel,buffer);}
+    finally {finish?.();}
     const artifact = await files.registerArtifact(req.params.id, null, null, rel, "upload");
     return reply.code(201).send({ path: rel, artifact });
   });

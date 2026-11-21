@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const automationLevelSchema = z.enum(["conservative", "semi", "full"]);
+export const automationLevelSchema = z.enum(["conservative", "semi", "full", "unrestricted"]);
 export const workspaceCreateSchema = z.object({
   name: z.string().trim().min(1).max(120), automation_level: automationLevelSchema.default("conservative"),
 });
@@ -11,6 +11,7 @@ export const workspaceSchema = workspaceCreateSchema.extend({
 export const changeTypeSchema = z.enum(["added", "modified", "upload", "screenshot"]);
 export const artifactSchema = z.object({
   id: z.string(), workspace_id: z.string(), thread_id: z.string().nullable(), turn_id: z.string().nullable(),
+  size_bytes: z.number().int().nonnegative().nullable().optional(),
   name: z.string(), path: z.string(), change_type: changeTypeSchema, mime_type: z.string().nullable(), created_at: z.string(),
 });
 export const filePathQuerySchema = z.object({ path: z.string().min(1) });

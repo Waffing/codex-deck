@@ -1,8 +1,8 @@
 import { installationCode } from "../src/routes/auth.js";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer as httpServer } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,9 +13,11 @@ import { parseGatewayConfig, type ServerContext } from "../src/app.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import {registerSettingsRoutes} from "../src/settings/routes.js";
 import { registerThreadRoutes } from "../src/routes/threads.js";
+import { registerConsoleRoutes } from "../src/routes/console.js";
 import { registerGatewayRoutes } from "../src/gateway/server.js";
 import { openDatabase, resolveDataDirectory } from "../src/db/index.js";
 import { ThreadManager } from "../src/codex/manager.js";
+import { RpcClient } from "../src/codex/rpc-client.js";
 import { WorkspaceFiles } from "../src/files/workspace-files.js";
 import { ThreadEvents } from "../src/ws/events.js";
 import { Notifications } from "../src/notifications/index.js";
@@ -23,12 +25,17 @@ import { SecretMasker } from "../src/security/secret-masker.js";
 import { encryptSecret } from "../src/security/crypto.js";
 import {completeAnswer,turnEvents} from "../src/codex/timeline.js";
 import {projectTurn} from "@codexdeck/shared";
+import {collectVerification,runVerifyGate} from "../src/codex/verify-gate.js";
+import {registerWorkspaceRoutes} from "../src/routes/workspaces.js";
+import {registerWorkspaceSecretRoutes} from "../src/security/workspace-secrets.js";
 
 const fake = fileURLToPath(new URL("../tests/fixtures/fake-app-server.mjs",import.meta.url));
 let root: string, ctx: ServerContext, app: ReturnType<typeof Fastify>, manager: ThreadManager;
 let mock: ReturnType<typeof httpServer>, workspace: string, thread: string, cookie: string;
 let upstream: string[], notices: string[];
+let gate:typeof runVerifyGate;
 beforeEach(async () => {
+  gate=runVerifyGate;
   root = await mkdtemp(path.join(tmpdir(),"codexdeck-bridge-"));
   const data = await resolveDataDirectory("data",root);
   ctx = { ...await openDatabase(data,root),gatewayConfig:parseGatewayConfig(),masterKey:randomBytes(32),masker:new SecretMasker() };
@@ -58,10 +65,13 @@ beforeEach(async () => {
   workspace = (await files.create("Test workspace","conservative")).id;
   manager = new ThreadManager(ctx,files,events,new Notifications(ctx),{
     dataDirectory:data,workspaceRoot:root,codexBin:fake,port:() => (app.server.address() as AddressInfo).port,
-    approvalTimeoutMs:650, notifyAfterMs:30,
+    approvalTimeoutMs:650, notifyAfterMs:30,verifyGate:opts=>gate(opts),
   });
   registerSettingsRoutes(app,ctx,manager,data);
   registerThreadRoutes(app,ctx,manager);
+  registerWorkspaceRoutes(app,ctx,files);
+  registerWorkspaceSecretRoutes(app,ctx);
+  registerConsoleRoutes(app,ctx,files);
   registerAuthRoutes(app,ctx);
   registerGatewayRoutes(app,ctx);
   await app.listen({host:"127.0.0.1",port:0});
@@ -80,6 +90,88 @@ afterEach(async () => {
   if (root) await rm(root,{recursive:true,force:true});
 });
 const poll = (assertion:()=>void) => vi.waitFor(assertion,{timeout:6000,interval:15});
+it("runs a read-only plan, revises it and admits exactly one write turn after approval",async()=>{
+  const base="/api/threads/"+thread;
+  const first=await post(base+"/messages",{mode:"plan",prompt:"计划更新 result.txt"});
+  expect(first.statusCode).toBe(202);
+  await poll(()=>expect(status(first.json().task_id)).toBe("completed"));
+  expect(events("fixture/process").at(-1)).toMatchObject({sandbox:"read-only",approvalPolicy:"never",hasOps:false,opsConfigured:false});
+  expect(ctx.native.prepare("SELECT count(*) FROM checkpoints WHERE thread_id=?").pluck().get(thread)).toBe(0);
+  const quality=await app.inject({url:base+"/quality",headers:{cookie}});
+  expect(quality.json().plan).toMatchObject({turn_id:first.json().task_id,status:"ready",markdown:expect.stringContaining("风险与验收")});
+  expect((await post(base+"/messages",{prompt:"直接执行",mode:"execute"})).statusCode).toBe(409);
+  const revised=await post(base+"/plan/revise",{turn_id:first.json().task_id,feedback:"增加测试"});
+  expect(revised.statusCode).toBe(202);await poll(()=>expect(status(revised.json().task_id)).toBe("completed"));
+  expect((await post(base+"/plan/approve",{turn_id:first.json().task_id})).statusCode).toBe(409);
+  const payload={turn_id:revised.json().task_id};
+  const [one,two]=await Promise.all([post(base+"/plan/approve",payload),post(base+"/plan/approve",payload)]);
+  expect(one.statusCode).toBe(202);expect(two.json().task_id).toBe(one.json().task_id);
+  await poll(()=>expect(status(one.json().task_id)).toBe("completed"));
+  expect(events("fixture/process").at(-1)).toMatchObject({sandbox:"workspace-write",approvalPolicy:"on-request",hasOps:true});
+  expect((await app.inject({url:base+"/quality",headers:{cookie}})).json().plan).toBeNull();
+},20000);
+
+const fixtureRunner=String.raw`
+let job="";process.stdin.on("data",c=>job+=c).once("end",()=>{
+  const {commands,env}=JSON.parse(job);
+  const send=x=>console.log(JSON.stringify(x));
+  for(const [index,c] of commands.entries()) {
+    send({kind:"start",index});
+    const value=env.QUALITY_TEST??"no credential";
+    for(const text of [value.slice(0,5),value.slice(5)]) send({kind:"output",index,stream:"stdout",text});
+    if(c==="wait") {setTimeout(()=>{},30000);return;}
+    send({kind:"end",index,code:c==="fail"?1:0});if(c==="fail")break;
+  }
+});`;
+
+it("detects safe manifest scripts and streams bounded retries with masked verification output",async()=>{
+  const base="/api/workspaces/"+workspace;
+  const workspacePath=String(ctx.native.prepare("SELECT path FROM workspaces WHERE id=?").pluck().get(workspace));
+  await writeFile(path.join(workspacePath,"package.json"),JSON.stringify({packageManager:"pnpm@11",scripts:{test:"ignored",lint:"ignored"}}));
+  expect((await post(base+"/verify-commands/detect")).json()).toEqual({commands:["pnpm run lint","pnpm run test"]});
+  const secret="fixture-opaque-value-for-check";
+  expect((await post(base+"/secrets",{key_name:"QUALITY_TEST",value:secret,inject_on_verify:true})).statusCode).toBe(201);
+  const cfg=await app.inject({method:"PATCH",url:base+"/quality",headers:{cookie},payload:{verify_commands:["fail"],auto_verify_enabled:true,max_self_heal_retries:2}});
+  expect(cfg.statusCode).toBe(200);
+  const granted:string[][]=[];
+  gate=async opts=>{
+    granted.push(Object.keys(opts.env));return collectVerification(opts,{file:process.execPath,args:["-e",fixtureRunner],env:{},stop:async()=>{}});
+  };
+  const first=await submit("change a file");
+  await poll(()=>expect(events("verify_gate_result")).toHaveLength(3));
+  const results=events("verify_gate_result");
+  expect(results.map(r=>[r.status,r.attempt])).toEqual([["repairing",0],["repairing",1],["failed",2]]);
+  expect(results.every(r=>r.commands[0].output==="[REDACTED]")).toBe(true);
+  expect(granted).toEqual(Array.from({length:3},()=>["QUALITY_TEST"]));
+  expect(ctx.native.prepare("SELECT count(*) FROM tasks WHERE verify_root_id=?").pluck().get(first)).toBe(2);
+  expect(JSON.stringify(ctx.native.prepare("SELECT * FROM thread_events").all())).not.toContain(secret);
+},25000);
+
+it("keeps external verification credential-free until an administrator reviews the workspace",async()=>{
+  const base="/api/workspaces/"+workspace;
+  await post(base+"/secrets",{key_name:"QUALITY_TEST",value:"fixture-safe-value",inject_on_verify:true});
+  await app.inject({method:"PATCH",url:base+"/quality",headers:{cookie},payload:{verify_commands:["pass"],auto_verify_enabled:true}});
+  gate=opts=>collectVerification(opts,{file:process.execPath,args:["-e",fixtureRunner],env:{},stop:async()=>{}});
+  const first=manager.submit(thread,"external change").task_id;
+  ctx.native.prepare("INSERT INTO api_keys(id,name,key_hash,scopes_json,created_at) VALUES('external','test','unique','[]','')").run();
+  ctx.native.prepare("UPDATE tasks SET api_key_id='external' WHERE id=?").run(first);
+  await poll(()=>expect(status(first)).toBe("completed"));
+  expect(events("verify_gate_result").at(-1)).toMatchObject({status:"passed",requires_review:true,commands:[{output:"no credential"}]});
+  const retry=await post("/api/threads/"+thread+"/verify",{turn_id:first,reviewed:true});
+  expect(retry.statusCode).toBe(202);await poll(()=>expect(status(retry.json().task_id)).toBe("completed"));
+  expect(events("verify_gate_result").at(-1)).toMatchObject({requires_review:false,commands:[{output:"[REDACTED]"}]});
+},15000);
+
+it("interrupts verification and never queues a repair after cancellation",async()=>{
+  await app.inject({method:"PATCH",url:"/api/workspaces/"+workspace+"/quality",headers:{cookie},payload:{verify_commands:["wait"],auto_verify_enabled:true}});
+  gate=opts=>collectVerification(opts,{file:process.execPath,args:["-e",fixtureRunner],env:{},stop:async()=>{}});
+  const first=await submit("change and wait");
+  await poll(()=>expect(events("verify_gate_progress").length).toBeGreaterThan(0));
+  expect((await post("/api/threads/"+thread+"/interrupt")).statusCode).toBe(204);
+  await poll(()=>expect(status(first)).toBe("cancelled"));
+  expect(events("verify_gate_result").at(-1)).toMatchObject({status:"cancelled",attempt:0});
+  expect(ctx.native.prepare("SELECT count(*) FROM tasks WHERE verify_root_id=?").pluck().get(first)).toBe(0);
+});
 async function post(path: string, payload: Record<string,unknown> = {}) {
   return app.inject({method:"POST",url:path,headers:{cookie},payload});
 }
@@ -103,6 +195,55 @@ async function decision(id: string, action: string, guidance?: string) {
   const result = await post("/api/approvals/" + id + "/decision",{decision:action,user_guidance:guidance});
   expect(result.statusCode).toBe(204);
 }
+it("opens history without waking Codex, deduplicates focus and correlates the first optimistic message",async()=>{
+  const http="/api/threads/"+thread;
+  const get=(url:string)=>app.inject({url,headers:{cookie}});
+  const empty=await get(http+"/turns");
+  expect(empty.json()).toMatchObject({turns:[],latest_seq_id:0,has_more:false,active_turn:null});
+  await get(http+"/history");
+  expect(events("fixture/process")).toHaveLength(0);
+  await Promise.all([post(http+"/warmup"),post(http+"/warmup")]).then(res=>expect(res.map(r=>r.statusCode)).toEqual([204,204]));
+  await poll(()=>expect(events("fixture/process")).toHaveLength(1));
+  const request={prompt:"核对  所有  工作区中的历史回合和最终交付物，保留后续计划安排",client_msg_id:randomUUID()};
+  const response=await Promise.all([post(http+"/messages",request),post(http+"/messages",request)]);
+  const id=response[0].json().task_id as string;
+  expect(response.every(r=>r.statusCode===202&&r.json().task_id===id&&r.json().client_msg_id===request.client_msg_id)).toBe(true);
+  expect((await post(http+"/messages",{...request,prompt:"changed"})).statusCode).toBe(409);
+  await poll(()=>expect(status(id)).toBe("completed"));
+  const result=(await get(http+"/turns")).json();
+  expect(result.turns).toHaveLength(1);
+  expect(result.turns[0]).toMatchObject({id,client_msg_id:request.client_msg_id,user_content:request.prompt,status:"completed"});
+  expect(events("task_queued")).toEqual([{task_id:id,client_msg_id:request.client_msg_id}]);
+  const title=Array.from(request.prompt.replace(/\s+/g," ")).slice(0,24).join("");
+  expect(events("thread_updated")).toEqual([expect.objectContaining({title})]);
+  expect(ctx.native.prepare("SELECT title FROM threads WHERE id=?").pluck().get(thread)).toBe(title);
+  expect(events("fixture/process")).toHaveLength(1);
+});
+it("activates a warm session lease only while its assigned turn uses the client",async()=>{
+  const spawn=vi.spyOn(RpcClient,"start");
+  const before=WorkspaceFiles.prototype.beforeTurn;
+  let resume!:()=>void;
+  const barrier=new Promise<void>(resolve=>{resume=resolve;});
+  const checkpoint=vi.spyOn(WorkspaceFiles.prototype,"beforeTurn").mockImplementationOnce(async function(this:WorkspaceFiles,...args){
+    await barrier;
+    return before.apply(this,args);
+  });
+  try {
+    await manager.warmup(thread);
+    const lease=spawn.mock.calls[0]![1].CODEXDECK_INTERNAL_TOKEN!;
+    const authorized=()=>Boolean(ctx.resolveSessionLease!(lease,"model"));
+    expect(authorized()).toBe(false);
+    const task=await submit("wait");
+    await poll(()=>expect(checkpoint).toHaveBeenCalledOnce());
+    expect(authorized()).toBe(false);
+    resume();
+    await poll(()=>expect(authorized()).toBe(true));
+    await manager.cancel(task);
+    await poll(()=>expect(status(task)).toBe("cancelled"));
+    expect(authorized()).toBe(false);
+  } finally {resume();checkpoint.mockRestore();spawn.mockRestore();}
+});
+
 it("kills only the selected live process and releases its workspace for queued work",async()=>{
   expect((await app.inject("/api/admin/runtime/tasks")).statusCode).toBe(401);
   const waiting=await submit("wait");
@@ -115,6 +256,29 @@ it("kills only the selected live process and releases its workspace for queued w
   await poll(()=>expect(status(queued)).toBe("completed"));
   expect((await post("/api/admin/runtime/tasks/"+thread+"/kill")).statusCode).toBe(404);
   expect((await app.inject({url:"/api/admin/runtime/tasks",headers:{cookie}})).json()).toEqual([]);
+});
+
+it("keeps command output out of the initial HTTP page and requires the correct turn for step details",async()=>{
+  const id=randomUUID();
+  const http="/api/threads/"+thread+"/turns";
+  const get=(url:string)=>app.inject({url,headers:{cookie}});
+  ctx.native.prepare("INSERT INTO tasks(id,workspace_id,thread_id,prompt,status,created_at,updated_at) VALUES(?,?,?,'hello','completed','','')")
+    .run(id,workspace,thread);
+  const source=new ThreadEvents(ctx);
+  const log="result "+randomUUID();
+  source.append(thread,"item/completed",{item:{id:"command",type:"commandExecution",command:"read",aggregatedOutput:log}},id);
+  source.append(thread,"task_completed",{task_id:id},id);
+  const initial=await get(http);
+  expect(initial.statusCode).toBe(200);
+  expect(initial.payload).not.toContain(log);
+  const entry=initial.json().turns[0];
+  expect(entry.timeline[0].operations[0]).toMatchObject({id:"command",detail:""});
+  expect((await get("/api/turns/"+id+"/steps/command")).json().detail).toContain(log);
+  expect((await get("/api/turns/"+id+"/steps/missing")).statusCode).toBe(404);
+  expect((await app.inject("/api/turns/"+id+"/steps/command")).statusCode).toBe(401);
+  expect((await get(http+"?limit=0")).statusCode).toBe(400);
+  expect((await get(http+"?before_turn_index="+entry.turn_index)).json().turns).toHaveLength(0);
+  expect(events("fixture/process")).toHaveLength(0);
 });
 
 it("steers and interrupts a live turn, hot-switches the real gateway without respawning, and resumes after a crash", async () => {
@@ -158,7 +322,7 @@ it("serves approvals over two-way RPC, remembers scoped rules, delivers guidance
   const denied = await submit("approve:pnpm build");
   await decision(await pending(),"deny_guide","use the existing build");
   await poll(() => expect(status(denied)).toBe("completed"));
-  expect(events("item/agentMessage/delta").at(-1).delta).toBe("guidance:use the existing build");
+  expect(ctx.native.prepare("SELECT assistant_markdown FROM thread_turns WHERE id=?").pluck().get(denied)).toContain("guidance:use the existing build");
   expect(events("fixture/approval").at(-1).decision).toBe("decline");
   const aborted = await submit("approve:pnpm test && other");
   await decision(await pending(),"abort");

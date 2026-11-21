@@ -1,3 +1,4 @@
+import {NumberControl,ToggleSwitch} from "./Controls";
 import { useEffect, useRef, useState } from "react";
 import { Copy, KeyRound, Plus, ShieldMinus, X } from "lucide-react";
 import type { ApiKey, Workspace } from "@codexdeck/shared";
@@ -142,9 +143,8 @@ export function OpenApi() {
             </label>
             <label>
               每分钟请求数（RPM）
-              <input
+              <NumberControl
                 value={rpm}
-                type="number"
                 min={1}
                 max={10000}
                 required
@@ -156,10 +156,9 @@ export function OpenApi() {
             <legend>作用域</legend>
             {scopes.map((s) => (
               <label className="ad-check" key={s}>
-                <input
-                  type="checkbox"
+                <ToggleSwitch
                   checked={rights.includes(s)}
-                  onChange={(e) => setRights(e.target.checked ? [...rights, s] : rights.filter((v) => v !== s))}
+                  onCheckedChange={next=> setRights(next ? [...rights, s] : rights.filter((v) => v !== s))}
                 />
                 {s}
               </label>
@@ -170,11 +169,10 @@ export function OpenApi() {
             <div className="ad-scroll-list">
               {spaces.map((s) => (
                 <label className="ad-check" key={s.id}>
-                  <input
-                    type="checkbox"
+                  <ToggleSwitch
                     checked={allowed.includes(s.id)}
-                    onChange={(e) =>
-                      setAllowed(e.target.checked ? [...allowed, s.id] : allowed.filter((v) => v !== s.id))
+                    onCheckedChange={next=>
+                      setAllowed(next ? [...allowed, s.id] : allowed.filter((v) => v !== s.id))
                     }
                   />
                   {s.name}
