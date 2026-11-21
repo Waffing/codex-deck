@@ -110,14 +110,20 @@ export class RpcClient {
   }
 
   async close(force = false) {
-    this.proc.stdin.end();
-    if (this.dispose) { await this.dispose(); await this.exited; return; }
-    if (!force && await Promise.race([this.exited.then(() => true), delay(1200, false, { ref: false })])) return;
+    if (this.dispose) { this.proc.stdin.end(); await this.dispose(); await this.exited; return; }
+    if (this.proc.exitCode!==null || this.proc.signalCode!==null) return this.exited;
     if (process.platform === "win32" && this.proc.pid) {
+      // EOF lets Codex exit before its helpers. Windows needs the live parent
+      // PID to close the whole tree and release its workspace handles.
       const killer = spawn(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
         ["/F", "/T", "/PID", String(this.proc.pid)], { stdio: "ignore", windowsHide: true });
       killer.once("error", () => this.proc.kill());
-    } else this.proc.kill("SIGKILL");
+      killer.once("exit", code => {if (code && this.alive) this.proc.kill();});
+    } else {
+      this.proc.stdin.end();
+      if (!force && await Promise.race([this.exited.then(() => true), delay(1200, false, { ref: false })])) return;
+      this.proc.kill("SIGKILL");
+    }
     await this.exited;
   }
 }
