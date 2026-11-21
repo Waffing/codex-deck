@@ -1,5 +1,5 @@
 import { installationCode } from "../src/routes/auth.js";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -16,6 +16,7 @@ import { deploymentCheckSchema } from "@codexdeck/shared";
 import { openDatabase } from "../src/db/index.js";
 import { SecretMasker } from "../src/security/secret-masker.js";
 import { signPayload } from "../src/security/crypto.js";
+import { registerWorkspaceSecretRoutes } from "../src/security/workspace-secrets.js";
 import {registerTempAccess} from "../src/temp-access/routes.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { parseGatewayConfig } from "../src/app.js";
@@ -48,6 +49,7 @@ beforeAll(async()=>{
   await app.register(websocket);
   registerTempAccess(app,ctx);
   registerAuthRoutes(app,ctx);
+  registerWorkspaceSecretRoutes(app,ctx);
   service=registerOps(app,ctx,files,events,{async requestOpsApproval(){approvalCount++;if(clearScope) scoped="";return approve;}},{dataDirectory:data,workspaceRoot:dir});
   origin=await app.listen({host:"127.0.0.1",port:0});
   const setup=await fetch(origin+"/api/auth/setup",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ setup_code: installationCode(ctx.native,ctx.masterKey),password:"fixture-admin-1234"})});
@@ -199,6 +201,42 @@ test("starts a workspace Node HTTP entry and forwards GET, POST and WebSocket wi
   expect(blocked.verification).toMatchObject({ok:false,http:{status:200},logs:{issues:["[stderr] UncaughtException fixture"]}});
   const socket=new WebSocket(preview.replace("http:","ws:"),{headers:{cookie}});
   try {expect((await once(socket,"message"))[0].toString()).toBe("OK");} finally {socket.terminate();}
+},30000);
+
+test("injects only deployment secrets into an administrator's Node entry and keeps unscoped deployments empty",async()=>{
+  const value=randomBytes(24).toString("hex"),verifyOnly=randomBytes(24).toString("hex");
+  const scopedToken=signPayload({aud:"codexdeck-ops",thread_id:"ops-thread",task_id:"vault-admin-turn",
+    iat:Math.floor(Date.now()/1000),exp:Math.floor(Date.now()/1000)+600},service.deployer.ctx.masterKey);
+  db.native.prepare("INSERT INTO tasks(id,workspace_id,thread_id,prompt,status,created_at,updated_at) VALUES('vault-admin-turn',?,'ops-thread','deploy','running','','')").run(workspace);
+  const url="/api/workspaces/"+workspace+"/secrets";
+  const create=(payload:unknown)=>app.inject({method:"POST",url,headers:{cookie},payload:payload as Record<string,unknown>});
+  expect((await create({key_name:"APP_CREDENTIAL",value,inject_on_deploy:true})).statusCode).toBe(201);
+  expect((await create({key_name:"VERIFY_ONLY",value:verifyOnly,inject_on_verify:true})).statusCode).toBe(201);
+  await mkdir(path.join(root,"vault-app"));
+  await writeFile(path.join(root,"vault-app","app.cjs"),[
+    "const http=require('node:http'), crypto=require('node:crypto');",
+    "const selected=process.env.APP_CREDENTIAL||'', digest=crypto.createHash('sha256').update(selected).digest('hex');",
+    "console.log('selected',selected);",
+    "http.createServer((req,res)=>res.end(digest+':'+Boolean(process.env.VERIFY_ONLY))).listen(+process.env.PORT,process.env.HOST);",
+  ].join("\n"));
+  for(const [credential,expected,pending] of [[scopedToken,value,false],[token,"",false],[scopedToken,"",true]] as const) {
+    db.native.prepare("UPDATE workspaces SET verify_external_pending=? WHERE id=?").run(Number(pending),workspace);
+    const r=await op("app_deploy_staging",{mode:"local",entry:"app.cjs",public_dir:"vault-app"},credential);
+    expect(r.status).toBe(200);
+    const staged=await r.json();
+    expect(await (await fetch(origin+staged.preview_url,{headers:{cookie}})).text()).toBe(createHash("sha256").update(expected).digest("hex")+":false");
+    const logs=(await (await op("app_logs",{deployment_id:staged.id},credential)).json()).logs;
+    expect(logs).not.toContain(value);
+    if(expected) expect(logs).toContain("selected [REDACTED]");
+    expect(service.deployer.get(staged.id).config_json).not.toContain(value);
+    if(pending) {
+      db.native.prepare("UPDATE workspaces SET verify_external_pending=0 WHERE id=?").run(workspace);
+      const restarted=await service.deployer.restart(staged.id);
+      expect(await (await fetch(origin+restarted.preview_url,{headers:{cookie}})).text()).toBe(createHash("sha256").update("").digest("hex")+":false");
+    }
+    await service.deployer.stop(staged.id);
+  }
+  db.native.prepare("DELETE FROM tasks WHERE id='vault-admin-turn'").run();
 },30000);
 
 test("stages entries in public and keeps existing workspace-root entries working",async()=>{

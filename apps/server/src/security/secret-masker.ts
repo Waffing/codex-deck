@@ -10,9 +10,13 @@ const secretPatterns = [
 
 export class SecretMasker {
   private readonly knownSecrets = new Set<string>();
+  private sortedSecrets?:string[];
 
   register(secret: string | null | undefined): void {
-    if (secret) this.knownSecrets.add(secret);
+    if (secret && !this.knownSecrets.has(secret)) {
+      this.knownSecrets.add(secret);
+      this.sortedSecrets=undefined;
+    }
   }
 
   endsWithSecretPrefix(text: string): boolean {
@@ -28,8 +32,13 @@ export class SecretMasker {
 
   maskString(value: string): string {
     let result = value;
-    for (const secret of [...this.knownSecrets].sort((left, right) => right.length - left.length)) {
-      result = result.split(secret).join("[REDACTED]");
+    this.sortedSecrets ??= [...this.knownSecrets].sort((left, right) => right.length - left.length);
+    const marker="[REDACTED]";
+    for (const secret of this.sortedSecrets) {
+      if (!result.includes(secret)) continue;
+      // A short literal vault value can also occur in the redaction marker.
+      result = marker.includes(secret) ? result.split(marker).map(part=>part.split(secret).join(marker)).join(marker)
+        : result.split(secret).join(marker);
     }
     for (const pattern of secretPatterns) result = result.replace(pattern, "[REDACTED]");
     return result;

@@ -50,14 +50,14 @@ export function projectMountSource(project:string,data:string,mounts?:Mount[]) {
 
 export async function isolatedRunner(options:{
   workspace:string; data:string; config:string; threadId:string; workspaceId:string;
-  leases:Record<"model"|"ops",string>; port:number; reviewed:boolean;
+  leases:Record<"model"|"ops",string>; port:number; reviewed:boolean; readOnly?:boolean;
 }) {
   const {id,mounts}=await executorRuntime();
   const uid=process.getuid!(),gid=process.getgid!();
   const data=await realpath(options.data), project=await realpath(options.workspace);
   const sourceProject=projectMountSource(project,data,mounts);
-  const state=await workspaceDirectory(data,path.join(options.reviewed?"reviewed-sessions":"executor-sessions",options.threadId),true);
-  const cache=await workspaceDirectory(data,path.join(options.reviewed?"reviewed-caches":"executor-caches",options.workspaceId),true);
+  const state=await workspaceDirectory(data,path.join(options.readOnly?"plan-sessions":options.reviewed?"reviewed-sessions":"executor-sessions",options.threadId),true);
+  const cache=options.readOnly ? undefined : await workspaceDirectory(data,path.join(options.reviewed?"reviewed-caches":"executor-caches",options.workspaceId),true);
   const relayDir=await workspaceDirectory(data,"executor-relays",true);
   const name="codexdeck-turn-"+randomUUID();
   const socket=path.join(relayDir,name.slice(-12)+".sock");
@@ -66,7 +66,7 @@ export async function isolatedRunner(options:{
   const relay=createServer((req,res)=>{
     const route=req.url??"";
     const lease=route==="/internal/v1/responses" ? options.leases.model
-      : /^\/internal\/ops\/[a-z_]+$/.test(route) ? options.leases.ops : undefined;
+      : !options.readOnly && /^\/internal\/ops\/[a-z_]+$/.test(route) ? options.leases.ops : undefined;
     if(req.method!=="POST" || !lease || req.headers.authorization!=="Bearer "+lease) {
       res.writeHead(403).end();return;
     }
@@ -80,16 +80,17 @@ export async function isolatedRunner(options:{
     res.once("close",()=>upstream.destroy());
     req.pipe(upstream);
   });
-  const args=["run","--rm","-i","--init","--pull","never","--name",name,"--network","bridge",
+  const args=["run","--rm","-i","--init","--pull","never","--name",name,"--network",options.readOnly?"none":"bridge",
     "--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--user",uid+":"+gid,
     "--pids-limit","128","--memory","512m","--memory-swap","512m","--cpus","1","--no-healthcheck",
     "--tmpfs","/tmp:size=64m,mode=1777","--tmpfs","/home/runner:size=32m,uid="+uid+",gid="+gid,
     "--tmpfs","/codex:size=32m,uid="+uid+",gid="+gid,
     "--workdir","/workspace","--env","HOME=/home/runner","--env","CODEX_HOME=/codex",
     "--env","NPM_CONFIG_CACHE=/cache/npm","--env","PIP_CACHE_DIR=/cache/pip","--env","UV_CACHE_DIR=/cache/uv",
-    "--env","CODEXDECK_INTERNAL_TOKEN","--env","CODEXDECK_OPS_TOKEN","--env","CODEXDECK_OPS_URL=http://127.0.0.1:3141/internal/ops"];
-  for(const [local,target,ro] of [[project,"/workspace",false],[state,"/codex/sessions",false],
+    "--env","CODEXDECK_INTERNAL_TOKEN",...(options.readOnly?[]:["--env","CODEXDECK_OPS_TOKEN","--env","CODEXDECK_OPS_URL=http://127.0.0.1:3141/internal/ops"])];
+  for(const [local,target,ro] of [[project,"/workspace",options.readOnly],[state,"/codex/sessions",false],
     [cache,"/cache",false],[await realpath(options.config),"/run/deck-config",true],[socket,"/run/deck.sock",true]] as const) {
+    if(!local) continue;
     const source=target==="/workspace" ? sourceProject : mountSource(local,mounts);
     if (/[,"\r\n]/.test(source)) throw new Error("执行目录名称包含 Docker 不支持的字符。");
     args.push("--mount","type=bind,src="+source+",dst="+target+(ro?",readonly":""));

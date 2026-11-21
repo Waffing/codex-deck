@@ -45,8 +45,8 @@ it.runIf(process.env.CODEXDECK_REAL_CODEX==="1")("resumes a compacted thread aft
     const post=(url:string,payload:Record<string,unknown>)=>app.inject({method:"POST",url,payload,headers:{cookie}});
     const workspace=(await post("/api/workspaces",{name:"fresh"})).json();
     const thread=(await post("/api/threads",{workspace_id:workspace.id})).json().id;
-    const ask=async(prompt:string)=>{
-      const reply=await post(`/api/threads/${thread}/messages`,{prompt});expect(reply.statusCode,reply.body).toBe(202);
+    const ask=async(prompt:string,target=thread)=>{
+      const reply=await post(`/api/threads/${target}/messages`,{prompt});expect(reply.statusCode,reply.body).toBe(202);
       await expect.poll(()=>ctx.native.prepare("SELECT status FROM tasks WHERE id=?").pluck().get(reply.json().task_id),{timeout:25000}).toBe("completed");
     };
     await ask("Original unique marker OLD-CONTEXT-9876");
@@ -56,8 +56,16 @@ it.runIf(process.env.CODEXDECK_REAL_CODEX==="1")("resumes a compacted thread aft
     failSummary=false;
     const compact=await post(`/api/threads/${thread}/compact`,{});
     expect(compact.statusCode,compact.body).toBe(200);expect(remote()).not.toBe(before);
+    const handoff=await post(`/api/threads/${thread}/handoff`,{focus_note:"carry forward the latest verified state"});
+    expect(handoff.statusCode,handoff.body).toBe(201);
+    const child=handoff.json().thread_id;
+    await ask("Start clean from the handoff.",child);
+    expect(inputs.at(-1)).toContain("HANDOFF-4712");expect(inputs.at(-1)).not.toContain("OLD-CONTEXT-9876");
     await app.close();ctx.native.close();ctx=await context();app=createServer(ctx,{dataDirectory:data});await app.listen({port:0,host:"127.0.0.1"});
     await ask("Continue after restart.");
     expect(inputs.at(-1)).toContain("HANDOFF-4712");expect(inputs.at(-1)).toContain("Continue after restart.");expect(inputs.at(-1)).not.toContain("OLD-CONTEXT-9876");
+    await ask("Continue the child after restart.",child);
+    expect(inputs.at(-1)).toContain("HANDOFF-4712");expect(inputs.at(-1)).toContain("Continue the child after restart.");
+    expect(inputs.at(-1)).not.toContain("OLD-CONTEXT-9876");
   } finally {await app.close();ctx.native.close();upstream.closeAllConnections();await new Promise<void>(r=>upstream.close(()=>r()));await rm(data,{recursive:true,force:true,maxRetries:3});}
 },90000);

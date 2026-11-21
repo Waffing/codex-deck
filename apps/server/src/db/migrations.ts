@@ -232,6 +232,42 @@ export const migrations = [
       ALTER TABLE models ADD COLUMN confirmed_free INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    version: 10,
+    sql: `
+      ALTER TABLE workspaces ADD COLUMN verify_commands_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE workspaces ADD COLUMN auto_verify_enabled INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE workspaces ADD COLUMN verify_network_enabled INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE workspaces ADD COLUMN verify_external_pending INTEGER NOT NULL DEFAULT 0;
+      UPDATE workspaces SET verify_external_pending=1 WHERE id IN (SELECT workspace_id FROM tasks WHERE api_key_id IS NOT NULL OR guest_link_id IS NOT NULL);
+      ALTER TABLE workspaces ADD COLUMN max_self_heal_retries INTEGER NOT NULL DEFAULT 2 CHECK(max_self_heal_retries BETWEEN 0 AND 5);
+      ALTER TABLE workspaces ADD COLUMN review_model_alias TEXT;
+      ALTER TABLE threads ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'execute' CHECK(execution_mode IN ('plan','execute'));
+      ALTER TABLE threads ADD COLUMN parent_thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL;
+      ALTER TABLE threads ADD COLUMN handoff_doc TEXT;
+      ALTER TABLE threads ADD COLUMN plan_turn_id TEXT;
+      ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'execute';
+      ALTER TABLE tasks ADD COLUMN verify_root_id TEXT;
+      ALTER TABLE tasks ADD COLUMN verify_only INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE tasks ADD COLUMN verify_attempt INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE tasks ADD COLUMN plan_source_id TEXT;
+      ALTER TABLE tasks ADD COLUMN review_feedback_hash TEXT;
+      CREATE UNIQUE INDEX tasks_plan_source ON tasks(plan_source_id) WHERE plan_source_id IS NOT NULL;
+      CREATE TABLE code_reviews (
+        id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        turn_id TEXT REFERENCES tasks(id) ON DELETE CASCADE, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        reviewer_model_alias TEXT NOT NULL, diff_hash TEXT NOT NULL, summary TEXT NOT NULL,
+        findings_json TEXT NOT NULL, truncated INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+      );
+      CREATE INDEX reviews_by_thread ON code_reviews(thread_id,created_at);
+      CREATE TABLE workspace_secrets (
+        id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        key_name TEXT NOT NULL, value_enc TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+        inject_on_verify INTEGER NOT NULL DEFAULT 0, inject_on_deploy INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(workspace_id,key_name)
+      );
+    `,
+  },
 ];
 
 export function runMigrations(database: Database.Database): void {

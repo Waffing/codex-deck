@@ -1,4 +1,4 @@
-import { blob, integer, real, sqliteTable, text, primaryKey } from "drizzle-orm/sqlite-core";
+import { blob, integer, real, sqliteTable, text, primaryKey, unique, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
@@ -52,6 +52,12 @@ export const models = sqliteTable("models", {
 });
 
 export const workspaces = sqliteTable("workspaces", {
+  verifyCommandsJson: text("verify_commands_json").notNull().default("[]"),
+  autoVerifyEnabled: integer("auto_verify_enabled",{mode:"boolean"}).notNull().default(false),
+  verifyNetworkEnabled: integer("verify_network_enabled",{mode:"boolean"}).notNull().default(false),
+  verifyExternalPending:integer("verify_external_pending",{mode:"boolean"}).notNull().default(false),
+  maxSelfHealRetries: integer("max_self_heal_retries").notNull().default(2),
+  reviewModelAlias: text("review_model_alias"),
   automationLevel: text("automation_level").notNull().default("conservative"),
   status: text("status").notNull().default("ready"),
   id: text("id").primaryKey(),
@@ -62,6 +68,10 @@ export const workspaces = sqliteTable("workspaces", {
 });
 
 export const threads = sqliteTable("threads", {
+  executionMode: text("execution_mode").notNull().default("execute"),
+  parentThreadId: text("parent_thread_id").references(():AnySQLiteColumn=>threads.id,{onDelete:"set null"}),
+  handoffDoc: text("handoff_doc"),
+  planTurnId: text("plan_turn_id"),
   executorMode: text("executor_mode").notNull().default("standard"),
   pinned: integer("pinned", {mode:"boolean"}).notNull().default(false),
   lastContextTokens: integer("last_context_tokens"),
@@ -187,6 +197,11 @@ export const guestSessions = sqliteTable("guest_sessions", {
   lastSeenAt:text("last_seen_at").notNull(),workspaceId:text("workspace_id"),
 });
 export const tasks = sqliteTable("tasks", {
+  executionMode:text("execution_mode").notNull().default("execute"),
+  verifyRootId:text("verify_root_id"), verifyAttempt:integer("verify_attempt").notNull().default(0),
+  planSourceId:text("plan_source_id").unique(),
+  reviewFeedbackHash:text("review_feedback_hash"),
+  verifyOnly:integer("verify_only",{mode:"boolean"}).notNull().default(false),
   guestLinkId:text("guest_link_id").references(()=>tempAccessLinks.id),
   answerMarkdown: text("answer_markdown"),
   turnDiffJson: text("turn_diff_json"),
@@ -205,6 +220,22 @@ export const tasks = sqliteTable("tasks", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const codeReviews = sqliteTable("code_reviews", {
+  id:text("id").primaryKey(), threadId:text("thread_id").notNull().references(()=>threads.id,{onDelete:"cascade"}),
+  turnId:text("turn_id").references(()=>tasks.id,{onDelete:"cascade"}),
+  workspaceId:text("workspace_id").notNull().references(()=>workspaces.id,{onDelete:"cascade"}),
+  reviewerModelAlias:text("reviewer_model_alias").notNull(), diffHash:text("diff_hash").notNull(),
+  summary:text("summary").notNull(), findingsJson:text("findings_json").notNull(),
+  truncated:integer("truncated",{mode:"boolean"}).notNull().default(false), createdAt:text("created_at").notNull(),
+});
+export const workspaceSecrets = sqliteTable("workspace_secrets", {
+  id:text("id").primaryKey(), workspaceId:text("workspace_id").notNull().references(()=>workspaces.id,{onDelete:"cascade"}),
+  keyName:text("key_name").notNull(), valueEnc:text("value_enc").notNull(), description:text("description").notNull().default(""),
+  injectOnVerify:integer("inject_on_verify",{mode:"boolean"}).notNull().default(false),
+  injectOnDeploy:integer("inject_on_deploy",{mode:"boolean"}).notNull().default(false),
+  createdAt:text("created_at").notNull(), updatedAt:text("updated_at").notNull(),
+}, table=>[unique().on(table.workspaceId,table.keyName)]);
 
 export const threadTurns = sqliteTable("thread_turns", {
   id:text("id").primaryKey().references(()=>tasks.id,{onDelete:"cascade"}),
@@ -251,6 +282,7 @@ export const auditLogs=sqliteTable("audit_logs",{
   detailsJson:text("details_json").notNull(),createdAt:text("created_at").notNull(),
 });
 export const schema = {
+  codeReviews,workspaceSecrets,
   tempAccessLinks,guestSessions,
   taskSubmissions,adminAudit,userSessions,loginBans,auditLogs,
   tasks,threadTurns,turnAnswerReplay,

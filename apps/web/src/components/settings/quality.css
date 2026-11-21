@@ -1,0 +1,39 @@
+.quality-panel{padding:16px;display:grid;gap:14px;min-width:0;font-size:13px;overflow-wrap:anywhere}
+.quality-tabs,.quality-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.quality-tabs{border-bottom:1px solid var(--border);gap:3px;padding-bottom:6px}
+.quality-tabs button,.quality-actions button,.quality-card h3,.plan-switch{display:inline-flex;align-items:center;gap:6px}
+.quality-tabs button{padding:7px 9px;border-radius:6px;color:var(--muted)}
+.quality-tabs button[aria-pressed=true],.plan-switch[aria-pressed=true]{background:var(--soft);color:var(--accent)}
+.quality-form,.quality-vault,.quality-card form{display:grid;gap:12px}
+.quality-form label{display:grid;gap:6px}
+.quality-form label.quality-toggle,.quality-vault li{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.quality-toggle{justify-content:space-between}
+.quality-form input:not([type=range]),.quality-panel select,.quality-panel textarea,.quality-card textarea{border:1px solid var(--border);background:var(--bg);color:var(--text);border-radius:6px;padding:6px 8px;min-width:0}
+.quality-panel textarea,.quality-card textarea{width:100%;resize:vertical}
+.vault-entry{-webkit-text-security:disc}
+.quality-vault ul{margin:0;list-style:none;padding:0}.quality-vault li{padding:10px 0;border-top:1px solid var(--border)}
+.quality-vault li p{width:100%}.quality-vault small,.quality-vault code,.quality-panel [role=status]{color:var(--muted)}
+.quality-vault li .quality-actions{margin-left:auto}
+.quality-panel [role=alert],.quality-card [role=alert]{color:var(--md-error,#ba5346)}
+.quality-card{padding:12px 15px;border:1px solid var(--border);border-radius:9px;background:var(--panel);margin:.8rem auto;width:min(100%,800px);font-size:13px}
+.quality-card summary{cursor:pointer}.quality-card details,.quality-card>form,.quality-card h3,.quality-card .quality-actions{margin-block:8px}
+.quality-card pre{overflow:auto;max-height:16rem;white-space:pre-wrap}
+.plan-ready,.handoff-card{border-left:3px solid var(--accent)}
+.gate-result[data-state=passed]{border-left:3px solid #3aa787}
+.gate-result[data-state=failed]{border-left:3px solid #db6966}
+.gate-result[data-state=repairing]{border-left:3px solid #d89d4f}
+@media(prefers-reduced-motion:no-preference){.gate-result[data-state=repairing]>summary{animation:quality-pulse 1.5s infinite alternate}@keyframes quality-pulse{to{opacity:.65}}}
+.cd-composer[data-mode=plan]{border-color:var(--accent);background:color-mix(in srgb,var(--soft) 26%,var(--panel))}
+.plan-switch{border:1px solid var(--border);border-radius:6px;padding:3px 6px;font-size:11px}
+.thread-action-menu{top:80px;right:12px}.quality-panel footer{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--border);padding:10px 0}
+.review-summary{display:grid;gap:8px}.review-summary article{padding:9px;border-left:3px solid var(--accent);background:var(--surface);border-radius:4px}
+.review-summary article[data-severity=critical]{border-color:#d35956}.review-summary article[data-severity=warning]{border-color:#cd9449}
+.review-summary article label{display:flex;gap:6px;align-items:baseline;font-weight:600}.review-summary article p{margin-top:5px}
+.review-link{color:var(--accent);font-family:var(--mono);text-decoration:underline}
+.quality-diff-lines{font:11px/1.6 var(--mono);min-width:0;overflow:auto}.quality-diff-lines>div{display:flex;align-items:baseline;min-height:1.5em;padding-inline:5px;color:var(--muted)}
+.quality-diff-lines>div[data-side=new]{background:var(--soft);color:var(--text)}.quality-diff-lines>div[data-side=old]{background:color-mix(in srgb,#d1605a 10%,var(--panel));color:var(--text)}
+.quality-diff-lines code{white-space:pre-wrap;overflow-wrap:anywhere}.quality-diff-lines button{font:inherit}
+.quality-diff-lines>div button{display:inline-flex;align-items:center;gap:2px;min-width:35px;color:var(--muted)}
+@media(hover:hover){.quality-diff-lines>div button svg{opacity:0}.quality-diff-lines>div:hover button svg,.quality-diff-lines>div:focus-within button svg{opacity:1}}
+.quality-diff-lines form,.review-comment{padding:8px;background:var(--surface)}.quality-diff-lines form button{margin:4px 12px 0 0}
+@media(max-width:767px){.cd-compose-controls{flex-wrap:wrap}.thread-action-menu{right:5px}.quality-panel{padding:12px}}

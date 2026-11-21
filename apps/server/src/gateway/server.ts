@@ -29,7 +29,7 @@ function findChannel(context: ServerContext, field: "id" | "alias", value: strin
     .where(and(eq(models[field], value), eq(models.enabled, true), eq(providers.enabled, true))).get();
 }
 
-function registerUsage(reply: FastifyReply, alias: string, context: ServerContext, threadId?:string, taskId?:string) {
+function registerUsage(reply: FastifyReply, alias: string, context: ServerContext, threadId?:string, taskId?:string,turnId=taskId) {
   const owner=threadId && context.native.prepare("SELECT workspace_id FROM threads WHERE id=?").pluck().get(threadId);
   const meter: Meter = { channel: null, attempted: [], input: 0, cached:null, timing:new OutputTiming(), output: 0, status: 200, error: null, known:false };
   const start = performance.now();
@@ -41,7 +41,7 @@ function registerUsage(reply: FastifyReply, alias: string, context: ServerContex
       id: randomUUID(), modelId: model?.id, providerId: model?.providerId, requestedAlias: context.masker.maskString(alias),
       inputTokens: meter.input, outputTokens: meter.output,...cost,
       usageKnown:meter.known,threadId,taskId,workspaceId:typeof owner==="string"?owner:null,
-      turnId:taskId,cachedInputTokens:meter.cached,ttftMs:meter.timing.ttft,tokensPerSec:meter.timing.speed(meter.output),
+      turnId,cachedInputTokens:meter.cached,ttftMs:meter.timing.ttft,tokensPerSec:meter.timing.speed(meter.output),
       latencyMs: Math.round(performance.now() - start), statusCode: reply.raw.writableFinished ? meter.status : 499,
       failoverFrom: meter.attempted.length > 1 ? meter.attempted.slice(0, -1).join(",") : null,
       error: meter.error, createdAt: new Date().toISOString(),
@@ -198,8 +198,9 @@ export function registerGatewayRoutes(app: FastifyInstance, context: ServerConte
       const thread = context.native.prepare("SELECT active_model_alias,reasoning_effort FROM threads WHERE id=?")
         .get(claims.thread_id) as {active_model_alias: string | null; reasoning_effort: string | null} | undefined;
       if (!thread?.active_model_alias) return reply.code(403).send({error: "Thread unavailable."});
-      input.model = claims.purpose==="compaction" && typeof claims.model_alias==="string" ? claims.model_alias : thread.active_model_alias;
-      if (thread.reasoning_effort && claims.purpose!=="compaction") input.reasoning = { ...input.reasoning as object, effort: thread.reasoning_effort };
+      const scopedModel=["compaction","review","handoff"].includes(String(claims.purpose));
+      input.model = scopedModel && typeof claims.model_alias==="string" ? claims.model_alias : thread.active_model_alias;
+      if (thread.reasoning_effort && !scopedModel) input.reasoning = { ...input.reasoning as object, effort: thread.reasoning_effort };
     }
     const taskId=typeof claims?.task_id==="string"?claims.task_id:undefined;
     const guest=taskLink(context,taskId);
@@ -208,14 +209,15 @@ export function registerGatewayRoutes(app: FastifyInstance, context: ServerConte
     // across supported tokenizers, including tool descriptions, image payloads and message framing.
     const inputReserve=guest && (guest.max_tokens!=null || guest.max_cost!=null)
       ? Buffer.byteLength(JSON.stringify([input.instructions,input.tools,input.input]))+128 : 0;
-    const meter = registerUsage(reply, input.model, context,typeof claims?.thread_id==="string"?claims.thread_id:undefined,taskId);
+    const turnId=claims?.purpose==="review" && typeof claims.review_turn_id==="string"?claims.review_turn_id:taskId;
+    const meter = registerUsage(reply, input.model, context,typeof claims?.thread_id==="string"?claims.thread_id:undefined,taskId,turnId);
     const primary = findChannel(context, "alias", input.model);
     if (!primary) {
       meter.status = 404;
       meter.error = "Unknown or disabled model.";
       return reply.code(meter.status).send({ error: meter.error });
     }
-    const ids = new Set<string>([primary.model.id, ...JSON.parse(primary.model.fallbackModelIdsJson)]);
+    const ids = new Set<string>([primary.model.id, ...(claims?.purpose==="review"?[]:JSON.parse(primary.model.fallbackModelIdsJson))]);
     let failure = new GatewayError(502, "No available model.");
     for (const id of ids) {
       const channel = id === primary.model.id ? primary : findChannel(context, "id", id);

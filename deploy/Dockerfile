@@ -50,7 +50,7 @@ RUN apt-get update \
       > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
-    && npm install --global "@openai/codex@$CODEX_VERSION" \
+    && npm install --global "@openai/codex@$CODEX_VERSION" pnpm@11.25.0 \
     && if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \
       node /app/apps/server/node_modules/playwright-core/cli.js install --with-deps chromium; \
     fi \

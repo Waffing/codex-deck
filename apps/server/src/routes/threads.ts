@@ -3,6 +3,8 @@ import type { FastifyInstance } from "fastify";
 import type { ServerContext } from "../app.js";
 import { scopedAccess,scopedGuest } from "../temp-access/routes.js";
 import type { ThreadManager } from "../codex/manager.js";
+import {createRequireAdmin} from "../auth.js";
+import {z} from "zod";
 
 type ById = { Params: { id: string } };
 export function registerThreadRoutes(app: FastifyInstance, context: ServerContext, manager: ThreadManager) {
@@ -21,7 +23,7 @@ export function registerThreadRoutes(app: FastifyInstance, context: ServerContex
   app.post<ById>("/api/threads/:id/messages",auth,async (request,reply) => {
     const parsed = threadMessageSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({error:"Invalid message."});
-    return reply.code(202).send(manager.submit(request.params.id,parsed.data.prompt,undefined,parsed.data.image_ids,scopedGuest(request)?.link.id,parsed.data.client_msg_id));
+    return reply.code(202).send(manager.submit(request.params.id,parsed.data.prompt,undefined,parsed.data.image_ids,scopedGuest(request)?.link.id,parsed.data.client_msg_id,{mode:parsed.data.mode}));
   });
   app.post<ById>("/api/threads/:id/warmup",auth,async(request,reply)=>{
     await manager.warmup(request.params.id);
@@ -30,7 +32,25 @@ export function registerThreadRoutes(app: FastifyInstance, context: ServerContex
   app.patch<ById>("/api/threads/:id",auth,async(req,reply)=>{
     const input=threadUpdateSchema.safeParse(req.body);
     if(!input.success) return reply.code(400).send({error:"Invalid thread update."});
-    return manager.updateThread(req.params.id,input.data.pinned,input.data.title);
+    return manager.updateThread(req.params.id,input.data.pinned,input.data.title,input.data.execution_mode);
+  });
+  const admin={preHandler:createRequireAdmin(context)};
+  app.get<ById>("/api/threads/:id/quality",admin,async req=>manager.quality(req.params.id));
+  const plan=z.object({turn_id:z.string().uuid()});
+  app.post<ById>("/api/threads/:id/verify",admin,async(req,reply)=>{
+    const input=plan.extend({reviewed:z.literal(true)}).strict().safeParse(req.body);
+    if(!input.success) return reply.code(400).send({error:"Explicit workspace review required."});
+    return reply.code(202).send(manager.verifyReviewed(req.params.id,input.data.turn_id));
+  });
+  app.post<ById>("/api/threads/:id/plan/approve",admin,async(req,reply)=>{
+    const input=plan.strict().safeParse(req.body);
+    if(!input.success) return reply.code(400).send({error:"Invalid plan."});
+    return reply.code(202).send(manager.decidePlan(req.params.id,input.data.turn_id));
+  });
+  app.post<ById>("/api/threads/:id/plan/revise",admin,async(req,reply)=>{
+    const input=plan.extend({feedback:z.string().trim().min(1).max(8192)}).strict().safeParse(req.body);
+    if(!input.success) return reply.code(400).send({error:"Invalid revision."});
+    return reply.code(202).send(manager.decidePlan(req.params.id,input.data.turn_id,input.data.feedback));
   });
   app.delete<ById>("/api/threads/:id",auth,async(req,reply)=>{
     await manager.deleteThread(req.params.id);return reply.code(204).send();

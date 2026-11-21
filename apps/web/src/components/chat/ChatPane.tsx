@@ -4,6 +4,8 @@ import type { DrawerTab } from "../files/DrawerContent";
 import {Welcome} from "./Playbooks";
 import {Timeline,Minimap,defaultPreferences,type ChatPreferences} from "./Timeline";
 import {useTurnPages,collectSnapshots,type ChatTurn} from "./turns";
+import {QualityCards} from "./QualityCards";
+import {AnswerDocument} from "./AnswerDocument";
 import {Composer,type ComposerHandle} from "./Composer";
 import {queueMessage,deliver,discard,useOutbox} from "../../stores/outbox";
 import {ArtifactModeControl} from "./TurnFiles";
@@ -19,6 +21,8 @@ export type ChatProps = {
   onCreateThread: () => Promise<Thread>;
   onRefresh: () => void;
   onOpen: (tab: DrawerTab) => void;
+  onHandoff?:()=>void;
+  onJumpThread?:(id:string)=>void;
   mobileApprovalId?: string;
   preferences?: ChatPreferences;
   onSnapshot?:(thread:string,cursor:number)=>void;
@@ -27,7 +31,7 @@ export type ChatProps = {
 export function ChatPane(props:ChatProps){
   return <ChatBody key={props.workspace.id+":"+(props.thread?.id??"new")} {...props}/>;
 }
-function ChatBody({workspace,thread,events,approvals,models,providers,onCreateThread,onRefresh,onOpen,mobileApprovalId,onSnapshot,preferences=defaultPreferences,onInspect}:ChatProps){
+function ChatBody({workspace,thread,events,approvals,models,providers,onCreateThread,onRefresh,onOpen,mobileApprovalId,onJumpThread,onHandoff,onSnapshot,preferences=defaultPreferences,onInspect}:ChatProps){
   const lifecycle=useRef(0);
   const terminal=events.reduce((n,e)=>["task_completed","task_failed","task_cancelled","context_compacted","artifacts_updated"].includes(e.type)?e.seq_id:n,lifecycle.current);
   // A fresh snapshot periodically folds long streams into a compact active turn.
@@ -65,9 +69,9 @@ function ChatBody({workspace,thread,events,approvals,models,providers,onCreateTh
     }else if(follow.current){box.scrollTop=box.scrollHeight;}
   },[turns,outgoing.length]);
   const pending=approvals.filter(a=>a.status==="pending"&&a.thread_id===thread?.id&&!(narrow&&a.id===mobileApprovalId));
-  const submit=async (prompt:string,imageIds:string[])=>{
+  const submit=async (prompt:string,imageIds:string[],mode?:"plan"|"execute")=>{
     follow.current=true;
-    const message=queueMessage(workspace.id,thread?.id??null,prompt,imageIds);
+    const message=queueMessage(workspace.id,thread?.id??null,prompt,imageIds,mode);
     await deliver(message,onCreateThread,()=>{page.refresh();onRefresh();});
   };
   const earlier=async()=>{
@@ -83,9 +87,11 @@ function ChatBody({workspace,thread,events,approvals,models,providers,onCreateTh
       const box=e.currentTarget;follow.current=box.scrollHeight-box.clientHeight-box.scrollTop<120;
       if(box.scrollTop<1 && !follow.current && page.more)void earlier();
     }} onWheel={e=>{if(e.deltaY<0&&e.currentTarget.scrollTop<10&&page.more)void earlier();}}>
+      {thread?.handoff_doc&&<details className="quality-card handoff-card"><summary>架构交接单</summary><AnswerDocument source={thread.handoff_doc} turnId={thread.id} complete={false} onError={setError}/>{thread.parent_thread_id&&<button className="btn-outline" onClick={()=>onJumpThread?.(thread.parent_thread_id!)}>打开来源会话</button>}</details>}
       {page.more&&<button className="ad-button" onClick={()=>void earlier()}>加载更早的记录</button>}
       {turns.length>0&&<><ArtifactModeControl/><Timeline turns={turns} threadId={thread?.id} workspaceId={workspace.id} preferences={preferences} onOpen={onOpen} onError={setError} onEdit={edit}/></>}
       {!turns.length&&!outgoing.length&&(!thread||page.initialLoaded)&&<Welcome workspaceId={workspace.id} workspaceName={workspace.name} onSelect={p=>void submit(p,[])}/>}
+      {thread&&<QualityCards threadId={thread.id} events={events} refresh={()=>{page.refresh();onRefresh();}}/>}
       {outgoing.map(message=><article key={message.id} className="cd-turn" data-client-message={message.id}>
         <section className="cd-question"><p className="cd-prompt">{message.prompt||"图片附件"}</p></section>
         {message.state==="failed"?<button className="cd-compose-error" title={message.error} onClick={()=>void deliver(message,onCreateThread,()=>{page.refresh();onRefresh();})}>发送失败 · 点击重试</button>
@@ -94,6 +100,6 @@ function ChatBody({workspace,thread,events,approvals,models,providers,onCreateTh
     </div>
     {pending.length>0&&<aside className="cd-pending-stack">{pending.map((a,i)=><ApprovalCard key={a.id} approval={a} workspaceName={workspace.name} onResolved={onRefresh} shortcut={i===0}/>)}</aside>}
     {(page.error||error)&&<p role="alert">{page.error||error}</p>}
-    <Composer {...{workspace,thread,models,providers,onCreateThread,onRefresh,latest,running,preferences}} hasTurns={!!turns.length} onSend={submit} refresh={page.refresh} handle={composer}/>
+    <Composer {...{workspace,thread,models,providers,onCreateThread,onRefresh,latest,running,preferences,onHandoff}} hasTurns={!!turns.length} onSend={submit} refresh={page.refresh} handle={composer}/>
   </div>;
 }

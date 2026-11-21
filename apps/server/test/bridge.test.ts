@@ -2,7 +2,7 @@ import { installationCode } from "../src/routes/auth.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer as httpServer } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,12 +25,17 @@ import { SecretMasker } from "../src/security/secret-masker.js";
 import { encryptSecret } from "../src/security/crypto.js";
 import {completeAnswer,turnEvents} from "../src/codex/timeline.js";
 import {projectTurn} from "@codexdeck/shared";
+import {collectVerification,runVerifyGate} from "../src/codex/verify-gate.js";
+import {registerWorkspaceRoutes} from "../src/routes/workspaces.js";
+import {registerWorkspaceSecretRoutes} from "../src/security/workspace-secrets.js";
 
 const fake = fileURLToPath(new URL("../tests/fixtures/fake-app-server.mjs",import.meta.url));
 let root: string, ctx: ServerContext, app: ReturnType<typeof Fastify>, manager: ThreadManager;
 let mock: ReturnType<typeof httpServer>, workspace: string, thread: string, cookie: string;
 let upstream: string[], notices: string[];
+let gate:typeof runVerifyGate;
 beforeEach(async () => {
+  gate=runVerifyGate;
   root = await mkdtemp(path.join(tmpdir(),"codexdeck-bridge-"));
   const data = await resolveDataDirectory("data",root);
   ctx = { ...await openDatabase(data,root),gatewayConfig:parseGatewayConfig(),masterKey:randomBytes(32),masker:new SecretMasker() };
@@ -60,10 +65,12 @@ beforeEach(async () => {
   workspace = (await files.create("Test workspace","conservative")).id;
   manager = new ThreadManager(ctx,files,events,new Notifications(ctx),{
     dataDirectory:data,workspaceRoot:root,codexBin:fake,port:() => (app.server.address() as AddressInfo).port,
-    approvalTimeoutMs:650, notifyAfterMs:30,
+    approvalTimeoutMs:650, notifyAfterMs:30,verifyGate:opts=>gate(opts),
   });
   registerSettingsRoutes(app,ctx,manager,data);
   registerThreadRoutes(app,ctx,manager);
+  registerWorkspaceRoutes(app,ctx,files);
+  registerWorkspaceSecretRoutes(app,ctx);
   registerConsoleRoutes(app,ctx,files);
   registerAuthRoutes(app,ctx);
   registerGatewayRoutes(app,ctx);
@@ -83,6 +90,88 @@ afterEach(async () => {
   if (root) await rm(root,{recursive:true,force:true});
 });
 const poll = (assertion:()=>void) => vi.waitFor(assertion,{timeout:6000,interval:15});
+it("runs a read-only plan, revises it and admits exactly one write turn after approval",async()=>{
+  const base="/api/threads/"+thread;
+  const first=await post(base+"/messages",{mode:"plan",prompt:"计划更新 result.txt"});
+  expect(first.statusCode).toBe(202);
+  await poll(()=>expect(status(first.json().task_id)).toBe("completed"));
+  expect(events("fixture/process").at(-1)).toMatchObject({sandbox:"read-only",approvalPolicy:"never",hasOps:false,opsConfigured:false});
+  expect(ctx.native.prepare("SELECT count(*) FROM checkpoints WHERE thread_id=?").pluck().get(thread)).toBe(0);
+  const quality=await app.inject({url:base+"/quality",headers:{cookie}});
+  expect(quality.json().plan).toMatchObject({turn_id:first.json().task_id,status:"ready",markdown:expect.stringContaining("风险与验收")});
+  expect((await post(base+"/messages",{prompt:"直接执行",mode:"execute"})).statusCode).toBe(409);
+  const revised=await post(base+"/plan/revise",{turn_id:first.json().task_id,feedback:"增加测试"});
+  expect(revised.statusCode).toBe(202);await poll(()=>expect(status(revised.json().task_id)).toBe("completed"));
+  expect((await post(base+"/plan/approve",{turn_id:first.json().task_id})).statusCode).toBe(409);
+  const payload={turn_id:revised.json().task_id};
+  const [one,two]=await Promise.all([post(base+"/plan/approve",payload),post(base+"/plan/approve",payload)]);
+  expect(one.statusCode).toBe(202);expect(two.json().task_id).toBe(one.json().task_id);
+  await poll(()=>expect(status(one.json().task_id)).toBe("completed"));
+  expect(events("fixture/process").at(-1)).toMatchObject({sandbox:"workspace-write",approvalPolicy:"on-request",hasOps:true});
+  expect((await app.inject({url:base+"/quality",headers:{cookie}})).json().plan).toBeNull();
+},20000);
+
+const fixtureRunner=String.raw`
+let job="";process.stdin.on("data",c=>job+=c).once("end",()=>{
+  const {commands,env}=JSON.parse(job);
+  const send=x=>console.log(JSON.stringify(x));
+  for(const [index,c] of commands.entries()) {
+    send({kind:"start",index});
+    const value=env.QUALITY_TEST??"no credential";
+    for(const text of [value.slice(0,5),value.slice(5)]) send({kind:"output",index,stream:"stdout",text});
+    if(c==="wait") {setTimeout(()=>{},30000);return;}
+    send({kind:"end",index,code:c==="fail"?1:0});if(c==="fail")break;
+  }
+});`;
+
+it("detects safe manifest scripts and streams bounded retries with masked verification output",async()=>{
+  const base="/api/workspaces/"+workspace;
+  const workspacePath=String(ctx.native.prepare("SELECT path FROM workspaces WHERE id=?").pluck().get(workspace));
+  await writeFile(path.join(workspacePath,"package.json"),JSON.stringify({packageManager:"pnpm@11",scripts:{test:"ignored",lint:"ignored"}}));
+  expect((await post(base+"/verify-commands/detect")).json()).toEqual({commands:["pnpm run lint","pnpm run test"]});
+  const secret="fixture-opaque-value-for-check";
+  expect((await post(base+"/secrets",{key_name:"QUALITY_TEST",value:secret,inject_on_verify:true})).statusCode).toBe(201);
+  const cfg=await app.inject({method:"PATCH",url:base+"/quality",headers:{cookie},payload:{verify_commands:["fail"],auto_verify_enabled:true,max_self_heal_retries:2}});
+  expect(cfg.statusCode).toBe(200);
+  const granted:string[][]=[];
+  gate=async opts=>{
+    granted.push(Object.keys(opts.env));return collectVerification(opts,{file:process.execPath,args:["-e",fixtureRunner],env:{},stop:async()=>{}});
+  };
+  const first=await submit("change a file");
+  await poll(()=>expect(events("verify_gate_result")).toHaveLength(3));
+  const results=events("verify_gate_result");
+  expect(results.map(r=>[r.status,r.attempt])).toEqual([["repairing",0],["repairing",1],["failed",2]]);
+  expect(results.every(r=>r.commands[0].output==="[REDACTED]")).toBe(true);
+  expect(granted).toEqual(Array.from({length:3},()=>["QUALITY_TEST"]));
+  expect(ctx.native.prepare("SELECT count(*) FROM tasks WHERE verify_root_id=?").pluck().get(first)).toBe(2);
+  expect(JSON.stringify(ctx.native.prepare("SELECT * FROM thread_events").all())).not.toContain(secret);
+},25000);
+
+it("keeps external verification credential-free until an administrator reviews the workspace",async()=>{
+  const base="/api/workspaces/"+workspace;
+  await post(base+"/secrets",{key_name:"QUALITY_TEST",value:"fixture-safe-value",inject_on_verify:true});
+  await app.inject({method:"PATCH",url:base+"/quality",headers:{cookie},payload:{verify_commands:["pass"],auto_verify_enabled:true}});
+  gate=opts=>collectVerification(opts,{file:process.execPath,args:["-e",fixtureRunner],env:{},stop:async()=>{}});
+  const first=manager.submit(thread,"external change").task_id;
+  ctx.native.prepare("INSERT INTO api_keys(id,name,key_hash,scopes_json,created_at) VALUES('external','test','unique','[]','')").run();
+  ctx.native.prepare("UPDATE tasks SET api_key_id='external' WHERE id=?").run(first);
+  await poll(()=>expect(status(first)).toBe("completed"));
+  expect(events("verify_gate_result").at(-1)).toMatchObject({status:"passed",requires_review:true,commands:[{output:"no credential"}]});
+  const retry=await post("/api/threads/"+thread+"/verify",{turn_id:first,reviewed:true});
+  expect(retry.statusCode).toBe(202);await poll(()=>expect(status(retry.json().task_id)).toBe("completed"));
+  expect(events("verify_gate_result").at(-1)).toMatchObject({requires_review:false,commands:[{output:"[REDACTED]"}]});
+},15000);
+
+it("interrupts verification and never queues a repair after cancellation",async()=>{
+  await app.inject({method:"PATCH",url:"/api/workspaces/"+workspace+"/quality",headers:{cookie},payload:{verify_commands:["wait"],auto_verify_enabled:true}});
+  gate=opts=>collectVerification(opts,{file:process.execPath,args:["-e",fixtureRunner],env:{},stop:async()=>{}});
+  const first=await submit("change and wait");
+  await poll(()=>expect(events("verify_gate_progress").length).toBeGreaterThan(0));
+  expect((await post("/api/threads/"+thread+"/interrupt")).statusCode).toBe(204);
+  await poll(()=>expect(status(first)).toBe("cancelled"));
+  expect(events("verify_gate_result").at(-1)).toMatchObject({status:"cancelled",attempt:0});
+  expect(ctx.native.prepare("SELECT count(*) FROM tasks WHERE verify_root_id=?").pluck().get(first)).toBe(0);
+});
 async function post(path: string, payload: Record<string,unknown> = {}) {
   return app.inject({method:"POST",url:path,headers:{cookie},payload});
 }

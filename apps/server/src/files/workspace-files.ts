@@ -75,7 +75,7 @@ export class WorkspaceFiles {
   }
 
   list(): Workspace[] {
-    return this.context.native.prepare("SELECT * FROM workspaces ORDER BY created_at, id").all() as Workspace[];
+    return this.context.native.prepare("SELECT id,name,path,status,automation_level,created_at,updated_at FROM workspaces ORDER BY created_at, id").all() as Workspace[];
   }
 
   async availableLocalDirectories() {

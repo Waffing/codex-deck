@@ -64,7 +64,7 @@ export async function verifyUrl(input: VerifyInput, port: number, logs: string, 
         });
         await ctx.routeWebSocket("**/*",socket=>socket.close());
         const page=await ctx.newPage();
-        const issue=(message:string)=>{ if(report.browser.issues.length<60) report.browser.issues.push(masker.maskString(message.slice(0,2048))); };
+        const issue=(message:string)=>{ if(report.browser.issues.length<60) report.browser.issues.push(masker.maskString(message).slice(0,2048)); };
         page.on("console",msg=>{if(msg.type()==="error") issue(msg.text());});
         page.on("pageerror",err=>issue(err.message));
         page.on("response",res=>{if(res.status()>=400) issue(res.status()+" "+new URL(res.url()).pathname);});

@@ -10,3 +10,6 @@ export * from "./timeline.js";
 export * from "./turns.js";
 export * from "./temp-access.js";
 export * from "./security.js";
+export * from "./quality.js";
+export * from "./workspace-vault.js";
+export * from "./diff-lines.js";

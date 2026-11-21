@@ -24,6 +24,12 @@ export function rotateMasterKey(db: Database.Database, current: Buffer, next: Bu
         ...(hasPool?[row.api_keys_enc?seal(row.api_keys_enc):null,row.balance_token_enc?seal(row.balance_token_enc):null]:[]),row.id);
     }
     const channel = db.prepare('UPDATE notification_channels SET config_json=? WHERE id=?');
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspace_secrets'").get()) {
+      const update = db.prepare('UPDATE workspace_secrets SET value_enc=?,description=? WHERE id=?');
+      for (const row of db.prepare('SELECT id,value_enc,description FROM workspace_secrets').all() as {id:string;value_enc:string;description:string}[]) {
+        update.run(seal(row.value_enc), seal(row.description), row.id);
+      }
+    }
     for (const row of db.prepare('SELECT id,config_json FROM notification_channels').all() as {id:string;config_json:string}[]) {
       const config = row.config_json.startsWith('v1.') ? seal(row.config_json) : encryptSecret(JSON.stringify(JSON.parse(row.config_json)), next);
       channel.run(config, row.id);

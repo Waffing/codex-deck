@@ -174,7 +174,8 @@ export async function mobileExperienceJourney(page, shot, fits) {
     assert.deepEqual(posted,[]);
   } finally {page.off("request",track);}
   await page.getByRole("button",{name:"上下文占用",exact:true}).tap();
-  await page.getByRole("button",{name:"一键压缩上下文"}).tap();
+  const [compaction]=await Promise.all([page.waitForResponse(r=>r.url().endsWith("/compact")),page.getByRole("button",{name:"一键压缩上下文"}).tap()]);
+  assert.equal(compaction.status(),200,await compaction.text());
   await page.locator(".cd-context-notice").getByText(/上下文已压缩/).waitFor();
   await fits(page);
   await openMobileView("系统与通知");

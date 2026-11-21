@@ -61,6 +61,12 @@ it.runIf(process.env.CODEXDECK_REAL_CODEX==="1")("runs the actual Codex stdio pr
       expect(r.statusCode,r.body).toBeLessThan(300); return r.body ? r.json() : null;
     };
     const workspace=await post("/api/workspaces",{name:"offline-cli"});
+    const planner=await post("/api/threads",{workspace_id:workspace.id});
+    const planTask=await post(`/api/threads/${planner.id}/messages`,{prompt:"Inspect this workspace and propose a plan.",mode:"plan"});
+    await expect.poll(()=>ctx.native.prepare("SELECT status FROM tasks WHERE id=?").pluck().get(planTask.task_id),{timeout:20000}).toBe("completed");
+    expect(ctx.native.prepare("SELECT plan_turn_id FROM threads WHERE id=?").pluck().get(planner.id)).toBe(planTask.task_id);
+    expect(requestedTool).toBe(false);
+    expect(inventory.join(" ")).not.toContain("codexdeck_ops");
     const thread=await post("/api/threads",{workspace_id:workspace.id});
     const ask=()=>post(`/api/threads/${thread.id}/messages`,{prompt:"Allocate a staging port and report completion."});
     let task=await ask();

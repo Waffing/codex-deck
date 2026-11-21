@@ -21,6 +21,7 @@ export type DrawerTab = {
   path?: string;
   artifact?: Artifact;
   comparison?: Artifact[];
+  turnId?: string;
   deploymentId?: string;
   port?: number;
 };

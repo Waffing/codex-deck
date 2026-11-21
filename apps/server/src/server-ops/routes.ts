@@ -101,7 +101,12 @@ export function registerOps(app:FastifyInstance,ctx:ServerContext,files:Workspac
       switch(tool) {
         case "server_inspect":result=getProfile();break;
         case "port_allocate":result={port:await pool.allocate(workspace),ttl_seconds:60};break;
-        case "app_deploy_staging":result=await deployer.stage(workspace,thread,opsTools.app_deploy_staging.parse(args),getProfile());break;
+        case "app_deploy_staging": {
+          const adminTurn=typeof claims.task_id==="string" && !!ctx.native.prepare(`SELECT 1 FROM tasks WHERE id=? AND thread_id=? AND workspace_id=?
+            AND status='running' AND guest_link_id IS NULL AND api_key_id IS NULL`).get(claims.task_id,thread,workspace);
+          result=await deployer.stage(workspace,thread,opsTools.app_deploy_staging.parse(args),getProfile(),adminTurn);
+          break;
+        }
         case "app_logs":result={logs:await deployer.logs(String(args.deployment_id),workspace)};break;
         case "verify_url":result=await deployer.verify(opsTools.verify_url.parse(args),workspace,thread);break;
         case "app_promote_live":result=await deployer.promote(opsTools.app_promote_live.parse(args),workspace,thread);break;

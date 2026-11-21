@@ -9,6 +9,7 @@ import { registerGatewayRoutes } from "./gateway/server.js";
 import { rotationProof } from "./security/crypto.js";
 import { SecretMasker } from "./security/secret-masker.js";
 import { registerStoredCredentials } from "./gateway/credentials.js";
+import { registerStoredWorkspaceSecrets, registerWorkspaceSecretRoutes } from "./security/workspace-secrets.js";
 import { mountPhase2, type Phase2Options } from "./phase2.js";
 import { mountWeb } from "./web-static.js";
 import { repositoryRoot } from "./security/paths.js";
@@ -53,9 +54,11 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
   app.get("/health", health);
   app.get("/api/health", health);
   registerStoredCredentials(context);
+  registerStoredWorkspaceSecrets(context);
   app.addHook("preSerialization", async (request, _reply, payload) =>
     request.url.startsWith("/api/") ? context.masker.maskObject(payload) : payload);
   registerAuthRoutes(app, context);
+  registerWorkspaceSecretRoutes(app, context);
   // Install model routes after @fastify/compress has registered its onRoute hook.
   app.register(async providers => registerProviderRoutes(providers,context));
   registerGatewayRoutes(app, context);

@@ -15,13 +15,14 @@ import { resolveSafeWorkspacePath, openWorkspaceFile } from "../files/sandbox.js
 import { workspaceDirectory, workspaceFile } from "../security/paths.js";
 import { command, fail, labelOutput, PortPool } from "./probe.js";
 import { verifyUrl } from "./verifier.js";
+import { registerWorkspaceSecret, workspaceSecretEnv } from "../security/workspace-secrets.js";
 
 interface Stored {
   last_verification_json:string|null;
   id:string;workspace_id:string;status:Deployment["status"];config_json:string;updated_at:string;created_at:string;
 }
 interface Config {
-  start?:StageInput; archived?:boolean;
+  start?:StageInput; archived?:boolean; allowWorkspaceSecrets?:boolean; injectedNames?:string[];
   mode:Deployment["mode"];port:number; previous_id:string|null; release:string; thread:string|null; image?:string; container?:string;
 }
 type Active = {workspace:string;port:number;child?:ChildProcess;entryPid?:number;container?:string;upstreamHost?:string;upstreamPort?:number;entry?:'node'|'python';log:string;ready:boolean};
@@ -113,10 +114,10 @@ export class Deployer {
     await copy("");
     if(!files) throw fail(400,"Static release is empty.");
   }
-  private async startLocal(active:Active,dir:string) {
+  private async startLocal(active:Active,dir:string,secrets:Record<string,string>) {
     const ext=import.meta.url.endsWith(".ts") ? ".ts" : ".js";
     const worker=fileURLToPath(new URL("./local-worker"+ext,import.meta.url));
-    const env:NodeJS.ProcessEnv={};
+    const env:NodeJS.ProcessEnv={...secrets};
     for(const key of ["SystemRoot","WINDIR","TEMP","TMP"]) if(process.env[key]) env[key]=process.env[key];
     const child=fork(worker,[dir,String(active.port)],{cwd:dir,env,execArgv:ext===".ts"?["--import",import.meta.resolve("tsx")]:[],
       stdio:["ignore","pipe","pipe","ipc"],serialization:"json"});
@@ -129,12 +130,12 @@ export class Deployer {
       child.once("exit",()=>{clearTimeout(timer);reject(fail(502,"Staging process exited."));});
     });
   }
-  private async startEntry(active:Active,dir:string,entry:string,args:string[]) {
+  private async startEntry(active:Active,dir:string,entry:string,args:string[],secrets:Record<string,string>) {
     const script=await resolveSafeWorkspacePath(dir,entry);
     const python=path.extname(script)===".py";
     active.entry=python ? 'python' : 'node';
     if(!python && !/\.[cm]?js$/.test(script)) throw fail(400,"Choose a Node or Python entry file.");
-    const env:NodeJS.ProcessEnv={PORT:String(active.port),HOST:"127.0.0.1"};
+    const env:NodeJS.ProcessEnv={...secrets,PORT:String(active.port),HOST:"127.0.0.1"};
     for(const key of ["SystemRoot","WINDIR","PATH","TEMP","TMP"]) if(process.env[key]) env[key]=process.env[key];
     const flags=process.allowedNodeEnvironmentFlags.has("--permission") ? "--permission" : "--experimental-permission";
     let executable=process.execPath;
@@ -206,7 +207,7 @@ export class Deployer {
     if(!mount || !path.posix.isAbsolute(mount.Source)) throw fail(409,"A bind-mounted data directory is required for managed releases.");
     return path.posix.join(mount.Source,path.posix.relative(mount.Destination,local));
   }
-  private async startContainer(id:string,config:Config,input:StageInput,active:Active) {
+  private async startContainer(id:string,config:Config,input:StageInput,active:Active,secrets:Record<string,string>) {
     const name="codexdeck-"+id;
     const python=input.entry && path.extname(input.entry)===".py";
     const requestedImage=input.image ?? (input.entry ? (python?"python:3.12-slim":"node:22-bookworm-slim") : "nginx:alpine");
@@ -250,17 +251,19 @@ export class Deployer {
       const spec={services:{app:{image:composeImage,...(composeImage!==image?{pull_policy:"never"}:{}),container_name:name,labels,
         ...(network ? {networks:{codexdeck:{aliases:[name]}}} : {ports:["127.0.0.1:"+config.port+":"+internal]}),
         user:`${uid}:${gid}`,
-        ...(entryCommand ? {working_dir:"/app",command:entryCommand,environment:{HOST:"0.0.0.0",PORT:String(internal)}} : {}),
+        ...(entryCommand ? {working_dir:"/app",command:entryCommand} : {}),
+        environment:{...Object.fromEntries(Object.keys(secrets).map(key=>[key,null])),...(entryCommand ? {HOST:"0.0.0.0",PORT:String(internal)} : {})},
         volumes:volumes.map(m=>({type:"bind",...m,read_only:true,bind:{create_host_path:false}})),
         ...limits,restart:"unless-stopped",security_opt:["no-new-privileges:true"],cap_drop:["ALL"],tmpfs:temp,read_only:true}},
         ...(network ? {networks:{codexdeck:{external:true,name:network}}} : {})};
       await writeFile(manifest,JSON.stringify(spec));
-      await command("docker",["compose","-p",name,"-f",manifest,"up","-d"],{timeout:120000});
+      await command("docker",["compose","-p",name,"-f",manifest,"up","-d"],{timeout:120000,env:secrets});
     } else {
       const args=["run","--detach","--name",name,"--label","codexdeck.managed=true","--label","codexdeck.deployment="+id,"--read-only",
         "--security-opt","no-new-privileges","--cap-drop","ALL","--cpus","1","--memory","512m","--pids-limit","128","--restart","unless-stopped"];
       for(const mount of temp) args.push("--tmpfs",mount);
       args.push("--user",`${uid}:${gid}`);
+      for (const name of Object.keys(secrets)) args.push("--env",name);
       if(entryCommand) args.push("--workdir","/app","--env","PORT="+internal,"--env","HOST=0.0.0.0");
       if(network) args.push("--network",network,"--network-alias",name);
       else args.push("--publish","127.0.0.1:"+config.port+":"+internal);
@@ -268,7 +271,7 @@ export class Deployer {
         if(mount.source.includes(",")) throw fail(400,"Choose a data directory without commas or use Compose.");
         args.push("--mount",`type=bind,source=${mount.source},target=${mount.target},readonly`);
       }
-      await command("docker",[...args,image,...(entryCommand ?? [])],{timeout:120000});
+      await command("docker",[...args,image,...(entryCommand ?? [])],{timeout:120000,env:secrets});
     }
     config.container=name;
     config.image=await command("docker",["inspect","--format","{{.Image}}",name]);
@@ -280,7 +283,8 @@ export class Deployer {
     }
     throw fail(504,"Staging container did not become ready.");
   }
-  async stage(workspace:string,thread:string|null,input:StageInput,profile:ServerProfile) {
+  async stage(workspace:string,thread:string|null,input:StageInput,profile:ServerProfile,allowWorkspaceSecrets=false) {
+    allowWorkspaceSecrets=allowWorkspaceSecrets && this.canInject(workspace);
     const ws=await this.files.getRoot(workspace);
     const managed=!!process.env.CODEXDECK_DEPLOYMENT_NETWORK || !!process.env.DOCKER_HOST;
     const mode=input.mode==="auto" ? profile.docker_available || managed ? (profile.runtimes.compose ? "compose" : "docker") : "local" : input.mode;
@@ -296,7 +300,7 @@ export class Deployer {
     const port=input.reserved_port ?? await this.pool.allocate(workspace);
     await this.pool.claim(workspace,port);
     const active={workspace,port,log:"",ready:false} as Active;
-    const config:Config={mode,port,release,thread,previous_id:null,start:input};
+    const config:Config={mode,port,release,thread,previous_id:null,start:input,allowWorkspaceSecrets};
     const now=new Date().toISOString();
     this.ctx.native.prepare("INSERT INTO deployments(id,workspace_id,status,config_json,created_at,updated_at) VALUES(?,?,'starting',?,?,?)")
       .run(id,workspace,JSON.stringify(config),now,now);
@@ -343,13 +347,18 @@ export class Deployer {
     }
   }
   private async launch(id:string,config:Config,input:StageInput,active:Active,content:string) {
+    // Recheck after the asynchronous snapshot and on restart. A restricted release stays restricted.
+    config.allowWorkspaceSecrets=config.allowWorkspaceSecrets===true && this.canInject(active.workspace);
+    const secrets=config.allowWorkspaceSecrets===true ? workspaceSecretEnv(this.ctx,active.workspace,"deploy") : {};
     if(config.mode==="local" && input.entry) {
       if(process.env.CODEXDECK_DEPLOYMENT_NETWORK || process.env.DOCKER_HOST) throw fail(403,"Re-stage this entry in an isolated container.");
-      await this.startEntry(active,content,input.entry,input.args);
-    } else if(config.mode==="local") await this.startLocal(active,content);
+      await this.startEntry(active,content,input.entry,input.args,secrets);
+    } else if(config.mode==="local") await this.startLocal(active,content,secrets);
     else {
       active.container="codexdeck-"+id;
-      await this.startContainer(id,config,input,active);
+      config.injectedNames=Object.keys(secrets);
+      this.save(id,"starting",config);
+      await this.startContainer(id,config,input,active,secrets);
     }
     active.ready=true;
     active.child?.once("exit",()=>{
@@ -358,6 +367,9 @@ export class Deployer {
       void this.saveLog(this.get(id),active.log).catch(()=>{});
       this.note("deployment_exception",id,active.workspace);
     });
+  }
+  private canInject(workspace:string) {
+    return !!this.ctx.native.prepare("SELECT 1 FROM workspaces WHERE id=? AND verify_external_pending=0").get(workspace);
   }
   async restart(id:string) {
     const row=this.get(id), config:Config=JSON.parse(row.config_json);
@@ -421,7 +433,7 @@ export class Deployer {
     const active=this.active.get(row.id);
     const config:Config=JSON.parse(row.config_json);
     const text=active?.container && await this.containerIdentity(id,active.container)
-      ? await command("docker",["logs","--tail","200",active.container],{logs:true}) : active?.log ?? await this.savedLog(config);
+      ? await command("docker",["logs","--tail","200",active.container],{logs:true,mask:text=>this.ctx.masker.maskString(text)}) : active?.log ?? await this.savedLog(config);
     return this.ctx.masker.maskString(text);
   }
   async verify(input:VerifyInput,workspace?:string,thread:string|null=null) {
@@ -550,7 +562,17 @@ export class Deployer {
       const name="codexdeck-"+row.id;
       if(config.mode!=="local" && !config.archived) {
         let identity;
-        try {identity=await this.containerIdentity(row.id,name);}
+        try {
+          identity=await this.containerIdentity(row.id,name);
+          // A surviving container can still log a value changed in the vault while the controller was down.
+          if(identity && config.allowWorkspaceSecrets && config.injectedNames?.length) {
+            const env:string[]=JSON.parse(await command("docker",["inspect","--format","{{json .Config.Env}}",name]));
+            for(const entry of env) {
+              const split=entry.indexOf("=");
+              if(split>=0 && config.injectedNames.includes(entry.slice(0,split))) registerWorkspaceSecret(this.ctx,entry.slice(split+1));
+            }
+          }
+        }
         catch {this.note("deployment_recovery_unavailable",row.id,row.workspace_id);continue;}
         if(identity.endsWith("true true") && config.start && row.status!=="starting") {
           try {this.pool.adopt(config.port);} catch {this.note("deployment_recovery_conflict",row.id,row.workspace_id);continue;}

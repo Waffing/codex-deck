@@ -10,10 +10,18 @@ import type {ChatProps} from "./ChatPane";
 import {useCompletions} from "./completions";
 
 export type ComposerHandle={edit:(prompt:string)=>void};
-type Props=Pick<ChatProps,"workspace"|"thread"|"models"|"providers"|"onCreateThread"|"onRefresh"> & {
-  latest?:ChatTurn;hasTurns:boolean;running:boolean;preferences:ChatPreferences;onSend:(prompt:string,images:string[])=>void;
+type Props=Pick<ChatProps,"workspace"|"thread"|"models"|"providers"|"onCreateThread"|"onRefresh"|"onHandoff"> & {
+  latest?:ChatTurn;hasTurns:boolean;running:boolean;preferences:ChatPreferences;onSend:(prompt:string,images:string[],mode?:"plan"|"execute")=>void;
   refresh:()=>void;handle:RefObject<ComposerHandle|null>};
-export function Composer({workspace,thread,models,providers,onCreateThread,onRefresh,latest,hasTurns,running,preferences,onSend,refresh,handle}:Props){
+export function Composer({workspace,thread,models,providers,onCreateThread,onRefresh,latest,hasTurns,running,preferences,onSend,refresh,handle,onHandoff}:Props){
+  const [mode,setMode]=useState<"plan"|"execute">(thread?.execution_mode??"execute");
+  useEffect(()=>{setMode(thread?.execution_mode??"execute");},[thread?.execution_mode]);
+  async function togglePlan(){
+    const next=mode==="plan"?"execute":"plan";
+    setError("");setWorking(true);
+    try {if(thread)await api("/api/threads/"+thread.id,json("PATCH",{execution_mode:next}));setMode(next);if(thread)onRefresh();}
+    catch(e){setError((e as Error).message);}finally{setWorking(false);}
+  }
   const [draft,setDraft]=useState(""),[paths,setPaths]=useState<string[]>([]),[images,setImages]=useState<Record<string,string>>({});
   const [working,setWorking]=useState(false),[uploading,setUploading]=useState(false),[drag,setDrag]=useState(false),[error,setError]=useState("");
   const warmed=useRef(false),upload=useRef<HTMLInputElement>(null);
@@ -77,7 +85,7 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
         setDraft("");setPaths([]);setImages({});onRefresh();
       }).catch(e=>setError((e as Error).message)).finally(()=>setWorking(false));return;
     }
-    onSend(prompt,imageIds);setDraft("");setPaths([]);setImages({});setCaret(0);complete.close();
+    onSend(prompt,imageIds,mode);setDraft("");setPaths([]);setImages({});setCaret(0);complete.close();
   }
   async function compactThread(){
     if(working)return;
@@ -121,7 +129,7 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
       <div className="cd-compose-zone">
         {steps.length>0 && <details className="cd-plan-capsule"><summary><ListChecks size={15}/>已完成 {steps.filter(s=>s.status==="completed").length} 个任务 (共 {steps.length} 个)</summary><TodoSteps steps={steps}/></details>}
         <form
-          className={"cd-composer" + (drag ? " cd-drag" : "")}
+          data-mode={mode} className={"cd-composer" + (drag ? " cd-drag" : "")}
           onSubmit={(e) => {
             e.preventDefault();
             void send();
@@ -217,13 +225,14 @@ export function Composer({workspace,thread,models,providers,onCreateThread,onRef
             >
               <Plus size={17} />
             </button>
+            <button className="plan-switch" type="button" aria-label="Plan 模式" aria-pressed={mode==="plan"} disabled={working||running} onClick={()=>void togglePlan()}><ListChecks size={14}/>Plan</button>
             <AutomationControl label="工作区权限" value={workspace.automation_level} disabled={working} onChange={v=>void changePolicy(v)}/>
             <span className="cd-live-usage" aria-label="生成性能">{speed!=null?speed.toFixed(1):"—"} tok/s · 缓存 {cacheRatio!=null?Math.round(cacheRatio*100)+"%":"—"}</span>
             <div ref={contextControl} className="cd-context" onPointerEnter={e=>{if(e.pointerType==="mouse")setContextMenu(true);}} onPointerLeave={e=>{if(e.pointerType==="mouse")setContextMenu(false);}} onBlur={e=>{if(e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node))setContextMenu(false);}}>
               <button type="button" aria-label="上下文占用" aria-expanded={contextMenu} onFocus={()=>setContextMenu(true)} onClick={()=>setContextMenu(true)} data-high={percent!=null&&percent>=(preferences.contextThreshold??80)}>
                 <svg width="32" height="32" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17"/><circle className="cd-context-value" cx="20" cy="20" r="17" pathLength="100" strokeDasharray={`${Math.min(100,percent??0)} 100`}/></svg><small>{percent!=null?percent+"%":"—"}</small>
               </button>
-              {contextMenu && <aside><p>{total?.toLocaleString()??"—"} / {limit?.toLocaleString()??"—"} Token</p><button type="button" disabled={!thread||running||working||!hasTurns||latest?.projection.items.some(item=>item.kind==="context_compacted")} onClick={()=>void compactThread()}>一键压缩上下文</button></aside>}
+              {contextMenu && <aside><p>{total?.toLocaleString()??"—"} / {limit?.toLocaleString()??"—"} Token</p><button type="button" disabled={!thread||running||working||!hasTurns||latest?.projection.items.some(item=>item.kind==="context_compacted")} onClick={()=>void compactThread()}>一键压缩上下文</button>{onHandoff&&<button type="button" disabled={!thread||running||working||!hasTurns} onClick={()=>{setContextMenu(false);onHandoff();}}>生成交接单并开新会话</button>}</aside>}
             </div>
             <ModelPicker {...{ thread, models, providers, workspace, onCreateThread, onRefresh }} />
             {running && (

@@ -49,6 +49,7 @@ export function TurnFiles({files,value,onOpen,onError,turnId,diffStepId}:Props) 
   }
   return <>{changes.size>0&&<details className="cd-turn-changes" onToggle={e=>{if(e.currentTarget.open)void reveal();}}>
     <summary>本轮改动 {changes.size} 个文件{counted.length>0&&` · +${totals[0]} −${totals[1]}`}</summary>
+    {turnId&&<button className="btn-outline" onClick={()=>onOpen({kind:"diff",turnId,title:"本轮 Diff"})}>AI 跨模型复审</button>}
     {[...changes.values()].map(f=>{const a=output.find(v=>v.path===f.path);return <div className="cd-change-row" key={f.path}><code>{f.path}</code>
       {f.added!==null&&<small>+{f.added} −{f.removed}</small>}{a&&<button aria-label={"下载变更 "+a.name} onClick={()=>void download({artifact_id:a.id}).catch(()=>onError("下载链接生成失败"))}><ArrowDownToLine size={14}/></button>}</div>;})}
     {busy&&<small>正在读取差异…</small>}{(diff||value?.diff)&&<pre>{diff||value?.diff}</pre>}
