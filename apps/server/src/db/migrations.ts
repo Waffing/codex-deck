@@ -225,6 +225,13 @@ export const migrations = [
       END;
     `,
   },
+  {
+    version: 9,
+    sql: `
+      ALTER TABLE usage_logs ADD COLUMN priced_currency TEXT;
+      ALTER TABLE models ADD COLUMN confirmed_free INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];
 
 export function runMigrations(database: Database.Database): void {

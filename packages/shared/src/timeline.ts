@@ -10,7 +10,7 @@ export const timelineItemSchema=z.object({
 });
 const metric=z.number().nonnegative().nullable();
 export const turnTelemetrySchema=z.object({
-  elapsed_ms:z.number().nonnegative(),model:z.string().nullable(),tokens_per_sec:metric,cache_hit_rate:metric,
+  price_recorded:z.boolean().optional(),elapsed_ms:z.number().nonnegative(),model:z.string().nullable(),tokens_per_sec:metric,cache_hit_rate:metric,
   input_tokens:metric,output_tokens:metric,cost_usd:metric,cost_cny:metric,context_tokens:metric,
   files:z.array(z.object({path:z.string(),added:metric,removed:metric})),diff:z.string(),
 });

@@ -5,7 +5,6 @@ import { scopedAccess, scopedGuest } from "../temp-access/routes.js";
 import type { WorkspaceFiles } from "../files/workspace-files.js";
 import { fileError } from "../files/sandbox.js";
 import {readPreferences} from "../settings/preferences.js";
-import { gitDiff, gitStatus } from "../files/git.js";
 import { readEditable, writeEditable } from "../files/editor.js";
 
 export function registerWorkspaceRoutes(app: FastifyInstance, ctx: ServerContext, files: WorkspaceFiles) {
@@ -54,11 +53,11 @@ export function registerWorkspaceRoutes(app: FastifyInstance, ctx: ServerContext
     const revision = await writeEditable(root,"AGENTS.md",p.data.content,req.headers["if-match"],ctx.masker);
     return {...p.data,revision};
   });
-  app.get<ById>("/api/workspaces/:id/git/status", auth, async req => gitStatus(await files.getRoot(req.params.id)));
+  app.get<ById>("/api/workspaces/:id/git/status", auth, async req => ctx.masker.maskObject(await files.track(req.params.id, "status")));
   app.get<ById & { Querystring: { format?: string } }>("/api/workspaces/:id/git/diff", auth, async (req, reply) => {
     const p = gitDiffQuerySchema.safeParse(req.query);
     if (!p.success) throw fileError(400, "Invalid diff format.");
-    const patch = ctx.masker.maskString(await gitDiff(await files.getRoot(req.params.id)));
+    const patch = ctx.masker.maskString(await files.track(req.params.id, "diff"));
     if (p.data.format === "patch") return reply.type("text/x-patch").header("Content-Disposition",'attachment; filename="changes.patch"').send(patch);
     return { diff: patch };
   });

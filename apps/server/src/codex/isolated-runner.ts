@@ -9,7 +9,7 @@ import {workspaceDirectory} from "../security/paths.js";
 
 type Mount = {Type:string; Source:string; Destination:string};
 
-async function runtime() {
+export async function executorRuntime() {
   if (process.platform !== "linux" || !process.getuid?.()) {
     throw new Error("完全访问需要以普通用户运行的 Linux 控制面与 Docker 执行镜像。");
   }
@@ -28,10 +28,10 @@ async function runtime() {
 }
 
 export async function hasIsolatedRunner() {
-  try { await runtime(); return true; } catch { return false; }
+  try { await executorRuntime(); return true; } catch { return false; }
 }
 
-function mountSource(file:string,mounts?:Mount[]) {
+export function mountSource(file:string,mounts?:Mount[]) {
   if (!mounts) return file;
   const mount=mounts.filter(m=>m.Type==="bind" && (file===m.Destination || file.startsWith(m.Destination+"/")))
     .sort((a,b)=>b.Destination.length-a.Destination.length)[0];
@@ -39,18 +39,25 @@ function mountSource(file:string,mounts?:Mount[]) {
   return path.join(mount.Source,path.relative(mount.Destination,file));
 }
 
-export async function isolatedRunner(options:{
-  workspace:string; data:string; config:string; threadId:string; workspaceId:string;
-  leases:Record<"model"|"ops",string>; port:number;
-}) {
-  const {id,mounts}=await runtime();
-  const uid=process.getuid!(),gid=process.getgid!();
-  const data=await realpath(options.data), project=await realpath(options.workspace);
-  if (project===data || data.startsWith(project+"/")) {
+export function projectMountSource(project:string,data:string,mounts?:Mount[]) {
+  const source=mountSource(project,mounts);
+  const relative=path.relative(source,mountSource(data,mounts));
+  if (!relative || (relative!==".." && !relative.startsWith(".."+path.sep) && !path.isAbsolute(relative))) {
     throw new Error("执行工作区与控制面数据目录必须分开。");
   }
-  const state=await workspaceDirectory(data,path.join("executor-sessions",options.threadId),true);
-  const cache=await workspaceDirectory(data,path.join("executor-caches",options.workspaceId),true);
+  return source;
+}
+
+export async function isolatedRunner(options:{
+  workspace:string; data:string; config:string; threadId:string; workspaceId:string;
+  leases:Record<"model"|"ops",string>; port:number; reviewed:boolean;
+}) {
+  const {id,mounts}=await executorRuntime();
+  const uid=process.getuid!(),gid=process.getgid!();
+  const data=await realpath(options.data), project=await realpath(options.workspace);
+  const sourceProject=projectMountSource(project,data,mounts);
+  const state=await workspaceDirectory(data,path.join(options.reviewed?"reviewed-sessions":"executor-sessions",options.threadId),true);
+  const cache=await workspaceDirectory(data,path.join(options.reviewed?"reviewed-caches":"executor-caches",options.workspaceId),true);
   const relayDir=await workspaceDirectory(data,"executor-relays",true);
   const name="codexdeck-turn-"+randomUUID();
   const socket=path.join(relayDir,name.slice(-12)+".sock");
@@ -83,7 +90,7 @@ export async function isolatedRunner(options:{
     "--env","CODEXDECK_INTERNAL_TOKEN","--env","CODEXDECK_OPS_TOKEN","--env","CODEXDECK_OPS_URL=http://127.0.0.1:3141/internal/ops"];
   for(const [local,target,ro] of [[project,"/workspace",false],[state,"/codex/sessions",false],
     [cache,"/cache",false],[await realpath(options.config),"/run/deck-config",true],[socket,"/run/deck.sock",true]] as const) {
-    const source=mountSource(local,mounts);
+    const source=target==="/workspace" ? sourceProject : mountSource(local,mounts);
     if (/[,"\r\n]/.test(source)) throw new Error("执行目录名称包含 Docker 不支持的字符。");
     args.push("--mount","type=bind,src="+source+",dst="+target+(ro?",readonly":""));
   }

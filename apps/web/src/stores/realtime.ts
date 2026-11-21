@@ -11,10 +11,11 @@ export function mergeEvents(prev:ThreadEvent[],batch:ThreadEvent[],thread:string
   for(const e of batch) if(e.thread_id===thread && !records.has(e.seq_id)) records.set(e.seq_id,e);
   return [...records.values()].sort((a,b)=>a.seq_id-b.seq_id);
 }
-export function lastContiguous(events:ThreadEvent[],from=0){
-  let seq=from;
-  for(const e of events) {if(e.seq_id<=seq) continue;if(e.seq_id!==seq+1) break;seq=e.seq_id;}
-  return seq;
+export function discardThrough(thread:string,seq:number){
+  const current=useRealtime.getState();
+  if(current.thread===thread && current.events.some(e=>e.seq_id<=seq)){
+    useRealtime.setState({events:current.events.filter(e=>e.seq_id>seq)});
+  }
 }
 export function clearRealtime(){
   for(const key of Object.keys(sessionStorage)) if(key.startsWith(prefix)) sessionStorage.removeItem(key);

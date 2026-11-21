@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
 
+// Resolve the production memoized Turn by its mounted props, even when its name is minified.
+function findTurnRender(){
+  const article=document.querySelector("article[data-turn]");
+  const key=Object.getOwnPropertyNames(article).find(k=>k.startsWith("__reactFiber$"));
+  for(let fiber=article[key];fiber;fiber=fiber.return){
+    if(fiber.memoizedProps?.turn?.task?.id===article.dataset.turn && typeof fiber.type==="function")return fiber.type;
+  }
+}
+
 export async function performanceJourney(browser,context,origin,db,instrument){
   const c=await browser.newContext({viewport:{width:1440,height:900},storageState:await context.storageState()});
   const page=await c.newPage();instrument(page);
@@ -43,9 +52,20 @@ export async function performanceJourney(browser,context,origin,db,instrument){
       assert.equal(await page.locator("[data-turn]").count(),12);
       assert.ok(await page.evaluate(()=>window.__heldReads)>0);
     }finally{await page.evaluate(()=>window.__releaseReads());}
+    const debuggerSession=await c.newCDPSession(page);
+    await debuggerSession.send("Debugger.enable");
+    const {result}=await debuggerSession.send("Runtime.evaluate",{expression:"("+findTurnRender.toString()+")()"});
+    assert.equal(result.type,"function","The probe must resolve the mounted React Turn component");
+    await page.evaluate(()=>{window.__historyTurnCalls=0;});
+    await debuggerSession.send("Debugger.setBreakpointOnFunctionCall",{objectId:result.objectId,
+      condition:"(window.__historyTurnCalls++, false)"});
     const earlier=page.getByRole("button",{name:"加载更早的记录"});
     for(let i=0;i<9;i++)await earlier.click();
     await page.getByText("历史样本 1",{exact:true}).waitFor();
+    assert.equal(await page.locator("article[data-turn]").count(),120);
+    // Positive control: all 108 newly mounted history items must have called the component.
+    assert.ok(await page.evaluate(()=>window.__historyTurnCalls)>=108,"React render counter missed mounted history");
+    await page.evaluate(()=>{window.__historyTurnCalls=0;});
     const input=page.getByRole("textbox",{name:"任务指令"});
     // Give the real UI keystrokes and sample the first animation callback after each input event.
     const responseTimes=await input.evaluate(async input=>{
@@ -59,7 +79,10 @@ export async function performanceJourney(browser,context,origin,db,instrument){
       return observations.sort((a,b)=>a-b);
     });
     const p95=responseTimes[Math.ceil(responseTimes.length*.95)-1];
-    console.log("Typing 120 turns · 40 input-to-next-frame samples · p50="+responseTimes[19].toFixed(1)+"ms p95="+p95.toFixed(1)+"ms");
+    const renders=await page.evaluate(()=>window.__historyTurnCalls);
+    await debuggerSession.detach();
+    console.log("Typing 120 turns · 40 input-to-next-frame samples · p50="+responseTimes[19].toFixed(1)+"ms p95="+p95.toFixed(1)+"ms · completed Turn renders="+renders);
+    assert.equal(renders,0,"Typing re-rendered completed React Turn components");
     assert.ok(Number.isFinite(p95)&&p95<100,"typing blocked for more than 100 ms");
     await page.evaluate(()=>{
       const previous=window.fetch.bind(window);
@@ -74,8 +97,31 @@ export async function performanceJourney(browser,context,origin,db,instrument){
         return previous(input,options);
       };
     });
-    await input.fill("可重试消息");await input.press("Enter");
+    await input.fill("可重试消息");
+    await input.evaluate(field=>{
+      field.addEventListener("keydown",()=>{
+        const start=performance.now();
+        const bubble=()=>document.querySelector("[data-client-message] .cd-prompt");
+        const observer=new MutationObserver(()=>{
+          if(!bubble() || field.value)return;
+          window.__sendDomMs=performance.now()-start;
+          observer.disconnect();
+        });
+        observer.observe(document.querySelector(".cd-chat-pane"),{subtree:true,childList:true});
+        const sampleFrame=()=>{
+          const prompt=bubble(),rect=prompt?.getBoundingClientRect();
+          if(rect && prompt.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2))) {
+            window.__sendFrameMs=performance.now()-start;
+          }else if(performance.now()-start<5000)requestAnimationFrame(sampleFrame);
+        };
+        requestAnimationFrame(sampleFrame);
+      },{capture:true,once:true});
+    });
+    await input.press("Enter");
     await page.locator("[data-client-message] .cd-prompt").filter({hasText:"可重试消息"}).waitFor();
+    await page.waitForFunction(()=>Number.isFinite(window.__sendDomMs)&&Number.isFinite(window.__sendFrameMs));
+    const send=await page.evaluate(()=>({dom:window.__sendDomMs,frame:window.__sendFrameMs}));
+    console.log("Optimistic Enter · POST held · bubble DOM + cleared input="+send.dom.toFixed(1)+"ms · first visible animation frame="+send.frame.toFixed(1)+"ms (n=1)");
     assert.equal(await input.inputValue(),"");
     assert.equal(await page.getByText("任务已提交",{exact:true}).count(),0);
     await page.evaluate(()=>window.__rejectSend());

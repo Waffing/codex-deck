@@ -28,7 +28,11 @@ export function ChatPane(props:ChatProps){
   return <ChatBody key={props.workspace.id+":"+(props.thread?.id??"new")} {...props}/>;
 }
 function ChatBody({workspace,thread,events,approvals,models,providers,onCreateThread,onRefresh,onOpen,mobileApprovalId,onSnapshot,preferences=defaultPreferences,onInspect}:ChatProps){
-  const marker=events.reduce((n,e)=>["task_completed","task_failed","task_cancelled","context_compacted","artifacts_updated"].includes(e.type)?e.seq_id:n,0);
+  const lifecycle=useRef(0);
+  const terminal=events.reduce((n,e)=>["task_completed","task_failed","task_cancelled","context_compacted","artifacts_updated"].includes(e.type)?e.seq_id:n,lifecycle.current);
+  // A fresh snapshot periodically folds long streams into a compact active turn.
+  if(terminal>lifecycle.current || events.length>=512 && (events.at(-1)?.seq_id??0)-lifecycle.current>=256)lifecycle.current=Math.max(terminal,events.at(-1)?.seq_id??0);
+  const marker=lifecycle.current;
   const page=useTurnPages(thread?.id,marker,onSnapshot);
   const turns=useMemo(()=>{
     const snapshots=new Map([...page.older,...page.tail.turns].map(t=>[t.id,t]));
@@ -77,10 +81,11 @@ function ChatBody({workspace,thread,events,approvals,models,providers,onCreateTh
     {preferences.minimap!==false&&<Minimap turns={turns} scroll={scroll}/>}
     <div ref={scroll} className="cd-chat-scroll" onScroll={e=>{
       const box=e.currentTarget;follow.current=box.scrollHeight-box.clientHeight-box.scrollTop<120;
+      if(box.scrollTop<1 && !follow.current && page.more)void earlier();
     }} onWheel={e=>{if(e.deltaY<0&&e.currentTarget.scrollTop<10&&page.more)void earlier();}}>
       {page.more&&<button className="ad-button" onClick={()=>void earlier()}>加载更早的记录</button>}
       {turns.length>0&&<><ArtifactModeControl/><Timeline turns={turns} threadId={thread?.id} workspaceId={workspace.id} preferences={preferences} onOpen={onOpen} onError={setError} onEdit={edit}/></>}
-      {!turns.length&&!outgoing.length&&(!thread||page.tail.latest_seq_id===0)&&<Welcome workspaceId={workspace.id} workspaceName={workspace.name} onSelect={p=>void submit(p,[])}/>}
+      {!turns.length&&!outgoing.length&&(!thread||page.initialLoaded)&&<Welcome workspaceId={workspace.id} workspaceName={workspace.name} onSelect={p=>void submit(p,[])}/>}
       {outgoing.map(message=><article key={message.id} className="cd-turn" data-client-message={message.id}>
         <section className="cd-question"><p className="cd-prompt">{message.prompt||"图片附件"}</p></section>
         {message.state==="failed"?<button className="cd-compose-error" title={message.error} onClick={()=>void deliver(message,onCreateThread,()=>{page.refresh();onRefresh();})}>发送失败 · 点击重试</button>

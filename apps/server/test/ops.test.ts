@@ -110,12 +110,17 @@ test("rejects host-process deployments in production by default",async()=>{
 
 test("stages immutable releases, previews managed ports, runs HTTP/log/browser checks, and restores previous live traffic on failed promotion",async()=>{
   const pub=path.join(root,"public");await mkdir(pub);await writeFile(path.join(pub,"index.html"),"release-A");
+  const previewText="preview ".repeat(1024);
+  await writeFile(path.join(pub,"sample.txt"),previewText);
   const create=async()=>{const r=await op("app_deploy_staging",{mode:"local"});expect(await r.clone().text()).toContain("staging");return r.json();};
   const a=await create();
   const preview=origin+"/preview/"+a.port+"/";
   expect((await fetch(preview)).status).toBe(401);
   const positive=await fetch(preview,{headers:{cookie}});
   expect(await positive.text()).toBe("release-A");expect(positive.headers.get("content-security-policy")).toContain("sandbox");
+  const large=await fetch(preview+"sample.txt",{headers:{cookie,"accept-encoding":"br, gzip"}});
+  expect(large.headers.get("content-encoding")).toBeNull();
+  expect(await large.text()).toBe(previewText);
   const invite=await app.inject({method:"POST",url:"/api/temp-access",headers:{cookie},payload:{
     name:"Review staging",expires_at:new Date(Date.now()+60000).toISOString(),workspace_ids:[workspace],permission:"readonly",
   }});

@@ -17,6 +17,7 @@ import { registerConsoleRoutes } from "../src/routes/console.js";
 import { registerGatewayRoutes } from "../src/gateway/server.js";
 import { openDatabase, resolveDataDirectory } from "../src/db/index.js";
 import { ThreadManager } from "../src/codex/manager.js";
+import { RpcClient } from "../src/codex/rpc-client.js";
 import { WorkspaceFiles } from "../src/files/workspace-files.js";
 import { ThreadEvents } from "../src/ws/events.js";
 import { Notifications } from "../src/notifications/index.js";
@@ -129,6 +130,31 @@ it("opens history without waking Codex, deduplicates focus and correlates the fi
   expect(ctx.native.prepare("SELECT title FROM threads WHERE id=?").pluck().get(thread)).toBe(title);
   expect(events("fixture/process")).toHaveLength(1);
 });
+it("activates a warm session lease only while its assigned turn uses the client",async()=>{
+  const spawn=vi.spyOn(RpcClient,"start");
+  const before=WorkspaceFiles.prototype.beforeTurn;
+  let resume!:()=>void;
+  const barrier=new Promise<void>(resolve=>{resume=resolve;});
+  const checkpoint=vi.spyOn(WorkspaceFiles.prototype,"beforeTurn").mockImplementationOnce(async function(this:WorkspaceFiles,...args){
+    await barrier;
+    return before.apply(this,args);
+  });
+  try {
+    await manager.warmup(thread);
+    const lease=spawn.mock.calls[0]![1].CODEXDECK_INTERNAL_TOKEN!;
+    const authorized=()=>Boolean(ctx.resolveSessionLease!(lease,"model"));
+    expect(authorized()).toBe(false);
+    const task=await submit("wait");
+    await poll(()=>expect(checkpoint).toHaveBeenCalledOnce());
+    expect(authorized()).toBe(false);
+    resume();
+    await poll(()=>expect(authorized()).toBe(true));
+    await manager.cancel(task);
+    await poll(()=>expect(status(task)).toBe("cancelled"));
+    expect(authorized()).toBe(false);
+  } finally {resume();checkpoint.mockRestore();spawn.mockRestore();}
+});
+
 it("kills only the selected live process and releases its workspace for queued work",async()=>{
   expect((await app.inject("/api/admin/runtime/tasks")).statusCode).toBe(401);
   const waiting=await submit("wait");

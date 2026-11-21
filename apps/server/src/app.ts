@@ -37,8 +37,8 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
   app.register(compress, {global:false, globalDecompression:false, encodings:["br","gzip"]});
   app.addHook("onRoute", route => {
     if (route.method==="GET" && route.url.startsWith("/api/") &&
-      !/^\/api\/(?:v1\/|dl\/|auth\/|security\/|temp-access|system\/backup)/.test(route.url)) {
-      route.compress = {threshold:1024};
+      !/^\/api\/(?:v1\/|dl\/|auth\/|security\/|temp-access|settings\/backup)/.test(route.url)) {
+      route.compress = {threshold:1024,encodings:["br","gzip"]};
     }
   });
   registerPublicGate(app,context);
@@ -56,7 +56,8 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
   app.addHook("preSerialization", async (request, _reply, payload) =>
     request.url.startsWith("/api/") ? context.masker.maskObject(payload) : payload);
   registerAuthRoutes(app, context);
-  registerProviderRoutes(app, context);
+  // Install model routes after @fastify/compress has registered its onRoute hook.
+  app.register(async providers => registerProviderRoutes(providers,context));
   registerGatewayRoutes(app, context);
   if (options) mountPhase2(app, context, options);
   if (options?.webRoot) mountWeb(app,options.webRoot,options.workspaceRoot);

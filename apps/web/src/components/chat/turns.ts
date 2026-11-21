@@ -1,10 +1,9 @@
 import {useCallback,useEffect,useRef,useState} from "react";
-import {projectTurn,type ThreadEvent,type TurnSnapshot} from "@codexdeck/shared";
+import {projectTurn,type ThreadEvent,type TurnPage,type TurnSnapshot} from "@codexdeck/shared";
 import {api} from "../../lib/api";
-import {cached,cachePut,cacheTicket} from "../../lib/cache";
+import {cached,cachePut,cacheTicket,forgetCached} from "../../lib/cache";
 
 export const object=(v:unknown):Record<string,unknown>=>v && typeof v==="object"?v as Record<string,unknown>:{};
-export type TurnPage={turns:TurnSnapshot[];has_more:boolean;latest_seq_id:number;active_turn:TurnSnapshot|null};
 const empty:TurnPage={turns:[],has_more:false,latest_seq_id:0,active_turn:null};
 export function useTurnPages(thread:string|undefined, marker:number, onReady:((id:string,cursor:number)=>void)|undefined, persist=true) {
   const key="thread:"+thread;
@@ -13,6 +12,8 @@ export function useTurnPages(thread:string|undefined, marker:number, onReady:((i
   const [hasEarlier,setEarlier]=useState<boolean>();
   const [error,setError]=useState("");
   const [revision,setRevision]=useState(0);
+  const [initialLoaded,setInitialLoaded]=useState(Boolean(persist && cached(key)));
+
   const loading=useRef(false);
   const controller=useRef<AbortController|null>(null);
   useEffect(()=>{
@@ -21,10 +22,15 @@ export function useTurnPages(thread:string|undefined, marker:number, onReady:((i
     void api<TurnPage>("/api/threads/"+thread+"/turns",{signal:abort.signal}).then(page=>{
       if(abort.signal.aborted)return;
       if(!Array.isArray(page.turns))throw new Error("回合记录格式无效");
+      setInitialLoaded(true);setError("");
       setTail(old=>old!==empty && old.latest_seq_id===page.latest_seq_id?old:page);
       if(persist)cachePut(key,page,ticket);
       onReady?.(thread,page.latest_seq_id);
-    }).catch(e=>{if(!abort.signal.aborted)setError((e as Error).message);});
+    }).catch(e=>{
+      if(abort.signal.aborted)return;
+      if([401,403,404].includes(e.status)){if(persist)void forgetCached(key);setTail(empty);setOlder([]);}
+      setError((e as Error).message);
+    });
     return ()=>abort.abort();
   },[thread,marker,key,revision,onReady,persist]);
   useEffect(()=>()=>controller.current?.abort(),[]);
@@ -42,7 +48,7 @@ export function useTurnPages(thread:string|undefined, marker:number, onReady:((i
     finally{loading.current=false;}
   };
   const refresh=useCallback(()=>setRevision(x=>x+1),[]);
-  return {tail,older,more,loadEarlier,error,refresh};
+  return {tail,older,more,loadEarlier,error,refresh,initialLoaded};
 }
 
 function fromSnapshot(s:TurnSnapshot){

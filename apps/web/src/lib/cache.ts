@@ -53,6 +53,10 @@ export function cacheTicket() { return generation; }
 export function cached<T>(key: string): T | undefined {
   return enabled && scope ? memory.get(key)?.value as T | undefined : undefined;
 }
+export function forgetCached(key:string) {
+  memory.delete(key);updateStats();
+  return persist(db=>transaction(db,store=>store.delete(key)));
+}
 export function cachePut(key: string, value: unknown, ticket = generation) {
   if (!enabled || !scope || ticket !== generation) return;
   const row: Row = { key, scope, value, used: Date.now(), bytes: new Blob([JSON.stringify(value)]).size };
@@ -93,7 +97,11 @@ export function clearLocalCache(broadcast = true) {
   if (broadcast) localStorage.setItem(invalidation, crypto.randomUUID());
   return persist(db => transaction(db, store => { store.clear(); }));
 }
-export function closeCacheSession() { scope = ""; return clearLocalCache(); }
+export const sessionClosed = "codexdeck.session.closed";
+export function closeCacheSession(broadcast=true) {
+  if(broadcast && scope)localStorage.setItem(sessionClosed,crypto.randomUUID());
+  scope="";return clearLocalCache(broadcast);
+}
 export function setCacheEnabled(on: boolean) {
   enabled = on;
   localStorage.setItem(preference, String(on));

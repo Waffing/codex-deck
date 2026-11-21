@@ -1,3 +1,4 @@
+import {turnMetrics} from "../src/codex/timeline.js";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
 import { createServer as createHttpServer, type IncomingHttpHeaders, type ServerResponse } from "node:http";
@@ -91,6 +92,27 @@ async function jsonEvents(response: Response) {
   for await (const frame of readSse(response.body!)) if (frame.data) events.push(JSON.parse(frame.data));
   return events;
 }
+
+test("remembers pricing at request time, including confirmed free and unknown rates",async()=>{
+  addModel("price-history","responses");
+  serve=(_body,r)=>r.writeHead(200,{"content-type":"application/json"}).end(JSON.stringify(nativeResult));
+  const db=context.native;
+  db.prepare("UPDATE models SET cost_input_usd_per_million=0,cost_output_usd_per_million=0 WHERE id=?").run("price-history");
+  const capture=async(task:string)=>{
+    expect((await post("price-history")).status).toBe(200);
+    db.prepare("UPDATE usage_logs SET turn_id=? WHERE turn_id IS NULL").run(task);
+  };
+  await capture("unknown");
+  db.prepare("UPDATE models SET pricing_currency='CNY',confirmed_free=1 WHERE id=?").run("price-history");
+  await capture("free");
+  db.prepare("UPDATE models SET pricing_currency='USD',confirmed_free=0,cost_input_usd_per_million=1 WHERE id=?").run("price-history");
+  await capture("paid");
+  db.prepare("UPDATE models SET cost_input_usd_per_million=0 WHERE id=?").run("price-history");
+  const metrics=(task:string)=>turnMetrics(db,"unused",task,Date.now(),[],"");
+  expect(metrics("unknown")).toMatchObject({cost_usd:null,cost_cny:null,price_recorded:true});
+  expect(metrics("free")).toMatchObject({cost_usd:null,cost_cny:0,price_recorded:true});
+  expect(metrics("paid")).toMatchObject({cost_usd:0.00002,cost_cny:null,price_recorded:true});
+});
 
 test("rejects missing, expired and wrong-audience credentials before contacting an upstream", async () => {
   addModel("native", "responses");

@@ -1,13 +1,15 @@
 import {describe,it,expect,vi,afterEach} from "vitest";
-import {connectEvents,clearRealtime,useRealtime,mergeEvents,lastContiguous} from "./realtime";
+import {connectEvents,clearRealtime,useRealtime,mergeEvents,discardThrough} from "./realtime";
 import type {ThreadEvent} from "@codexdeck/shared";
 const frame=(n:number):ThreadEvent=>({thread_id:"t",task_id:null,type:"delta",payload:{n},created_at:"now",seq_id:n});
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals();clearRealtime();});
 describe("WebSocket resume",()=>{
-  it("sorts out of order and holds the cursor before gaps",()=>{
+  it("sorts out of order and discards only events covered by a confirmed snapshot",()=>{
     const events=mergeEvents([frame(1)],[frame(4),frame(1),frame(3)],"t");
-    expect(events.map(e=>e.seq_id)).toEqual([1,3,4]);expect(lastContiguous(events)).toBe(1);
-    expect(lastContiguous(mergeEvents(events,[frame(2)],"t"))).toBe(4);
+    expect(events.map(e=>e.seq_id)).toEqual([1,3,4]);
+    useRealtime.setState({thread:"t",events});discardThrough("different",3);
+    expect(useRealtime.getState().events).toHaveLength(3);
+    discardThrough("t",3);expect(useRealtime.getState().events.map(e=>e.seq_id)).toEqual([4]);
   });
   it("resumes from the accepted snapshot and reconnects across compacted gaps",()=>{
     vi.useFakeTimers();

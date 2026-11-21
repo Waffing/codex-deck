@@ -9,7 +9,6 @@ import {isolatedRunner} from "./isolated-runner.js";
 import {workspaceDirectory} from "../security/paths.js";
 import { ApprovalEngine, type EventSink, type NoticeSink } from "./approval.js";
 import { WorkspaceQueue } from "./queue.js";
-import { snapshotFiles } from "../files/tracker.js";
 import { signPayload } from "../security/crypto.js";
 import { OutputMasker } from "./output-masker.js";
 import {summarizeContext} from "./compact.js";
@@ -22,13 +21,14 @@ export interface ManagerOptions {
   approvalTimeoutMs?: number; notifyAfterMs?: number; profile?: () => unknown;
 }
 
-type Files = Pick<WorkspaceFiles, "getRoot" | "beforeTurn" | "afterTurn" | "agentsText" | "openArtifact">;
+type Files = Pick<WorkspaceFiles, "getRoot" | "beforeTurn" | "afterTurn" | "agentsText" | "openArtifact" | "hasIsolatedHistory" | "markIsolatedHistory" | "track">;
 type ThreadRow = Thread & { remote_thread_id: string | null; codex_home: string | null; executor_mode:string };
 type Terminal = "completed" | "failed" | "cancelled";
 type Turn = { taskId: string; threadId: string; workspaceId: string; prompt: string; imageIds:string[]; remoteId?: string;
-  modelAlias?:string|null; startedAt?:number; guestAbort?:AbortController;
+  modelAlias?:string|null; startedAt?:number; guestAbort?:AbortController; session?:Session;
   cancelled: boolean; summary: string; done: Promise<Terminal>; finish: (status: Terminal) => void };
-type Session = { client: RpcClient; isolated:boolean; remoteId:string; settings:Json; catalog:string; leases:Record<"model"|"ops",string>; idle?:NodeJS.Timeout };
+type ExecutorMode = "standard" | "isolated" | "reviewed_container";
+type Session = { client: RpcClient; mode:ExecutorMode; remoteId:string; settings:Json; catalog:string; leases:Record<"model"|"ops",string>; idle?:NodeJS.Timeout };
 type Compacted=Omit<Awaited<ReturnType<typeof summarizeContext>>,"taskId">;
 
 function error(statusCode: number, message: string) { return Object.assign(new Error(message),{statusCode}); }
@@ -59,7 +59,10 @@ export class ThreadManager {
   constructor(private context: ServerContext, private files: Files, private events: EventSink,
     private notifications: NoticeSink, private options: ManagerOptions) {
     this.approvals = new ApprovalEngine(context,events,notifications,options.approvalTimeoutMs,options.notifyAfterMs,
-      (thread,task)=>!!task && this.active.get(thread)?.taskId===task && this.sessions.get(thread)?.isolated===true);
+      (thread,task)=>{
+        const turn=this.active.get(thread);
+        return turn?.session?.mode==="isolated" && turn.taskId===task && !turn.cancelled && this.sessions.get(thread)===turn.session;
+      });
     const setting = (name:string, fallback:number) => {
       const value=Number(process.env[name] ?? fallback);
       if (!Number.isSafeInteger(value) || value<1) throw new Error("Invalid setting: "+name);
@@ -71,7 +74,7 @@ export class ThreadManager {
     context.resolveSessionLease=(credential,kind)=>{
       for (const [id,session] of this.sessions) {
         const turn=this.active.get(id);
-        if (this.stopping || !session.client.alive || !turn || turn.cancelled || credential!==session.leases[kind] || taskLink(context,turn.taskId)) continue;
+        if (this.stopping || !session.client.alive || turn?.session!==session || turn.cancelled || credential!==session.leases[kind]) continue;
         const now=Math.floor(Date.now()/1000);
         return signPayload({aud:kind==="model"?"codexdeck-internal":"codexdeck-ops",thread_id:id,task_id:turn.taskId,
           nonce:randomUUID(),iat:now,exp:now+context.gatewayConfig.internal_token_ttl_seconds},context.masterKey);
@@ -257,6 +260,9 @@ export class ThreadManager {
       this.events.append(threadId,"task_started",{task_id:taskId},taskId);
       const guest=taskLink(this.context,taskId);
       if(guest && guest.status!=="active") throw error(403,"Guest access ended.");
+      // Resolve the execution boundary before the first Git checkpoint. The
+      // process receives a usable lease only after the snapshot and input are ready.
+      const session=guest ? undefined : await this.connect(threadId);
       snapshot = await this.files.beforeTurn(workspaceId,threadId,taskId);
       if(guest){
         turn.guestAbort=new AbortController();
@@ -268,12 +274,14 @@ export class ThreadManager {
           approvals:this.approvals,events:this.events,signal:turn.guestAbort.signal});
         terminal="completed";return;
       }
-      const session = await this.connect(threadId);
-      if (this.stopping || turn.cancelled) { terminal = "cancelled"; return; }
+      if (!session?.client.alive) throw error(503,"Codex session closed.");
       const row = this.row(threadId);
+      const input=await this.userInput(row,turn.prompt,turn.imageIds);
+      if (this.stopping || turn.cancelled) { terminal = "cancelled"; return; }
       turn.modelAlias=row.active_model_alias;
+      turn.session=session;
       const response = await session.client.call("turn/start", {
-        threadId:session.remoteId, input:await this.userInput(row,turn.prompt,turn.imageIds), ...(row.reasoning_effort && { effort:row.reasoning_effort }),
+        threadId:session.remoteId, input, ...(row.reasoning_effort && { effort:row.reasoning_effort }),
       });
       turn.remoteId = String((response.turn as Json).id);
       if (turn.cancelled) await this.interrupt(threadId);
@@ -282,6 +290,7 @@ export class ThreadManager {
       terminal = turn.cancelled || this.stopping ? "cancelled" : "failed";
       turn.summary = err instanceof Error ? err.message : "Codex turn failed.";
     } finally {
+      turn.session=undefined;
       this.approvals.disconnect(threadId);
       if (snapshot !== undefined) {
         try { await this.files.afterTurn(workspaceId,threadId,taskId,snapshot); }
@@ -329,18 +338,22 @@ export class ThreadManager {
     session.idle.unref();
   }
 
-  private connect(threadId: string): Promise<Session> {
+  private async connect(threadId: string): Promise<Session> {
     if (this.stopping) return Promise.reject(error(503,"Manager closed."));
     const taskId=this.active.get(threadId)?.taskId;
     const external=taskId && this.context.native.prepare("SELECT api_key_id IS NOT NULL OR guest_link_id IS NOT NULL FROM tasks WHERE id=?").pluck().get(taskId);
-    const isolated=!external && this.context.native.prepare("SELECT w.automation_level FROM workspaces w JOIN threads t ON t.workspace_id=w.id WHERE t.id=?").pluck().get(threadId)==="unrestricted";
+    const workspace=this.context.native.prepare("SELECT w.id,w.automation_level FROM workspaces w JOIN threads t ON t.workspace_id=w.id WHERE t.id=?").get(threadId) as {id:string;automation_level:string}|undefined;
+    if(!workspace) throw error(404,"Workspace unavailable.");
+    const mode:ExecutorMode=!external && workspace.automation_level==="unrestricted" ? "isolated"
+      : await this.files.hasIsolatedHistory(workspace.id) ? "reviewed_container" : "standard";
+    if(this.stopping) throw error(503,"Manager closed.");
     const prior = this.sessions.get(threadId);
-    if (prior?.client.alive && prior.isolated===isolated && prior.catalog===this.catalogLimits(threadId)) { clearTimeout(prior.idle); return Promise.resolve(prior); }
+    if (prior?.client.alive && prior.mode===mode && prior.catalog===this.catalogLimits(threadId)) { clearTimeout(prior.idle); return prior; }
     const existing = this.connecting.get(threadId);
-    if (existing) return existing.then(session=>session.isolated===isolated ? session : this.connect(threadId));
+    if (existing) return existing.then(session=>session.mode===mode ? session : this.connect(threadId));
     const open = async () => {
       if (prior) { this.sessions.delete(threadId); await prior.client.close(); }
-      return this.open(threadId,isolated);
+      return this.open(threadId,mode);
     };
     const pending = open().finally(() => this.connecting.delete(threadId));
     this.connecting.set(threadId,pending);
@@ -352,7 +365,8 @@ export class ThreadManager {
     return JSON.stringify(model);
   }
 
-  private async open(threadId: string, isolated:boolean) {
+  private async open(threadId: string, mode:ExecutorMode) {
+    const container=mode!=="standard", unrestricted=mode==="isolated";
     const row = this.row(threadId);
     const workspaceId = row.workspace_id;
     if (!workspaceId) throw error(404,"Workspace unavailable.");
@@ -360,20 +374,25 @@ export class ThreadManager {
     const globalInstructions = await this.files.agentsText(workspaceId,"global");
     const ttl = this.context.gatewayConfig.internal_token_ttl_seconds;
     const port=this.options.port?.() ?? this.context.gatewayConfig.port;
-    const configHome=isolated ? await workspaceDirectory(this.options.dataDirectory,"executor-config/"+threadId,true) : row.codex_home;
+    const configHome=container ? await workspaceDirectory(this.options.dataDirectory,"executor-config/"+threadId,true) : row.codex_home;
     const cfg = await generateCodexConfig({ ...this.options,native:this.context.native,masterKey:this.context.masterKey,
-      port:isolated ? 3141 : port, defaultModel:row.active_model_alias ?? undefined,tokenTtlSeconds:ttl,
-      thread:{ id:threadId,workspaceId,home:configHome,isolated,globalInstructions,opsEntry:this.options.opsEntry
+      port:container ? 3141 : port, defaultModel:row.active_model_alias ?? undefined,tokenTtlSeconds:ttl,
+      thread:{ id:threadId,workspaceId,home:configHome,isolated:container,unrestricted,globalInstructions,opsEntry:this.options.opsEntry
         ?? fileURLToPath(new URL("../../../../packages/ops-mcp/dist/index.js",import.meta.url)) },
     });
     const leases = {model:"cdlease_"+randomBytes(32).toString("hex"),ops:"cdlease_"+randomBytes(32).toString("hex")};
     cfg.env.CODEXDECK_INTERNAL_TOKEN=leases.model; cfg.env.CODEXDECK_OPS_TOKEN=leases.ops;
     this.context.masker.register(leases.model);
     this.context.masker.register(leases.ops);
-    if(!isolated) this.context.native.prepare("UPDATE threads SET codex_home=? WHERE id=?").run(cfg.codexHome,threadId);
+    if(!container) this.context.native.prepare("UPDATE threads SET codex_home=? WHERE id=?").run(cfg.codexHome,threadId);
     if (this.stopping) throw error(503,"Manager closed.");
-    const output=new OutputMasker(this.context.masker,(method,params)=>this.notify(threadId,method,params));
-    const runner=isolated ? await isolatedRunner({workspace:cwd,data:this.options.dataDirectory,config:cfg.codexHome,threadId,workspaceId,leases,port}) : undefined;
+    let owner:Session|undefined;
+    const output=new OutputMasker(this.context.masker,(method,params)=>this.notify(threadId,method,params,owner));
+    const runner=container ? await isolatedRunner({workspace:cwd,data:this.options.dataDirectory,config:cfg.codexHome,threadId,workspaceId,leases,port,reviewed:!unrestricted}) : undefined;
+    if(unrestricted && runner) {
+      try {await this.files.markIsolatedHistory(workspaceId);}
+      catch(e) {await runner.dispose();throw e;}
+    }
     const client: RpcClient = await RpcClient.start(cwd,cfg.env,{
       request:(method,params,id) => { void this.serverRequest(threadId,client,method,params,id).catch(() => {
         if (client.alive) client.unsupported(id);
@@ -398,9 +417,8 @@ export class ThreadManager {
       await client.call("initialize",{ clientInfo:{name:"codexdeck",title:"CodexDeck",version:"0.2.0"},capabilities:{} });
       client.notify("initialized");
       const profile = this.context.masker.maskObject(this.options.profile?.() ?? {});
-      const settings = { cwd:isolated?"/workspace":cwd,approvalPolicy:isolated?"never":"on-request",sandbox:isolated?"danger-full-access":"workspace-write",model:cfg.alias,modelProvider:"codexdeck",
+      const settings = { cwd:container?"/workspace":cwd,approvalPolicy:unrestricted?"never":"on-request",sandbox:unrestricted?"danger-full-access":"workspace-write",model:cfg.alias,modelProvider:"codexdeck",
         developerInstructions:"CodexDeck server profile (environment data): " + JSON.stringify(profile).slice(0,2000) };
-      const mode=isolated?"isolated":"standard";
       const resume=row.remote_thread_id && row.executor_mode===mode;
       const response = resume
         ? await client.call("thread/resume",{...settings,threadId:row.remote_thread_id,excludeTurns:true})
@@ -415,7 +433,8 @@ export class ThreadManager {
           {type:"message",role:"assistant",content:[{type:"output_text",text:t.answer.slice(-16384)}]}]);
         if(history.length) await client.call("thread/inject_items",{threadId:remoteId,items:history});
       }
-      const session = { client,isolated,remoteId,leases,settings,catalog:this.catalogLimits(threadId) };
+      const session = { client,mode,remoteId,leases,settings,catalog:this.catalogLimits(threadId) };
+      owner=session;
       this.context.native.prepare("UPDATE threads SET remote_thread_id=?,executor_mode=? WHERE id=?").run(remoteId,mode,threadId);
       this.sessions.set(threadId,session);
       this.events.append(threadId,resume ? "process_resumed" : "process_started",{remote_thread_id:remoteId});
@@ -424,8 +443,10 @@ export class ThreadManager {
     finally { this.startingClients.delete(threadId); }
   }
 
-  private notify(threadId: string, method: string, params: Json) {
-    const turn = this.active.get(threadId);
+  private notify(threadId: string, method: string, params: Json, owner:Session|undefined) {
+    if(owner && this.sessions.get(threadId)!==owner) return;
+    const active=this.active.get(threadId);
+    const turn=owner && active?.session===owner ? active : undefined;
     if (method==="item/reasoning/textDelta" || method==="rawResponseItem/completed") return;
     if (method==="item/started" || method==="item/completed") {
       const item=params.item as Json|undefined;
@@ -529,6 +550,7 @@ export class ThreadManager {
 
   private async serverRequest(threadId: string, client: RpcClient, method: string, params: Json, id: RpcId) {
     const turn = this.active.get(threadId);
+    if (!turn?.session || turn.session.client!==client || turn.cancelled) {client.unsupported(id); return;}
     if (turn && method==="mcpServer/elicitation/request" && params.serverName==="codexdeck_ops" && params.mode==="form") {
       const result=await this.approvals.request(threadId,method,params,turn.taskId);
       const action=result.decision.startsWith("approve") ? "accept" : result.decision==="abort" ? "cancel" : "decline";
@@ -543,7 +565,7 @@ export class ThreadManager {
     const changes = method === "item/fileChange/requestApproval" && this.fileChanges.get(threadId)?.get(String(params.itemId));
     let scriptRevision:string|undefined;
     if (/^(?:npm|pnpm|yarn) (?:test|build|install)\b/.test(String(params.command ?? ""))) {
-      const snapshot=await snapshotFiles(await this.files.getRoot(turn.workspaceId));
+      const snapshot=await this.files.track(turn.workspaceId,"snapshot");
       scriptRevision=createHash("sha256").update(JSON.stringify([turn.workspaceId,[...snapshot].sort()])).digest("hex");
     }
     const result = await this.approvals.request(threadId,method,changes ? {...params,changes} : params,turn.taskId,scriptRevision);

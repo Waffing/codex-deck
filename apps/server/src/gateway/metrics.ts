@@ -1,13 +1,14 @@
 import type { models } from "../db/schema.js";
 
 export function estimateUsageCost(model:typeof models.$inferSelect|undefined,input:number,output:number,cached:number|null) {
-  if (!model) return {costUsd:0,costCny:0};
+  if (!model) return {costUsd:0,costCny:0,pricedCurrency:null};
   const cny=model.pricingCurrency==="CNY";
   const inputRate=cny?model.costInputCnyPerMillion:model.costInputUsdPerMillion;
   const outputRate=cny?model.costOutputCnyPerMillion:model.costOutputUsdPerMillion;
   const hit=cached??0;
   const cost=((input-hit)*inputRate+hit*model.cacheReadPricePer1m+output*outputRate)/1_000_000;
-  return {costUsd:cny?0:cost,costCny:cny?cost:0};
+  const priced=inputRate>0 || outputRate>0 || model.cacheReadPricePer1m>0 || model.confirmedFree;
+  return {costUsd:cny?0:cost,costCny:cny?cost:0,pricedCurrency:priced?model.pricingCurrency:null};
 }
 
 export class OutputTiming {

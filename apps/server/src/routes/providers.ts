@@ -34,7 +34,7 @@ function modelDto(row: typeof models.$inferSelect) {
     last_probe:row.lastProbeJson ? JSON.parse(row.lastProbeJson) : null,
     context_window:row.contextWindow,max_output_tokens:row.maxOutputTokens,cache_read_price_per_1m:row.cacheReadPricePer1m,
     capabilities:JSON.parse(row.capabilitiesJson),last_benchmark:row.lastBenchmarkJson?JSON.parse(row.lastBenchmarkJson):null,
-    pricing_currency:row.pricingCurrency,cost_input_cny_per_million:row.costInputCnyPerMillion,
+    confirmed_free:row.confirmedFree, pricing_currency:row.pricingCurrency,cost_input_cny_per_million:row.costInputCnyPerMillion,
     cost_output_cny_per_million:row.costOutputCnyPerMillion,
     id: row.id, alias: row.alias, provider_id: row.providerId, model_id: row.modelId,
     protocol: row.protocol, fallback_model_ids: JSON.parse(row.fallbackModelIdsJson),
@@ -208,7 +208,7 @@ export function registerProviderRoutes(app: FastifyInstance, context: ServerCont
     const now = new Date().toISOString();
     return db.insert(models).values({
       contextWindow:m.context_window,maxOutputTokens:m.max_output_tokens,cacheReadPricePer1m:m.cache_read_price_per_1m,capabilitiesJson:JSON.stringify(m.capabilities),
-      pricingCurrency:m.pricing_currency,costInputCnyPerMillion:m.cost_input_cny_per_million,costOutputCnyPerMillion:m.cost_output_cny_per_million,
+      confirmedFree:m.confirmed_free,pricingCurrency:m.pricing_currency,costInputCnyPerMillion:m.cost_input_cny_per_million,costOutputCnyPerMillion:m.cost_output_cny_per_million,
       id: randomUUID(), providerId: m.provider_id, modelId: m.model_id, alias: m.alias, protocol: m.protocol,
       fallbackModelIdsJson: JSON.stringify(m.fallback_model_ids), costInputUsdPerMillion: m.cost_input_usd_per_million,
       costOutputUsdPerMillion: m.cost_output_usd_per_million, enabled: m.enabled, createdAt: now, updatedAt: now,
@@ -294,7 +294,7 @@ export function registerProviderRoutes(app: FastifyInstance, context: ServerCont
     }
     return db.update(models).set({
       lastProbeJson:m.model_id && m.model_id!==old.modelId || m.provider_id && m.provider_id!==old.providerId ? null:undefined,
-      pricingCurrency:m.pricing_currency,costInputCnyPerMillion:m.cost_input_cny_per_million,costOutputCnyPerMillion:m.cost_output_cny_per_million,
+      confirmedFree:m.confirmed_free,pricingCurrency:m.pricing_currency,costInputCnyPerMillion:m.cost_input_cny_per_million,costOutputCnyPerMillion:m.cost_output_cny_per_million,
       contextWindow:m.context_window,maxOutputTokens:m.max_output_tokens,cacheReadPricePer1m:m.cache_read_price_per_1m,
       capabilitiesJson:m.capabilities&&JSON.stringify(m.capabilities),
       lastBenchmarkJson:m.protocol || m.model_id || m.provider_id ? null : undefined,

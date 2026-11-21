@@ -48,15 +48,15 @@ export function turnEvents(db:Database.Database,thread:string,task:string,masker
 }
 export function turnMetrics(db:Database.Database,thread:string,task:string,start:number,files:TurnTelemetry["files"],diff:string):TurnTelemetry {
   const row=db.prepare(`SELECT sum(CASE WHEN usage_known THEN input_tokens END) input_tokens,
-    sum(CASE WHEN usage_known THEN output_tokens END) output_tokens,sum(CASE WHEN usage_known THEN cost_usd END) cost_usd,
-    sum(CASE WHEN usage_known THEN cost_cny END) cost_cny,
+    sum(CASE WHEN usage_known THEN output_tokens END) output_tokens,sum(CASE WHEN usage_known AND (priced_currency='USD' OR cost_usd>0) THEN cost_usd END) cost_usd,
+    sum(CASE WHEN usage_known AND (priced_currency='CNY' OR cost_cny>0) THEN cost_cny END) cost_cny,
     1.0*sum(cached_input_tokens)/nullif(sum(CASE WHEN cached_input_tokens IS NOT NULL THEN input_tokens END),0) cache_hit_rate,
     sum(CASE WHEN tokens_per_sec>0 THEN output_tokens END)/nullif(sum(CASE WHEN tokens_per_sec>0 THEN output_tokens/tokens_per_sec END),0) tokens_per_sec
     FROM usage_logs WHERE turn_id=?`).get(task) as Pick<TurnTelemetry,"input_tokens"|"output_tokens"|"cache_hit_rate"|"cost_usd"|"cost_cny"|"tokens_per_sec">;
   const source=db.prepare(`SELECT coalesce((SELECT m.alias FROM usage_logs u JOIN models m ON m.id=u.model_id
     WHERE u.turn_id=? AND u.status_code BETWEEN 200 AND 299 ORDER BY u.rowid DESC LIMIT 1),t.active_model_alias) model,
     t.last_context_tokens context_tokens FROM threads t WHERE t.id=?`).get(task,thread) as Pick<TurnTelemetry,"model"|"context_tokens">;
-  return {...row,...source,files,diff,elapsed_ms:Math.max(0,Date.now()-start)};
+  return {...row,...source,price_recorded:true,files,diff,elapsed_ms:Math.max(0,Date.now()-start)};
 }
 
 export function completeAnswer(db:Database.Database,thread:string,task:string,masker:SecretMasker) {

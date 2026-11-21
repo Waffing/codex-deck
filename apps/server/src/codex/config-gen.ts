@@ -16,7 +16,7 @@ interface ConfigOptions {
   port: number;
   defaultModel?: string;
   tokenTtlSeconds?: number;
-  thread?: { id: string; workspaceId?:string; home?: string | null; opsEntry: string; globalInstructions: string; isolated?:boolean };
+  thread?: { id: string; workspaceId?:string; home?: string | null; opsEntry: string; globalInstructions: string; isolated?:boolean; unrestricted?:boolean };
 }
 
 /** The returned env is a complete child environment. Do not merge process.env into it. */
@@ -98,8 +98,8 @@ export async function generateCodexConfig(options: ConfigOptions) {
     `model_catalog_json = ${JSON.stringify(isolated ? "/run/deck-config/models.json" : catalogPath)}`,
     "",
     ...(options.thread ? [
-      isolated ? 'sandbox_mode = "danger-full-access"' : 'sandbox_mode = "workspace-write"',
-      isolated ? 'approval_policy = "never"' : 'approval_policy = "on-request"',
+      options.thread.unrestricted && isolated ? 'sandbox_mode = "danger-full-access"' : 'sandbox_mode = "workspace-write"',
+      options.thread.unrestricted && isolated ? 'approval_policy = "never"' : 'approval_policy = "on-request"',
       '[shell_environment_policy]', 'inherit = "core"',
       'exclude = ["*TOKEN*", "*KEY*", "CODEX_HOME", "CODEXDECK_*"]',
       ...(cacheRoot ? ["[shell_environment_policy.set]",...Object.entries(caches).map(([k,v])=>`${k} = ${JSON.stringify(v)}`),

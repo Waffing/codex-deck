@@ -35,6 +35,7 @@ type ModelDraft = {
   provider_id: string;
   protocol: Model["protocol"];
   currency: "USD" | "CNY";
+  confirmedFree: boolean;
   input: number;
   output: number;
   cache:number; context:number; maxOutput:number; capabilities:string[];
@@ -57,7 +58,7 @@ const blankModel: ModelDraft = {
   model_id: "",
   provider_id: "",
   protocol: "auto",
-  currency: "USD",
+  currency: "USD", confirmedFree:false,
   input: 0,
   output: 0,
   cache:0,context:128000,maxOutput:16384,capabilities:[],
@@ -139,7 +140,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
             provider_id: row.provider_id,
             enabled: row.enabled,
             protocol: row.protocol,
-            currency: c,
+            currency: c,confirmedFree:row.confirmed_free??false,
             input: c === "USD" ? row.cost_input_usd_per_million : (row.cost_input_cny_per_million ?? 0),
             output: c === "USD" ? row.cost_output_usd_per_million : (row.cost_output_cny_per_million ?? 0),
             fallback: row.fallback_model_ids,
@@ -193,7 +194,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
         provider_id: m.provider_id,
         enabled: m.enabled,
         protocol: m.protocol,
-        pricing_currency: m.currency,
+        pricing_currency: m.currency,confirmed_free:m.input===0 && m.output===0 && m.cache===0 && m.confirmedFree,
         ["cost_input_" + cur + "_per_million"]: m.input,
         ["cost_output_" + cur + "_per_million"]: m.output,
         fallback_model_ids: m.fallback,
@@ -569,6 +570,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
             </label>
           </div>
           <div className="ad-actions">
+            {m.input===0 && m.output===0 && m.cache===0 && <label className="ad-check"><ToggleSwitch checked={m.confirmedFree} onCheckedChange={confirmedFree=>setM({...m,confirmedFree})}/>确认此模型免费</label>}
             <div aria-label="计价币种" className="ad-segments">
               {(["USD", "CNY"] as const).map((cur) => (
                 <button

@@ -50,7 +50,9 @@ export function GuestWorkbench(){
 function GuestChat({tid,wid,canWrite,fail,end,setLink,create}:{tid:string;wid:string;canWrite:boolean;fail:(e:unknown)=>void;end:(m:string)=>void;setLink:(link:TempAccessLink)=>void;create:()=>Promise<Thread>}){
   const [events,setEvents]=useState<ThreadEvent[]>([]),[initial,setInitial]=useState<number|null>(null);
   const [prompt,setPrompt]=useState(""),[offline,setOffline]=useState(false);
-  const ready=useCallback((_id:string,seq:number)=>setInitial(v=>v??seq),[]);
+  const ready=useCallback((_id:string,seq:number)=>{
+    setInitial(v=>v??seq);setEvents(v=>v.some(e=>e.seq_id<=seq)?v.filter(e=>e.seq_id>seq):v);
+  },[]);
   const marker=events.reduce((seq,e)=>/^task_(completed|cancelled|failed)$/.test(e.type)?e.seq_id:seq,0);
   const page=useTurnPages(tid,marker,ready,false),action=useAction();
   const all=useOutbox(s=>s.messages),turns=useMemo(()=>collectSnapshots([...page.older,...page.tail.turns],events),[page.older,page.tail,events]);

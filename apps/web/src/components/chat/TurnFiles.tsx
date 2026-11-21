@@ -24,8 +24,8 @@ export function Telemetry({value}:{value:TurnTelemetry}) {
     {value.tokens_per_sec!=null&&<span>{value.tokens_per_sec.toFixed(1)} tok/s</span>}
     {value.cache_hit_rate!=null&&<span>缓存 {(value.cache_hit_rate*100).toFixed(1)}%</span>}
     {tokens!==null&&<span tabIndex={0} title={tokens.toLocaleString("en-US")+" Token"}>{tokenLabel} Token</span>}
-    {!!value.cost_usd&&<span>${value.cost_usd.toLocaleString("en",{maximumFractionDigits:6})}</span>}
-    {!!value.cost_cny&&<span>¥{value.cost_cny.toLocaleString("zh-CN",{maximumFractionDigits:6})}</span>}
+    {value.cost_usd!==null && (value.cost_usd>0 || value.price_recorded) &&<span>${value.cost_usd.toLocaleString("en",{maximumFractionDigits:6})}</span>}
+    {value.cost_cny!==null && (value.cost_cny>0 || value.price_recorded) &&<span>¥{value.cost_cny.toLocaleString("zh-CN",{maximumFractionDigits:6})}</span>}
   </section>;
 }
 interface Props {

@@ -5,10 +5,10 @@ import "./components/settings/workshop.css";
 import {useCallback,useEffect,useRef,useState} from "react";
 import {Activity,ArrowRight,Bell,Box,Check,CircleDot,Command,FileCode2,FolderGit2,GitCompareArrows,KeyRound,Layers3,LayoutDashboard,LogOut,Menu,MessageSquare,Monitor,Moon,PanelLeftClose,PanelLeftOpen,Plus,Search,Server,Settings2,ShieldCheck,SlidersHorizontal,Sun,Terminal,WifiOff,X,ChevronDown,Files,Ellipsis} from "lucide-react";
 import type {Thread,Workspace} from "@codexdeck/shared";
-import {authorizeCache,closeCacheSession} from "./lib/cache";
+import {authorizeCache,closeCacheSession,sessionClosed} from "./lib/cache";
 import {clearOutbox} from "./stores/outbox";
 import {api,json} from "./lib/api";
-import {connectEvents,clearRealtime,useRealtime} from "./stores/realtime";
+import {connectEvents,clearRealtime,discardThrough,useRealtime} from "./stores/realtime";
 import {Button} from "./components/ui/button";
 import {ChatPane} from "./components/chat/ChatPane";
 import {readPlaybooks} from "./components/chat/Playbooks";
@@ -43,7 +43,11 @@ function AdminApp(){
   const [infoOpen,setInfoOpen]=useState(()=>localStorage.getItem("deck.inspector")==="open");
   function toggleInfo(){setInfoOpen(!infoOpen);localStorage.setItem("deck.inspector",infoOpen?"closed":"open")}
   const live=useRealtime();
-  const expire=useCallback(()=>{clearRealtime();clearOutbox();void closeCacheSession();setGate("setup");},[]);
+  const expire=useCallback((broadcast=true)=>{clearRealtime();clearOutbox();void closeCacheSession(broadcast);setGate("setup");},[]);
+  useEffect(()=>{
+    const close=(e:StorageEvent)=>{if(e.key===sessionClosed)expire(false);};
+    window.addEventListener("storage",close);return ()=>window.removeEventListener("storage",close);
+  },[expire]);
   const handleError=useCallback((e:unknown)=>{if((e as {status?:number})?.status===401){expire();return;}setError(e instanceof Error?e.message:"操作失败");},[expire]);
   const preferences=usePreferences(gate==="ready",handleError);
   const theme=useTheme(preferences.prefs.theme,theme=>preferences.update({theme}));
@@ -56,7 +60,10 @@ function AdminApp(){
   const count=live.approvals??data.approvals.length;
   const activeThread=thread?.id??"";
   const [subscription,setSubscription]=useState<{id:string;cursor:number}|null>(null);
-  const snapshotReady=useCallback((id:string,cursor:number)=>setSubscription(old=>old?.id===id?old:{id,cursor}),[]);
+  const snapshotReady=useCallback((id:string,cursor:number)=>{
+    discardThrough(id,cursor);
+    setSubscription(old=>old?.id===id?old:{id,cursor});
+  },[]);
   const checkSession=useCallback(async ()=>{
     const s=await api<{authenticated:boolean;onboarding_completed:boolean;cache_scope:string|null}>("/api/auth/status");
     if(!s.authenticated || !s.cache_scope){expire();return;}
@@ -83,7 +90,15 @@ function AdminApp(){
   const open=useCallback((t:PanelTab)=>{const key=tabKey(t);setTabs(old=>old.some(entry=>tabKey(entry)===key)?old:[...old,t]);setSelected(key);setMenu(null);},[]);
   function choose(w:Workspace){setWs(w.id);setTh("");localStorage.setItem("deck.workspace",w.id);localStorage.removeItem("deck.thread");setTabs([]);go("workbench");void reload();}
   function jump(t:Thread){if(t.workspace_id!==workspace?.id)setTabs([]);setWs(t.workspace_id??"");setTh(t.id);localStorage.setItem("deck.workspace",t.workspace_id??"");localStorage.setItem("deck.thread",t.id);go("workbench");}
-  async function newThread(){if(!workspace)throw new Error("请先创建工作区");const t=await api<Thread>("/api/threads",json("POST",{workspace_id:workspace.id,title:"新会话"}));addThread(t);jump(t);return t;}
+  const creating=useRef(new Map<string,Promise<Thread>>());
+  function newThread(){
+    if(!workspace)return Promise.reject(new Error("请先创建工作区"));
+    const id=workspace.id;
+    const existing=creating.current.get(id);if(existing)return existing;
+    const next=api<Thread>("/api/threads",json("POST",{workspace_id:id,title:"新会话"}))
+      .then(t=>{addThread(t);jump(t);return t;}).finally(()=>creating.current.delete(id));
+    creating.current.set(id,next);return next;
+  }
   function act(f:()=>Promise<unknown>){if(requesting)return;setRequesting(true);void f().catch(handleError).finally(()=>setRequesting(false));}
   async function logout(){await api("/api/auth/logout",{method:"POST"});expire();setTabs([]);setMenu(null);setError("");}
   async function runPlaybook(prompt:string){
@@ -103,7 +118,7 @@ function AdminApp(){
   const notifyButton=<button className="menu-line" onClick={()=>{setMenu(null);if("Notification" in window)void Notification.requestPermission().then(v=>setError(v==="granted"?"桌面通知已启用":"浏览器暂未允许通知"));else setError("此浏览器不支持桌面通知")}}><Bell size={14}/>启用桌面通知</button>;
   const accountActions=<>{notifyButton}<button className="menu-line" onClick={()=>{theme.system();setMenu(null)}}><Monitor size={14}/>跟随系统主题 {theme.mode==="system"&&<Check size={12}/>}</button><button className="menu-line" onClick={()=>act(logout)}><LogOut size={14}/>退出登录</button></>;
   const toast=error&&<div className="deck-toast" role="status">{error}<button aria-label="关闭提示" onClick={()=>setError("")}><X size={15}/></button></div>;
-  if(gate!=="ready")return <>{gate==="loading"?<div className="deck-loading"><Wordmark/><p>正在连接控制台…</p></div>:<Onboarding onComplete={show=>{void checkSession().catch(handleError);if(show)open({kind:"profile",title:"服务器体检"})}}/>}{toast}</>;
+  if(gate!=="ready")return <>{gate==="loading"?<div className="deck-loading"><Wordmark/></div>:<Onboarding onComplete={show=>{void checkSession().catch(handleError);if(show)open({kind:"profile",title:"服务器体检"})}}/>}{toast}</>;
   return <AppearanceContext.Provider value={preferences}><div className={"deck "+(collapsed?"nav-collapsed":"")}>
     <header className="deck-top"><Wordmark/><i className="deck-sep"/><button className="workspace-switch" aria-expanded={menu==="workspaces"} onClick={()=>setMenu(menu==="workspaces"?null:"workspaces")}><FolderGit2 size={15}/><b>{workspace?.name??"选择工作区"}</b><ChevronDown size={13}/></button>
     <button className="health-pill" onClick={()=>open({kind:"profile",title:"服务器体检"})} aria-label="打开服务器体检" title={gatewayDetail}><i className={"status-dot "+(pulse?.gateway_healthy?"running":"idle")}/><span>网关{gatewayLabel}</span><i/><Activity size={13}/><span>CPU {pulse?.cpu_percent!=null?Math.round(pulse.cpu_percent)+"%":"—"}</span><span>内存 {pulse?Math.round((1-pulse.free_memory_bytes/pulse.total_memory_bytes)*100)+"%":"—"}</span><span>服务 {pulse?.running_services??"—"}</span></button>

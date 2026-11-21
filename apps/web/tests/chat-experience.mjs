@@ -69,6 +69,14 @@ export async function chatExperienceJourney(page,submit,shot) {
   await page.locator(".desk-nav").getByRole("button",{name:/系统|设置/}).click();
   assert.equal(await page.locator('.admin-pages input[type="checkbox"]').count(),0);
   assert.doesNotMatch(await page.locator(".desk-path").innerText(),/console-lab/);
+  const sound=page.locator(".workshop-group").filter({has:page.getByRole("heading",{name:"提示音",exact:true})});
+  async function checkSoundDefaults(){
+    assert.equal(await sound.getByRole("radio",{name:"柔和木琴"}).getAttribute("aria-checked"),"true");
+    for(const [name,on] of [["任务完成",false],["等待审批",true],["任务报错",true]]){
+      assert.equal(await sound.getByRole("switch",{name}).getAttribute("aria-checked"),String(on));
+    }
+  }
+  await checkSoundDefaults();
   for(const [name,skin] of [["曜石琥珀","obsidian"],["午夜松林","pine"],["暖纸阅读","paper"],["极简纯白","white"]]){
     await page.getByRole("button",{name,exact:true}).click();
     await page.waitForFunction(id=>document.documentElement.dataset.skin===id,skin);
@@ -79,6 +87,27 @@ export async function chatExperienceJourney(page,submit,shot) {
   await page.getByRole("radio",{name:"柔和木琴"}).click();
   await page.getByRole("button",{name:"试听",exact:true}).click();
   await page.getByRole("radio",{name:"静音",exact:true}).click();
+  await sound.getByRole("switch",{name:"任务完成"}).click();
+  await page.getByRole("button",{name:"恢复工作台默认值"}).click();
+  await checkSoundDefaults();
+  await sound.getByRole("button",{name:"试听"}).click();
+  const tones=await page.evaluate(()=>{
+    const original=AudioContext.prototype.createOscillator;
+    let tones=0;
+    AudioContext.prototype.createOscillator=function(...args){tones++;return original.apply(this,args);};
+    const counts=[];
+    try{
+      for(const [seq_id,kind] of [[1,"completed"],[2,"approval"],[2,"approval"],[3,"failed"],[4,"cancelled"]]){
+        window.dispatchEvent(new CustomEvent("codexdeck:activity",{detail:{thread_id:"sound-fixture",task_id:"test",seq_id,kind}}));
+        counts.push(tones);
+      }
+    }finally{AudioContext.prototype.createOscillator=original;}
+    return counts;
+  });
+  assert.deepEqual(tones,[0,2,2,4,4],"sound settings, duplicate events and cancellation");
+  await page.waitForFunction(()=>document.querySelector('link[rel="icon"]')?.dataset.state==="failed");
+  await page.evaluate(()=>window.dispatchEvent(new CustomEvent("codexdeck:activity",{detail:{thread_id:"sound-fixture",seq_id:5,kind:"completed"}})));
+  await page.waitForFunction(()=>document.querySelector('link[rel="icon"]')?.dataset.state==="idle");
   await page.getByRole("heading",{name:"缓存与性能"}).waitFor();
   await page.getByRole("button",{name:"一键清空本地缓存"}).click();
   await page.getByText("本地缓存已清空",{exact:true}).waitFor();

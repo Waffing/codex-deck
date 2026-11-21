@@ -58,8 +58,9 @@ test("public tasks enforce scope and workspace, resume SSE, sign retried callbac
     expect((await post(project,"different")).status).toBe(409);
     expect(db.native.prepare("SELECT count(*) FROM tasks").pluck().get()).toBe(1);
     const resource = url+"/api/v1/tasks/"+task_id;
-    const stream = await fetch(resource+"/stream",{headers:bearer});
+    const stream = await fetch(resource+"/stream",{headers:{...bearer,"accept-encoding":"br, gzip"}});
     expect(stream.headers.get("content-type")).toContain("text/event-stream");
+    expect(stream.headers.get("content-encoding")).toBeNull();
     let received = 0;
     for await (const frame of readSse(stream.body!)) {
       if (!frame.data) continue;
