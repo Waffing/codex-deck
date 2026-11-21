@@ -1,3 +1,4 @@
+import {selectTool} from "./sidebar.mjs";
 import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
 
@@ -162,7 +163,7 @@ export async function performanceJourney(browser,context,origin,db,instrument){
     assert.equal(await page.getByText("可重试消息",{exact:true}).count(),1);
     const ids=await page.evaluate(()=>window.__pendingClientIds);
     assert.equal(ids.length,2);assert.equal(ids[0],ids[1]);
-    await page.locator(".desk-nav").getByRole("button",{name:/系统|设置/}).click();
+    await selectTool(page,"设置");
     await page.getByRole("button",{name:"一键清空本地缓存"}).click();
     await page.getByText("本地缓存已清空").waitFor();
     await page.getByText(/0 个会话 · /).waitFor();

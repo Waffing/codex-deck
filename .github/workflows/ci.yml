@@ -63,7 +63,7 @@ jobs:
         run: |
           mkdir "$RUNNER_TEMP/gallery"
           cp 09-model-center.png       "$RUNNER_TEMP/gallery/gateway.png"
-          cp flagship-pine-desktop.png "$RUNNER_TEMP/gallery/workbench-pine.png"
+          cp workbench-tools-open-desktop.png "$RUNNER_TEMP/gallery/workbench-pine.png"
           cp flagship-paper-mobile.png "$RUNNER_TEMP/gallery/workbench-paper-mobile.png"
           cp 03-workbench-desktop.png "$RUNNER_TEMP/gallery/workbench.png"
           cp 02-approval-desktop.png  "$RUNNER_TEMP/gallery/approval.png"

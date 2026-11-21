@@ -1,3 +1,4 @@
+import {selectTool} from "./sidebar.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
@@ -69,7 +70,7 @@ export async function chatExperienceJourney(page,submit,shot) {
     if(ext==="md")assert.match(bytes.toString(),/\*\*全部通过\*\*/);
     else {assert.equal(bytes.subarray(1,4).toString(),"PNG");assert.ok(bytes.readUInt32BE(16)>=800 && bytes.readUInt32BE(20)>100);}
   }
-  await page.locator(".desk-nav").getByRole("button",{name:/系统|设置/}).click();
+  await selectTool(page,"设置");
   assert.equal(await page.locator('.admin-pages input[type="checkbox"]').count(),0);
   assert.doesNotMatch(await page.locator(".desk-path").innerText(),/console-lab/);
   const sound=page.locator(".workshop-group").filter({has:page.getByRole("heading",{name:"提示音",exact:true})});
@@ -118,14 +119,14 @@ export async function chatExperienceJourney(page,submit,shot) {
   await page.emulateMedia({colorScheme:"light"});
   await page.waitForFunction(()=>document.documentElement.dataset.theme==="light");
   await page.getByLabel("开发者原始 JSON 调试").click();
-  await page.locator(".desk-nav").getByRole("button",{name:"工作台"}).click();
+  await selectTool(page,"工作台");
   await page.getByRole("button",{name:/原始协议调试/}).click();
   const debug=page.getByRole("dialog",{name:"原始协议调试"});
   await debug.locator("pre").filter({hasText:"thread/status/changed"}).first().waitFor();
   await debug.getByRole("button",{name:"关闭原始协议"}).click();
-  await page.locator(".desk-nav").getByRole("button",{name:/系统|设置/}).click();
+  await selectTool(page,"设置");
   await page.getByLabel("开发者原始 JSON 调试").click();
-  await page.locator(".desk-nav").getByRole("button",{name:"工作台"}).click();
+  await selectTool(page,"工作台");
   await turn.getByRole("heading",{name:"核验结果"}).waitFor();
   await shot(page,"07-chat-light");
 }

@@ -40,7 +40,17 @@ export default function App(){return location.pathname==="/guest" ? <GuestWorkbe
 function AdminApp(){
   const [gate,setGate]=useState<"loading"|"setup"|"ready">("loading"),[error,setError]=useState("");
   const [view,setView]=useState<View>(readView),[wsId,setWs]=useState(()=>localStorage.getItem("deck.workspace")??""),[thId,setTh]=useState(()=>localStorage.getItem("deck.thread")??"");
-  const [menu,setMenu]=useState<"commands"|"workspaces"|"account"|"threads"|"threadActions"|null>(null),[collapsed,setCollapsed]=useState(false);
+  const [menu,setMenu]=useState<"commands"|"workspaces"|"account"|"threads"|"threadActions"|"modules"|null>(null),[collapsed,setCollapsed]=useState(false);
+  const moduleDrawer=useRef<HTMLDivElement>(null), moduleToggle=useRef<HTMLButtonElement>(null);
+  const modulesOpen=menu==="modules";
+  useEffect(()=>{
+    if(!modulesOpen)return;
+    const dismiss=(e:PointerEvent)=>{
+      if(!moduleDrawer.current?.contains(e.target as Node))setMenu(null);
+    };
+    document.addEventListener("pointerdown",dismiss);
+    return ()=>document.removeEventListener("pointerdown",dismiss);
+  },[modulesOpen]);
   const [tabs,setTabs]=useState<PanelTab[]>([]),[selected,setSelected]=useState("");
   const [requesting,setRequesting]=useState(false);
   const [searchTurn,setSearchTurn]=useState<GlobalSearchHit|null>(null);
@@ -154,7 +164,7 @@ function AdminApp(){
   const pulse=live.heartbeat;
   const gatewayLabel=pulse?.gateway_state ? {unconfigured:"未配置",unverified:"待验证",stale:"验证已过期",verified:"可用",failed:"异常"}[pulse.gateway_state] : "等待心跳";
   const gatewayDetail=[gatewayLabel,pulse?.gateway_checked_at && new Date(pulse.gateway_checked_at).toLocaleString(),pulse?.gateway_error].filter(Boolean).join(" · ");
-  function navButton(n:typeof navigation[number]) {return <button key={n.view} title={viewName[n.view]} aria-label={viewName[n.view]} aria-current={view===n.view?"page":undefined} onClick={()=>go(n.view)}><n.icon size={16}/><span>{viewName[n.view]}</span>{n.view==="usage"&&<small className="nav-usage">{spend}</small>}<i className="nav-tooltip" aria-hidden="true">{viewName[n.view]}</i></button>;}
+  function navButton(n:typeof navigation[number]) {return <button key={n.view} title={viewName[n.view]} aria-label={viewName[n.view]} aria-current={view===n.view?"page":undefined} onClick={()=>{moduleToggle.current?.focus();go(n.view);}}><n.icon size={16}/><span>{viewName[n.view]}</span>{n.view==="usage"&&<small className="nav-usage">{spend}</small>}<i className="nav-tooltip" aria-hidden="true">{viewName[n.view]}</i></button>;}
   const notifyButton=<button className="menu-line" onClick={()=>{setMenu(null);if("Notification" in window)void Notification.requestPermission().then(v=>setError(v==="granted"?"桌面通知已启用":"浏览器暂未允许通知"));else setError("此浏览器不支持桌面通知")}}><Bell size={14}/>启用桌面通知</button>;
   const accountActions=<>{notifyButton}<button className="menu-line" onClick={()=>{theme.system();setMenu(null)}}><Monitor size={14}/>跟随系统主题 {theme.mode==="system"&&<Check size={12}/>}</button><button className="menu-line" onClick={()=>act(logout)}><LogOut size={14}/>退出登录</button></>;
   const toast=error&&<div className="deck-toast" role="status">{error}<button aria-label="关闭提示" onClick={()=>setError("")}><X size={15}/></button></div>;
@@ -163,15 +173,24 @@ function AdminApp(){
     <header className="deck-top"><Wordmark/><i className="deck-sep"/><button className="workspace-switch" aria-expanded={menu==="workspaces"} onClick={()=>setMenu(menu==="workspaces"?null:"workspaces")}><FolderGit2 size={15}/><b>{workspace?.name??"选择工作区"}</b><ChevronDown size={13}/></button>
     <button className="health-pill" onClick={()=>open({kind:"profile",title:"服务器体检"})} aria-label="打开服务器体检" title={gatewayDetail}><i className={"status-dot "+(pulse?.gateway_healthy?"running":"idle")}/><span>网关{gatewayLabel}</span><i/><Activity size={13}/><span>CPU {pulse?.cpu_percent!=null?Math.round(pulse.cpu_percent)+"%":"—"}</span><span>内存 {pulse?Math.round((1-pulse.free_memory_bytes/pulse.total_memory_bytes)*100)+"%":"—"}</span><span>服务 {pulse?.running_services??"—"}</span></button>
     <div className="head-actions"><button className="command-trigger" onClick={()=>setMenu(menu==="commands"?null:"commands")} aria-label="全局命令面板"><Search size={14}/><span>搜索命令</span><kbd>⌘ K</kbd></button><button className={"deck-icon approvals-indicator "+(count?"has-pending":"")} onClick={jumpApproval} aria-label={"待审批 "+count}><Bell size={16}/>{count>0&&<b>{count}</b>}</button><button className="deck-icon" aria-label="切换主题" onClick={theme.toggle}>{theme.dark?<Sun size={16}/>:<Moon size={16}/>}</button><button className="account-trigger" title="管理员菜单" onClick={()=>setMenu(menu==="account"?null:"account")}>AD</button></div></header>
-    {menu&&<button className="menu-dismiss" aria-label="收起菜单" onClick={()=>setMenu(null)}/>}
+    {menu&&!modulesOpen&&<button className="menu-dismiss" aria-label="收起菜单" onClick={()=>setMenu(null)}/>}
     {menu==="commands"&&<CommandBar items={options} onHit={openSearchHit} close={()=>setMenu(null)}/>}
     {menu==="workspaces"&&<WorkspaceMenu workspaces={data.workspaces} selected={workspace?.id??""} choose={choose} onSettings={()=>open({kind:"quality",title:"工作区配置"})}/>}
     {menu==="threadActions"&&<section className="deck-menu thread-action-menu"><button className="menu-line" disabled={requesting||!thread||thread.status==="running"} onClick={()=>act(handoff)}>生成交接单并开新会话</button></section>}
     {menu==="account"&&<section className="deck-menu account-menu"><div className="menu-caption">管理员</div>{accountActions}</section>}
     {menu==="threads"&&<section className="deck-menu workspace-menu"><ConversationList threads={data.threads} workspaces={data.workspaces} activeId={activeThread} pending={new Set(data.approvals.map(a=>a.thread_id))} open={jump} create={()=>act(newThread)} refresh={reload} onError={handleError}/></section>}
-    <div className="deck-body"><aside className="deck-sidebar"><div className="side-context"><span className="side-context-icon"><Terminal size={17}/></span><div><strong>{workspace?.name??"工作区"}</strong><small>Workspace</small></div><button className="deck-icon" title={collapsed?"展开导航栏":"折叠导航栏"} aria-expanded={!collapsed} aria-controls="module-navigation" onClick={()=>setCollapsed(!collapsed)}>{collapsed?<PanelLeftOpen size={15}/>:<PanelLeftClose size={15}/>}</button></div>
+    <div className="deck-body"><aside className="deck-sidebar" id="workspace-sidebar"><div className="side-context"><span className="side-context-icon"><Terminal size={17}/></span><div><strong>{workspace?.name??"工作区"}</strong><small>Workspace</small></div><button className="deck-icon" title={collapsed?"展开导航栏":"折叠导航栏"} aria-expanded={!collapsed} aria-controls="workspace-sidebar" onClick={()=>setCollapsed(!collapsed)}>{collapsed?<PanelLeftOpen size={15}/>:<PanelLeftClose size={15}/>}</button></div>
     <ConversationList threads={data.threads} workspaces={data.workspaces} activeId={activeThread} pending={new Set(data.approvals.map(a=>a.thread_id))} open={jump} create={()=>act(newThread)} refresh={reload} onError={handleError}/>
-    <div className="side-label nav-label">控制台</div><nav className="desk-nav" id="module-navigation" aria-label="模块导航">{navigation.slice(0,-2).map(navButton)}<div className="nav-bottom-pair">{navigation.slice(-2).map(navButton)}</div></nav>
+    <div className="module-drawer" ref={moduleDrawer} onKeyDown={e=>{
+      if(modulesOpen && e.key==="Escape"){setMenu(null);moduleToggle.current?.focus();}
+    }}>
+      <button type="button" ref={moduleToggle} className="module-toggle" title="工具与设置" aria-label="工具与设置" aria-expanded={modulesOpen} aria-controls="module-navigation" onClick={()=>setMenu(modulesOpen?null:"modules")}>
+        <Settings2 size={16}/><span>工具与设置</span><ChevronDown size={14} className="module-chevron"/>
+      </button>
+      <nav className="desk-nav" id="module-navigation" aria-label="模块导航" hidden={!modulesOpen}>
+        {navigation.slice(0,-2).map(navButton)}<div className="nav-bottom-pair">{navigation.slice(-2).map(navButton)}</div>
+      </nav>
+    </div>
     <div className="side-foot"><i className={"status-dot "+(live.state==="online"?"running":"idle")}/><span>{live.state==="online"?"实时连接":"正在连接"}</span><code>WS</code></div></aside>
     <main className="desk-main">
     <div className="desk-path"><div><Terminal size={14}/>{view==="workbench"&&<><span>{workspace?.name??"控制台"}</span><em>/</em></>}<strong>{viewName[view]}</strong></div>

@@ -15,6 +15,15 @@
 }
 :root[data-frosted=true] .deck-sidebar {background:color-mix(in srgb,var(--rail) 70%,transparent);backdrop-filter:blur(20px)}
 .deck .desk-path {background:color-mix(in srgb,var(--panel) 63%,transparent)}
+.module-drawer {display:flex;flex-direction:column-reverse;max-height:52%;flex:none;min-height:0;border-top:1px solid var(--border)}
+.module-toggle {display:flex;align-items:center;gap:10px;flex:none;min-height:38px;padding:6px 9px;text-align:left;color:var(--text);font-size:12px;font-weight:600;border-radius:7px}
+.module-toggle:is(:hover,[aria-expanded=true]) {background:var(--surface)}
+.module-chevron {margin-inline-start:auto;transform:rotate(180deg);transition:transform 180ms var(--ease-out)}
+.module-toggle[aria-expanded=true] .module-chevron {transform:rotate(0)}
+.nav-collapsed .module-toggle {justify-content:center;padding-inline:0}
+.nav-collapsed .module-chevron,.deck .desk-nav[hidden] {display:none}
+.module-drawer .desk-nav:not([hidden]) {border-top:0;overscroll-behavior:contain;animation:module-drawer-in 180ms var(--ease-out)}
+@keyframes module-drawer-in {from {opacity:0;padding-block:0} to {opacity:1;padding-block:.65rem}}
 .deck .desk-nav {display:flex;flex-flow:column nowrap;gap:2px;overflow-y:auto;min-height:0;flex:0 1 auto}
 .deck .desk-nav button {min-height:30px;flex-shrink:0}
 .nav-bottom-pair {display:grid;grid-template-columns:1fr 1fr;gap:3px;border-top:1px solid var(--border);padding-top:6px;margin-top:6px}

@@ -1,3 +1,4 @@
+import {selectTool} from "./sidebar.mjs";
 import assert from "node:assert/strict";
 import {createHmac} from "node:crypto";
 import {readFile} from "node:fs/promises";
@@ -11,7 +12,7 @@ function authenticatorCode(base32) {
 }
 
 export async function securityCenterJourney(admin,browser,shot,instrument,password) {
-  await admin.locator(".desk-nav").getByRole("button",{name:"设置",exact:true}).click();
+  await selectTool(admin,"设置");
   const tabs=admin.getByRole("navigation",{name:"设置分类"});
   await tabs.getByRole("button",{name:"安全中心"}).click();
   await admin.getByRole("heading",{name:"活跃设备"}).waitFor();

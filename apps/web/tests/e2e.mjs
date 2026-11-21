@@ -1,3 +1,4 @@
+import {selectTool} from "./sidebar.mjs";
 import { installationCode } from "../../server/dist/routes/auth.js";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -207,7 +208,7 @@ try {
   await mobile.getByRole("button",{name:"预览",exact:true}).waitFor();
 
   step="服务卡片墙、预览与二级路由";
-  await desktop.locator(".desk-nav").getByRole("button",{name:"应用",exact:true}).click();
+  await selectTool(desktop,"应用");
   assert.equal(new URL(desktop.url()).pathname,"/console/apps");
   assert.equal((await desktop.reload()).status(),200);
   const preview=desktop.getByRole("button",{name:"预览",exact:true});
