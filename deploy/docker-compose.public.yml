@@ -1,0 +1,7 @@
+# End-to-end TLS terminates at the same application security hooks as local HTTP.
+services:
+  codexdeck:
+    environment:
+      CODEXDECK_TLS_PORT: "3443"
+    ports:
+      - "0.0.0.0:${CODEXDECK_PUBLIC_PORT:?Set the free public HTTPS port}:3443"

@@ -14,6 +14,7 @@ import { redactSse } from "./redact-sse.js";
 import { upstreamHeaders, upstreamUrl } from "./upstream.js";
 import { upstreamFetch } from "./transport.js";
 import type { AddressInfo } from "node:net";
+import {recordGuestUsage,taskLink} from "../temp-access/service.js";
 
 type Channel = { model: typeof models.$inferSelect; provider: typeof providers.$inferSelect };
 type Meter = { channel: Channel | null; attempted: string[]; input: number; cached:number|null; timing:OutputTiming; output: number; known:boolean; status: number; error: string | null };
@@ -34,15 +35,19 @@ function registerUsage(reply: FastifyReply, alias: string, context: ServerContex
   const start = performance.now();
   const persist = () => {
     const model = meter.channel?.model;
+    const cost=estimateUsageCost(model,meter.input,meter.output,meter.cached);
+    context.native.transaction(()=>{
     context.orm.insert(usageLogs).values({
       id: randomUUID(), modelId: model?.id, providerId: model?.providerId, requestedAlias: context.masker.maskString(alias),
-      inputTokens: meter.input, outputTokens: meter.output,...estimateUsageCost(model,meter.input,meter.output,meter.cached),
+      inputTokens: meter.input, outputTokens: meter.output,...cost,
       usageKnown:meter.known,threadId,taskId,workspaceId:typeof owner==="string"?owner:null,
       turnId:taskId,cachedInputTokens:meter.cached,ttftMs:meter.timing.ttft,tokensPerSec:meter.timing.speed(meter.output),
       latencyMs: Math.round(performance.now() - start), statusCode: reply.raw.writableFinished ? meter.status : 499,
       failoverFrom: meter.attempted.length > 1 ? meter.attempted.slice(0, -1).join(",") : null,
       error: meter.error, createdAt: new Date().toISOString(),
     }).run();
+    recordGuestUsage(context,taskId,meter.input+meter.output,cost,!meter.known && !!meter.channel && meter.status===200);
+    })();
     context.onUsageRecorded?.();
   };
   const afterResponse = () => {
@@ -196,7 +201,14 @@ export function registerGatewayRoutes(app: FastifyInstance, context: ServerConte
       input.model = claims.purpose==="compaction" && typeof claims.model_alias==="string" ? claims.model_alias : thread.active_model_alias;
       if (thread.reasoning_effort && claims.purpose!=="compaction") input.reasoning = { ...input.reasoning as object, effort: thread.reasoning_effort };
     }
-    const meter = registerUsage(reply, input.model, context,typeof claims?.thread_id==="string"?claims.thread_id:undefined,typeof claims?.task_id==="string"?claims.task_id:undefined);
+    const taskId=typeof claims?.task_id==="string"?claims.task_id:undefined;
+    const guest=taskLink(context,taskId);
+    if(guest && guest.status!=="active") return reply.code(403).send({error:"Guest quota or access expired."});
+    // Preflight a finite budget before contacting a paid upstream. UTF-8 bytes conservatively reserve input
+    // across supported tokenizers, including tool descriptions, image payloads and message framing.
+    const inputReserve=guest && (guest.max_tokens!=null || guest.max_cost!=null)
+      ? Buffer.byteLength(JSON.stringify([input.instructions,input.tools,input.input]))+128 : 0;
+    const meter = registerUsage(reply, input.model, context,typeof claims?.thread_id==="string"?claims.thread_id:undefined,taskId);
     const primary = findChannel(context, "alias", input.model);
     if (!primary) {
       meter.status = 404;
@@ -208,10 +220,26 @@ export function registerGatewayRoutes(app: FastifyInstance, context: ServerConte
     for (const id of ids) {
       const channel = id === primary.model.id ? primary : findChannel(context, "id", id);
       if (!channel) continue;
+      let maxOutput=input.max_output_tokens ?? channel.model.maxOutputTokens;
+      if(guest?.max_tokens!=null)maxOutput=Math.min(maxOutput,guest.max_tokens-guest.used_tokens-inputReserve);
+      if(guest?.max_cost!=null){
+        const m=channel.model,cny=guest.currency==="CNY";
+        if(guest.currency!==m.pricingCurrency){
+          failure=new GatewayError(403,"The guest budget currency does not match this model.");continue;
+        }
+        const inputRate=Math.max(cny?m.costInputCnyPerMillion:m.costInputUsdPerMillion,m.cacheReadPricePer1m);
+        const outputRate=cny?m.costOutputCnyPerMillion:m.costOutputUsdPerMillion;
+        const left=(guest.max_cost-guest.used_cost)*1_000_000-inputReserve*inputRate;
+        if(left<0)maxOutput=0;
+        else if(outputRate>0)maxOutput=Math.min(maxOutput,Math.floor(left/outputRate));
+      }
+      if(maxOutput<1){
+        failure=new GatewayError(403,"Remaining guest budget cannot cover this request. Shorten the input or extend the quota.");continue;
+      }
       meter.channel = channel;
       meter.attempted.push(id);
       try {
-        return await forward(context, reply, channel, input, meter);
+        return await forward(context, reply, channel, guest?{...input,max_output_tokens:maxOutput}:input, meter);
       } catch (error) {
         failure = error instanceof GatewayError ? error : new GatewayError(500, "Gateway configuration failed.");
         if (reply.raw.headersSent || reply.raw.destroyed || !failure.retryable) break;

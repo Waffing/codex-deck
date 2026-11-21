@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import type { ServerContext } from "../app.js";
 import { authenticated, createRequireAdmin } from "../auth.js";
+import { securityEvent } from "../security/activity.js";
+import { clientIp } from "../security/ingress.js";
 
 export function registerAdminAudit(app:FastifyInstance, ctx:ServerContext) {
   const tables:Record<string,string>={providers:"providers",models:"models","api-keys":"api_keys",deployments:"deployments","notification-channels":"notification_channels"};
@@ -35,6 +37,7 @@ export function registerAdminAudit(app:FastifyInstance, ctx:ServerContext) {
     const details=ctx.masker.maskObject({before:item.before,after:snapshot(item.table,id)});
     ctx.native.prepare("INSERT INTO admin_audit(request_id,action,target,details,status,created_at) VALUES(?,?,?,?,?,?)")
       .run(req.id,item.action,id ? ctx.masker.maskString(id) : null,JSON.stringify(details),reply.statusCode,new Date().toISOString());
+    if(item.table==="deployments") securityEvent(ctx,item.action,"admin",clientIp(req),{target:id,status:reply.statusCode});
     pending.delete(req);
     return payload;
   });

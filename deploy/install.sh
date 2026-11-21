@@ -29,6 +29,11 @@ UNINSTALL_SET=0
 EXISTING_INSTALL=0
 SOURCE_DIR=""
 DOCKER_SUDO=0
+PUBLIC=""
+ACCESS_EXPLICIT=0
+ENTRY_PATH=""
+PUBLIC_PORT=""
+MANAGED_CADDY=0
 
 usage() {
   cat <<'USAGE'
@@ -37,7 +42,7 @@ CodexDeck installer
 Usage:
   install.sh [--native] [--upgrade] [--uninstall] [--yes]
              [--port PORT] [--workspaces PATH] [--domain DOMAIN]
-             [--with-playwright] [--dir PATH] [--version vX.Y.Z]
+             [--public | --local-only] [--with-playwright] [--dir PATH] [--version vX.Y.Z]
 
 Environment overrides:
   CODEXDECK_REPOSITORY=Waffing/codex-deck
@@ -153,9 +158,9 @@ PY
 check_port() {
   valid_port "$PORT" || fail "Port must be between 1024 and 65535."
   if port_available "$PORT"; then return 0; fi
-  if [ "$EXISTING_INSTALL" -eq 1 ] && [ "$PORT" = "$STORED_PORT" ] &&
-      curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
-    return 0
+  if [ "$EXISTING_INSTALL" -eq 1 ] && [ "$PORT" = "$STORED_PORT" ]; then
+    if [[ "$MODE" == docker ]] && [[ -n "$(compose ps --status running -q codexdeck)" ]]; then return 0; fi
+    if [[ "$MODE" == native ]] && systemctl is-active --quiet codexdeck; then return 0; fi
   fi
   fail "Port $PORT is already accepting local connections. Choose another port."
 }
@@ -177,6 +182,11 @@ parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --native) MODE="native"; shift ;;
+      --public|--local-only)
+        [ -z "$PUBLIC" ] || fail "Choose one access mode."
+        if [[ "$1" == --public ]]; then PUBLIC=true; else PUBLIC=false; fi
+        ACCESS_EXPLICIT=1
+        shift ;;
       --upgrade) ACTION="upgrade"; UPGRADE_SET=1; shift ;;
       --uninstall) ACTION="uninstall"; UNINSTALL_SET=1; shift ;;
       --yes|-y) YES=1; shift ;;
@@ -209,6 +219,7 @@ parse_args() {
 load_existing_config() {
   local file="$INSTALL_DIR/.env"
   [ -f "$file" ] || return 0
+  read_access_settings "$file"
   STORED_PORT="$(sed -n 's/^CODEXDECK_BIND_PORT=//p' "$file" | head -n 1 | tr -d "\"'")"
   if [ -z "$STORED_PORT" ]; then
     STORED_PORT="$(sed -n 's/^CODEXDECK_PORT=//p' "$file" | head -n 1 | tr -d '"')"
@@ -236,6 +247,8 @@ load_existing_config() {
 load_native_config() {
   local file="/etc/codexdeck/codexdeck.env"
   as_root test -f "$file" || return 0
+  read_access_settings "$file"
+  if [ "$DOMAIN_SET" -eq 0 ]; then DOMAIN="$(native_setting "$file" CODEXDECK_DOMAIN)"; fi
   STORED_PORT="$(native_setting "$file" CODEXDECK_PORT)"
   if [ "$PORT_SET" -eq 0 ]; then
     PORT="${STORED_PORT:-3000}"
@@ -253,7 +266,54 @@ native_setting() {
     value="${value//\\\"/\"}"
     value="${value//\\\\/\\}"
   fi
+  if [[ "$value" == \'*\' ]]; then value="${value:1:${#value}-2}"; fi
   printf '%s' "$value"
+}
+
+read_access_settings() {
+  local file="$1"
+  if [ -z "$PUBLIC" ]; then PUBLIC="$(native_setting "$file" CODEXDECK_PUBLIC_ENABLED)"; fi
+  ENTRY_PATH="$(native_setting "$file" CODEXDECK_ENTRY_PATH)"
+  PUBLIC_PORT="$(native_setting "$file" CODEXDECK_PUBLIC_PORT)"
+  MANAGED_CADDY="$(native_setting "$file" CODEXDECK_MANAGED_CADDY)"
+  # Releases before V1.2 enabled the optional Caddy profile whenever a domain was set.
+  if [[ -z "$MANAGED_CADDY" && "$MODE" == docker && -f "$INSTALL_DIR/Caddyfile" && -n "$(native_setting "$file" CODEXDECK_DOMAIN)" ]]; then
+    MANAGED_CADDY=1
+    [[ -n "$PUBLIC" ]] || PUBLIC=true
+  fi
+  MANAGED_CADDY="${MANAGED_CADDY:-0}"
+}
+
+free_high_port() {
+  local candidate attempt
+  for ((attempt=0;attempt<80;attempt++)); do
+    candidate=$((18000 + 16#$(openssl rand -hex 2) % 22000))
+    if [[ "$candidate" != "$PORT" && "$candidate" != "$PUBLIC_PORT" ]] && port_available "$candidate"; then printf '%s' "$candidate"; return; fi
+  done
+  fail "No free panel port found."
+}
+
+panel_cert() {
+  local directory="$1" owner="$2" group="$3" ip san temp
+  as_root test ! -L "$directory" || fail "TLS directory must not be a symlink."
+  if as_root test -e "$directory/panel-tls.key" || as_root test -e "$directory/panel-tls.crt"; then
+    if ! as_root test -f "$directory/panel-tls.key" || as_root test -L "$directory/panel-tls.key" ||
+      ! as_root test -f "$directory/panel-tls.crt" || as_root test -L "$directory/panel-tls.crt"; then fail "Invalid panel TLS key pair."; fi
+    return
+  fi
+  san="IP:127.0.0.1,DNS:localhost"
+  for ip in $(hostname -I); do
+    if [[ "$ip" =~ ^[0-9.]+$ || "$ip" =~ ^[a-fA-F0-9:]+$ ]]; then san+=",IP:$ip"; fi
+  done
+  if [[ -n "$DOMAIN" ]]; then san+=",DNS:$DOMAIN"; fi
+  temp="$(mktemp -d)"
+  if ! openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 -subj '/CN=CodexDeck' \
+      -addext "subjectAltName=$san" -keyout "$temp/key" -out "$temp/crt" 2>/dev/null; then
+    rm -f -- "$temp/key" "$temp/crt"; rmdir "$temp"; fail "Could not create panel certificate."
+  fi
+  as_root install -o "$owner" -g "$group" -m 0600 "$temp/key" "$directory/panel-tls.key"
+  as_root install -o "$owner" -g "$group" -m 0644 "$temp/crt" "$directory/panel-tls.crt"
+  rm -f -- "$temp/key" "$temp/crt"; rmdir "$temp"
 }
 
 install_environment_file() {
@@ -267,6 +327,10 @@ install_environment_file() {
     update_env_key "$file" CODEXDECK_DEPLOYMENT_NETWORK "codexdeck-net"
     update_env_key "$file" CODEXDECK_DOMAIN "$DOMAIN"
     update_env_key "$file" CODEXDECK_IMAGE "$IMAGE"
+    update_env_key "$file" CODEXDECK_PUBLIC_ENABLED "${PUBLIC:-false}"
+    update_env_key "$file" CODEXDECK_ENTRY_PATH "$ENTRY_PATH"
+    update_env_key "$file" CODEXDECK_PUBLIC_PORT "$PUBLIC_PORT"
+    update_env_key "$file" CODEXDECK_MANAGED_CADDY "$MANAGED_CADDY"
     chmod 0600 "$file"
     return
   fi
@@ -286,6 +350,10 @@ CODEXDECK_DATA_DIR=/data
 CODEXDECK_WORKSPACES_HOST='$WORKSPACES'
 CODEXDECK_DEPLOYMENT_NETWORK=codexdeck-net
 CODEXDECK_DOMAIN=$DOMAIN
+CODEXDECK_PUBLIC_ENABLED=${PUBLIC:-false}
+CODEXDECK_ENTRY_PATH=$ENTRY_PATH
+CODEXDECK_PUBLIC_PORT=$PUBLIC_PORT
+CODEXDECK_MANAGED_CADDY=$MANAGED_CADDY
 PUID=$uid
 PGID=$gid
 EOF
@@ -303,6 +371,9 @@ update_env_key() {
 
 compose() {
   local files=(-f docker-compose.yml)
+  if [[ -f "$INSTALL_DIR/docker-compose.public.yml" ]] && grep -Eq "^CODEXDECK_PUBLIC_ENABLED=['\"]?true['\"]?$" "$INSTALL_DIR/.env"; then
+    files+=(-f docker-compose.public.yml)
+  fi
   if [ "$WITH_PLAYWRIGHT" -eq 1 ] && [ -f "$INSTALL_DIR/docker-compose.playwright.yml" ]; then files+=(-f docker-compose.playwright.yml); fi
   if [ "$DOCKER_SUDO" -eq 1 ]; then
     (cd -- "$INSTALL_DIR" && sudo docker compose --env-file .env "${files[@]}" "$@")
@@ -366,6 +437,7 @@ prepare_install_directory() {
     INSTALL_DIR="$REPLY"
   fi
   [ -n "$INSTALL_DIR" ] || fail "Install directory cannot be empty."
+  case "$INSTALL_DIR" in *$'\n'*|*$'\r'*) fail "Install directory cannot contain line breaks.";; esac
   case "$INSTALL_DIR" in /*) ;; *) INSTALL_DIR="$PWD/$INSTALL_DIR" ;; esac
   [ ! -L "$INSTALL_DIR" ] || fail "Install directory cannot be a symlink."
   mkdir -p -- "$INSTALL_DIR" 2>/dev/null ||
@@ -393,7 +465,22 @@ choose_install_options() {
   if [ "$MODE" = "native" ] && { [ "$ACTION" = "upgrade" ] || [ "$EXISTING_INSTALL" -eq 1 ]; }; then
     load_native_config
   fi
-  if [ "$PORT_SET" -eq 0 ] && [ "$ACTION" != "upgrade" ] && [ "$EXISTING_INSTALL" -eq 0 ]; then
+  if [[ -z "$PUBLIC" && "$EXISTING_INSTALL" == 0 ]]; then
+    if [ -n "$DOMAIN" ]; then PUBLIC=true
+    else prompt_value "是否开启公网访问？(y/N)" n; if [[ "$REPLY" =~ ^[Yy]$ ]]; then PUBLIC=true; fi
+    fi
+  fi
+  PUBLIC="${PUBLIC:-false}"
+  if [[ "$PUBLIC" == true ]]; then
+    if [[ -z "$ENTRY_PATH" ]]; then ENTRY_PATH="/$(openssl rand -hex 4)"; fi
+    if [[ "$PORT_SET" == 1 ]]; then PUBLIC_PORT="$PORT"; PORT="${STORED_PORT:-3000}"; fi
+    if [[ -z "$PUBLIC_PORT" ]]; then
+      prompt_value "公网 HTTPS 端口" "$(free_high_port)"; PUBLIC_PORT="$REPLY"
+    fi
+    valid_port "$PUBLIC_PORT" || fail "Invalid public HTTPS port."
+    if [[ "$EXISTING_INSTALL" == 0 ]] && ! port_available "$PUBLIC_PORT"; then fail "Public HTTPS port is occupied."; fi
+    if [[ "$PUBLIC_PORT" == "$PORT" ]] || { [[ "$EXISTING_INSTALL" == 0 ]] && ! port_available "$PORT"; }; then PORT="$(free_high_port)"; fi
+  elif [ "$PORT_SET" -eq 0 ] && [ "$ACTION" != "upgrade" ] && [ "$EXISTING_INSTALL" -eq 0 ]; then
     prompt_value "访问端口" "3000"
     PORT="$REPLY"
   fi
@@ -403,7 +490,7 @@ choose_install_options() {
     prompt_value "工作区目录" "$default_workspaces"
     WORKSPACES="$REPLY"
   fi
-  if [ "$DOMAIN_SET" -eq 0 ] && [ "$ACTION" != "upgrade" ] && [ "$EXISTING_INSTALL" -eq 0 ]; then
+  if [[ "$PUBLIC" == true ]] && [ "$DOMAIN_SET" -eq 0 ] && [ "$ACTION" != "upgrade" ] && [ "$EXISTING_INSTALL" -eq 0 ]; then
     prompt_value "公网域名（留空跳过 HTTPS）" ""
     DOMAIN="$REPLY"
   fi
@@ -413,8 +500,12 @@ choose_install_options() {
   fi
   if [ "$ACTION" != "upgrade" ] || [ "$PORT_SET" -eq 1 ]; then check_port; fi
   validate_domain
-  if [ "$MODE" = "native" ] && [ -n "$DOMAIN" ]; then
-    fail "Native mode leaves HTTPS termination to an existing reverse proxy. Omit --domain."
+  if [[ -n "$DOMAIN" && "$PUBLIC" == false && "$DOMAIN_SET" == 1 ]]; then fail "--domain requires public mode."; fi
+  if [[ "$EXISTING_INSTALL" == 0 && -n "$DOMAIN" && "$PUBLIC" == true ]]; then
+    if [[ "$MODE" == docker ]] && port_available 80 && port_available 443 && port_available 8080 && port_available 8443; then
+      prompt_value "启用 CodexDeck Caddy（需自行转发 80/443 至 8080/8443）？(y/N)" n
+      if [[ "$REPLY" =~ ^[Yy]$ ]]; then MANAGED_CADDY=1; fi
+    else note "保留现有网站监听。用 cdx proxy 查看独立反代配置。"; fi
   fi
 }
 
@@ -443,9 +534,13 @@ select_image() {
 docker_install() {
   ensure_docker
   local previous="" profile=()
+  if [[ "$MANAGED_CADDY" == 1 && -f "$INSTALL_DIR/Caddyfile" ]] &&
+     ! cmp -s "$INSTALL_DIR/Caddyfile" "$INSTALL_DIR/Caddyfile.template"; then
+    fail "Custom Caddy configuration detected. Review and preserve the existing routes before upgrading managed Caddy."
+  fi
   if [ "$ACTION" = "upgrade" ] && [ -f "$INSTALL_DIR/.env" ]; then
     previous="$(mktemp -d "$INSTALL_DIR/.previous-release.XXXXXX")"
-    for file in .env docker-compose.yml Caddyfile docker-compose.playwright.yml chromium-seccomp.json; do
+    for file in .env docker-compose.yml Caddyfile docker-compose.public.yml docker-compose.playwright.yml chromium-seccomp.json; do
       if [ -f "$INSTALL_DIR/$file" ]; then cp -p -- "$INSTALL_DIR/$file" "$previous/"; fi
     done
     # Pin the rollback to the running image even if a mutable tag was installed previously.
@@ -458,6 +553,7 @@ docker_install() {
     update_env_key "$previous/.env" CODEXDECK_IMAGE "$recovery_tag"
   fi
   fetch_deploy_file docker-compose.yml "$INSTALL_DIR/docker-compose.yml"
+  fetch_deploy_file docker-compose.public.yml "$INSTALL_DIR/docker-compose.public.yml"
   fetch_deploy_file .env.example "$INSTALL_DIR/.env.example"
   fetch_deploy_file Caddyfile.template "$INSTALL_DIR/Caddyfile.template"
   if [ "$WITH_PLAYWRIGHT" -eq 1 ]; then
@@ -467,6 +563,7 @@ docker_install() {
     fetch_deploy_file licenses/playwright-LICENSE "$INSTALL_DIR/licenses/playwright-LICENSE"
   fi
   fetch_deploy_file install.sh "$INSTALL_DIR/install.sh"
+  fetch_deploy_file cdx.sh "$INSTALL_DIR/cdx.sh"
   fetch_deploy_file backup.py "$INSTALL_DIR/backup.py"
   if [ ! -f "$INSTALL_DIR/.env.example" ]; then fail "deploy/.env.example was not installed."; fi
   if [ ! -f "$INSTALL_DIR/docker-compose.yml" ]; then fail "deploy/docker-compose.yml was not installed."; fi
@@ -489,24 +586,28 @@ docker_install() {
     current_gid=1000
   fi
   INSTALL_UID="$current_uid" INSTALL_GID="$current_gid" install_environment_file
-  if [ -n "$DOMAIN" ]; then
+  if [[ "$PUBLIC" == true ]]; then panel_cert "$INSTALL_DIR/data" "$current_uid" "$current_gid"; fi
+  if [[ "$MANAGED_CADDY" == 1 ]]; then
+    if ! grep -Eq "^CODEXDECK_MANAGED_PROXY_TOKEN=['\"]?[0-9a-f]{64}['\"]?$" "$INSTALL_DIR/.env"; then
+      update_env_key "$INSTALL_DIR/.env" CODEXDECK_MANAGED_PROXY_TOKEN "$(openssl rand -hex 32)"
+    fi
     grep -q 'CODEXDECK_DOMAIN' "$INSTALL_DIR/Caddyfile.template" ||
       fail "Caddyfile.template does not support CODEXDECK_DOMAIN."
     cp "$INSTALL_DIR/Caddyfile.template" "$INSTALL_DIR/Caddyfile"
   fi
   chmod 0600 "$INSTALL_DIR/.env"
-  if [ -n "$DOMAIN" ]; then profile=(--profile https); fi
+  if [[ "$MANAGED_CADDY" == 1 && "$PUBLIC" != false ]]; then profile=(--profile https); fi
   if { [ "$ACTION" != "upgrade" ] || compose "${profile[@]}" pull; } && compose "${profile[@]}" up -d && wait_for_health; then
     if [ -n "$previous" ]; then rm -f -- "$previous/.env"; fi
     return 0
   fi
   if [ -n "$previous" ]; then
-    for file in .env docker-compose.yml Caddyfile docker-compose.playwright.yml chromium-seccomp.json; do
+    for file in .env docker-compose.yml Caddyfile docker-compose.public.yml docker-compose.playwright.yml chromium-seccomp.json; do
       if [ -f "$previous/$file" ]; then cp -p -- "$previous/$file" "$INSTALL_DIR/$file"; fi
     done
     # Use persisted settings, including the original port, profile and local image tag.
     PORT_SET=0; DOMAIN_SET=0; PLAYWRIGHT_SET=0; WITH_PLAYWRIGHT=0; load_existing_config
-    profile=(); if [ -n "$DOMAIN" ]; then profile=(--profile https); fi
+    profile=(); if [[ "$MANAGED_CADDY" == 1 ]]; then profile=(--profile https); fi
     if CODEXDECK_IMAGE="$recovery_tag" compose "${profile[@]}" up -d --pull never && wait_for_health; then
       :
     else
@@ -521,7 +622,7 @@ docker_install() {
 wait_for_health() {
   local attempt
   for ((attempt=1; attempt<=45; attempt++)); do
-    if curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
+    if compose exec -T codexdeck curl -fsS --max-time 3 http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
       printf '%s\n' "CodexDeck is ready."
       return 0
     fi
@@ -638,6 +739,14 @@ EOF
     update_systemd_env "$env_dir/codexdeck.env" CODEX_BIN "$codex_bin"
   fi
   as_root chmod 0600 "$env_dir/codexdeck.env"
+  update_systemd_env "$env_dir/codexdeck.env" CODEXDECK_PUBLIC_ENABLED "$PUBLIC"
+  update_systemd_env "$env_dir/codexdeck.env" CODEXDECK_ENTRY_PATH "$ENTRY_PATH"
+  update_systemd_env "$env_dir/codexdeck.env" CODEXDECK_PUBLIC_PORT "$PUBLIC_PORT"
+  update_systemd_env "$env_dir/codexdeck.env" CODEXDECK_DOMAIN "$DOMAIN"
+  if [[ "$PUBLIC" == true ]]; then
+    panel_cert "$data_dir" "$service_user" "$service_user"
+    update_systemd_env "$env_dir/codexdeck.env" CODEXDECK_TLS_PORT "$PUBLIC_PORT"
+  else update_systemd_env "$env_dir/codexdeck.env" CODEXDECK_TLS_PORT ""; fi
   as_root tee "$service_file" >/dev/null <<EOF
 [Unit]
 Description=CodexDeck local AI workbench
@@ -671,6 +780,8 @@ EOF
     if [ -n "$old_env" ]; then as_root rm -f -- "$old_env"; fi
     as_root install -m 0755 "$source/deploy/install.sh" "$INSTALL_DIR/install.sh"
     as_root install -m 0644 "$source/deploy/backup.py" "$INSTALL_DIR/backup.py"
+    as_root install -m 0755 "$source/deploy/cdx.sh" "$INSTALL_DIR/cdx.sh"
+    NATIVE_SOURCE="$source"
   elif [ -n "$old_unit" ]; then
     as_root mv -- "$old_unit" "$service_file"
     if [ -n "$old_env" ]; then
@@ -767,13 +878,22 @@ uninstall() {
       done
       as_root rm -f /etc/codexdeck/codexdeck.env
       as_root rmdir /etc/codexdeck "$INSTALL_DIR/releases" "$INSTALL_DIR/source" 2>/dev/null || true
-      as_root rm -f -- "$INSTALL_DIR/install.sh" "$INSTALL_DIR/backup.py"
+      as_root rm -f -- "$INSTALL_DIR/install.sh" "$INSTALL_DIR/cdx.sh" "$INSTALL_DIR/backup.py"
     else
       as_root rm -f -- "$INSTALL_DIR/.env" "$INSTALL_DIR/.env.example" "$INSTALL_DIR/docker-compose.yml" \
-        "$INSTALL_DIR/Caddyfile" "$INSTALL_DIR/Caddyfile.template" "$INSTALL_DIR/install.sh"
+        "$INSTALL_DIR/Caddyfile" "$INSTALL_DIR/Caddyfile.template" "$INSTALL_DIR/install.sh" \
+        "$INSTALL_DIR/backup.py" "$INSTALL_DIR/cdx.sh" "$INSTALL_DIR/docker-compose.public.yml"
     fi
   else
     note "Data, workspaces, configuration and the encryption key have been retained for reinstall."
+  fi
+  local metadata=/etc/codexdeck/host-install link lib=/usr/local/libexec/codexdeck
+  if [[ -f "$metadata" && "$(as_root sed -n '2p' "$metadata")" == "$INSTALL_DIR" ]]; then
+    for link in /usr/local/bin/cdx /usr/local/bin/codexdeck; do
+      if [[ "$(readlink "$link" || true)" == "$lib/cdx.sh" ]]; then as_root rm -- "$link"; fi
+    done
+    as_root rm -f -- "$metadata" "$lib/cdx.sh" "$lib/backup.py" "$lib/install.sh"
+    as_root rmdir "$lib" /etc/codexdeck 2>/dev/null || true
   fi
   note "CodexDeck services have been removed."
 }
@@ -803,16 +923,45 @@ print_success() {
   Upgrade:         $upgrade
   Uninstall:       $uninstall_command
 
-  Configure the first administrator, provider, model and workspace in the setup wizard.
+  Set the first administrator password over SSH with cdx password, then sign in to configure the model and workspace.
 EOF
   if [ "$MODE" = "docker" ]; then
-    note "Setup code (first start): cd '$INSTALL_DIR' && $docker_command compose exec codexdeck cat /data/setup-code"
     note "Host Ollama: configure a container-reachable URL, e.g. http://host.docker.internal:11434/v1 with Docker host-gateway mapping."
   else note "Setup code (first start): sudo cat '$INSTALL_DIR/source/data/setup-code'"; fi
   if [ -n "$public" ]; then
-    note "Forward public TCP 80/443 to this host's 8080/8443. Verify DNS and HTTPS from an external network."
-    printf '  Public endpoint: %s\n' "$host"
+    if [[ "$MANAGED_CADDY" == 1 ]]; then note "Forward public TCP 80/443 to this host's 8080/8443. Verify DNS and HTTPS from an external network."; fi
+    printf '  Domain (after proxy setup): %s%s\n' "$host" "$ENTRY_PATH"
   fi
+  if [[ "$PUBLIC" == true ]]; then
+    printf '  Direct HTTPS: https://<server-ip>:%s%s\n' "$PUBLIC_PORT" "$ENTRY_PATH"
+    note "First login: set the administrator password over SSH with cdx password."
+    note "Run cdx status over SSH and compare the certificate SHA-256 fingerprint before trusting the IP certificate."
+  else
+    printf '  SSH tunnel: ssh -N -L 127.0.0.1:%s:127.0.0.1:%s user@server\n' "$PORT" "$PORT"
+    note "Use cdx public on or cdx temp-link in an SSH session."
+  fi
+}
+
+install_cdx() {
+  local meta=/etc/codexdeck/host-install record previous
+  for previous in /usr/local/bin/cdx /usr/local/bin/codexdeck; do
+    if [[ -e "$previous" || -L "$previous" ]]; then
+      [[ "$(readlink "$previous" || true)" == /usr/local/libexec/codexdeck/cdx.sh ]] || fail "Cannot replace existing command $previous."
+    fi
+  done
+  if as_root test -f "$meta"; then
+    [[ "$(as_root sed -n '2p' "$meta")" == "$INSTALL_DIR" ]] || fail "A different installation owns the host cdx command."
+  fi
+  as_root install -d -m 0755 /etc/codexdeck /usr/local/libexec/codexdeck /usr/local/bin
+  as_root install -m 0755 "$INSTALL_DIR/cdx.sh" /usr/local/libexec/codexdeck/cdx.sh
+  as_root install -m 0755 "$INSTALL_DIR/install.sh" /usr/local/libexec/codexdeck/install.sh
+  as_root install -m 0644 "$INSTALL_DIR/backup.py" /usr/local/libexec/codexdeck/backup.py
+  record="$(mktemp)"
+  printf '%s\n' "$MODE" "$INSTALL_DIR" "${NATIVE_SOURCE:-}" "$(id -u)" > "$record"
+  as_root install -m 0644 "$record" "$meta"; rm -f -- "$record"
+  for previous in /usr/local/bin/cdx /usr/local/bin/codexdeck; do
+    [[ -L "$previous" ]] || as_root ln -s /usr/local/libexec/codexdeck/cdx.sh "$previous"
+  done
 }
 
 main() {
@@ -839,6 +988,14 @@ main() {
     native_install
   else
     docker_install
+  fi
+  install_cdx
+  if [[ "$ACCESS_EXPLICIT" == 1 && "$EXISTING_INSTALL" == 1 ]]; then
+    if [[ "$PUBLIC" == true ]]; then printf '%s' '{"public_enabled":true,"entry_enabled":true}' | /usr/local/bin/cdx security set >/dev/null
+    else
+      printf '%s' '{"public_enabled":false}' | /usr/local/bin/cdx security set >/dev/null
+      if [[ "$MODE" == docker && "$MANAGED_CADDY" == 1 ]]; then compose --profile https stop caddy; fi
+    fi
   fi
   print_success
 }

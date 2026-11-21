@@ -35,3 +35,21 @@ set -e
 [[ "$result" != 0 ]]
 grep -q 'rollback-abc123 up -d --pull never' "$fixture/commands"
 grep -q 'rollback-abc123' "$INSTALL_DIR/.env"
+
+# Noninteractive first installs choose loopback by default and a gated TLS entry on request.
+(
+  MODE=docker; PUBLIC=""; ENTRY_PATH=""; PUBLIC_PORT=""; DOMAIN=""; DOMAIN_SET=0
+  YES=1; PORT=3000; PORT_SET=0; EXISTING_INSTALL=0; ACTION=install
+  port_available() { return 0; }
+  choose_install_options
+  [[ "$PUBLIC" == false && -z "$ENTRY_PATH" && "$MANAGED_CADDY" == 0 ]]
+  PUBLIC=true; choose_install_options
+  [[ "$ENTRY_PATH" =~ ^/[[:xdigit:]]{8}$ && "$PUBLIC_PORT" -ge 18000 && "$PUBLIC_PORT" -le 39999 ]]
+  [[ "$PORT" != "$PUBLIC_PORT" ]]
+  port_available() { [[ "$1" != 80 && "$1" != 443 ]]; }
+  DOMAIN=panel.example.test; DOMAIN_SET=1; choose_install_options
+  [[ "$MANAGED_CADDY" == 0 ]]
+  mkdir "$fixture/tls"; panel_cert "$fixture/tls" "$(id -u)" "$(id -g)"
+  openssl x509 -in "$fixture/tls/panel-tls.crt" -checkend 86400 -noout
+  [[ "$(stat -c '%a' "$fixture/tls/panel-tls.key")" == 600 ]]
+)

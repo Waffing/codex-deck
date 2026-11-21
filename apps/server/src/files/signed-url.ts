@@ -1,7 +1,7 @@
 import { signPayload, verifySignedPayload } from "../security/crypto.js";
 import { fileError } from "./sandbox.js";
 
-export type DownloadSubject = { kind: "artifact" | "turn"; id: string };
+export type DownloadSubject = { kind: "artifact" | "turn"; id: string; guest_id?:string };
 
 export function signDownload(subject: DownloadSubject, key: Buffer, seconds = 1800) {
   if (!Number.isInteger(seconds) || seconds < 1 || seconds > 86400) throw fileError(400, "Invalid link lifetime.");
@@ -16,5 +16,5 @@ export function validateDownload(token: string, key: Buffer): DownloadSubject {
   const p = verifySignedPayload(token, key);
   if (!p || p.aud !== "artifact-download" || typeof p.exp !== "number" || p.exp <= Math.floor(Date.now() / 1000)
     || !["artifact","turn"].includes(String(p.kind)) || typeof p.id !== "string") throw fileError(403, "Invalid download token.");
-  return { kind: p.kind as DownloadSubject["kind"], id: p.id };
+  return { kind: p.kind as DownloadSubject["kind"], id: p.id, ...(typeof p.guest_id==="string" && {guest_id:p.guest_id}) };
 }

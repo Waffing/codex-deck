@@ -78,6 +78,9 @@ function Topology({ step }: { step: number }) {
 
 export function Onboarding({ onComplete }: { onComplete: (showProfile: boolean) => void }) {
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
+  const [factor,setFactor]=useState(false),[otp,setOtp]=useState("");
+  const [captcha,setCaptcha]=useState<{id:string;svg:string}>(),[answer,setAnswer]=useState("");
+  async function refreshCaptcha(){setCaptcha(await api("/api/auth/captcha"));setAnswer("");}
   const [step, setStep] = useState(0);
   const [setupCode, setSetupCode] = useState("");
   const [password, setPassword] = useState(""),
@@ -104,6 +107,7 @@ export function Onboarding({ onComplete }: { onComplete: (showProfile: boolean) 
     const state = await api<OnboardingStatus>("/api/onboarding/status");
     setStatus(state);
     if (!state.authenticated) {
+      if(!state.setup_required){const flags=await api<{totp_enabled:boolean;captcha_enabled:boolean}>("/api/auth/status");setFactor(flags.totp_enabled);if(flags.captcha_enabled)await refreshCaptcha();}
       setStep(0);
       return;
     }
@@ -140,7 +144,12 @@ export function Onboarding({ onComplete }: { onComplete: (showProfile: boolean) 
   }, []);
   async function account() {
     if (!login && password !== confirm) throw new Error("两次输入的密码不一致。");
-    await api(login ? "/api/auth/login" : "/api/auth/setup", json("POST", login ? { password } : { password, setup_code:setupCode.trim() }));
+    try {
+      await api(login ? "/api/auth/login" : "/api/auth/setup", json("POST", login ? {
+        password,...(factor&&{otp}),...(captcha&&{captcha_id:captcha.id,captcha_answer:answer}),
+      } : { password, setup_code:setupCode.trim() }));
+    } catch(err) {if(captcha)await refreshCaptcha();throw err;}
+    setOtp("");
     setSetupCode("");
     setPassword("");
     setConfirm("");
@@ -296,6 +305,8 @@ export function Onboarding({ onComplete }: { onComplete: (showProfile: boolean) 
                     </button>
                   </div>
                 </label>
+                {login && factor && <label>动态口令或恢复码<input value={otp} onChange={e=>setOtp(e.target.value)} required autoComplete="one-time-code"/></label>}
+                {login && captcha && <label>图形验证码<img alt="验证码图形" src={"data:image/svg+xml;charset=utf-8,"+encodeURIComponent(captcha.svg)}/><input required value={answer} onChange={e=>setAnswer(e.target.value)} autoComplete="off"/><button type="button" onClick={()=>void a.run(refreshCaptcha)}>换一张</button></label>}
                 {!login && (
                   <label>
                     确认密码

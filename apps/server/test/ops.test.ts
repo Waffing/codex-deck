@@ -16,6 +16,7 @@ import { deploymentCheckSchema } from "@codexdeck/shared";
 import { openDatabase } from "../src/db/index.js";
 import { SecretMasker } from "../src/security/secret-masker.js";
 import { signPayload } from "../src/security/crypto.js";
+import {registerTempAccess} from "../src/temp-access/routes.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { parseGatewayConfig } from "../src/app.js";
 import { WorkspaceFiles } from "../src/files/workspace-files.js";
@@ -45,6 +46,7 @@ beforeAll(async()=>{
   token=signPayload({aud:"codexdeck-ops",thread_id:"ops-thread",iat:Math.floor(Date.now()/1000),exp:Math.floor(Date.now()/1000)+600},ctx.masterKey);
   scoped=signPayload({aud:"codexdeck-ops",thread_id:"ops-thread",task_id:"scoped-turn",iat:Math.floor(Date.now()/1000),exp:Math.floor(Date.now()/1000)+600},ctx.masterKey);
   await app.register(websocket);
+  registerTempAccess(app,ctx);
   registerAuthRoutes(app,ctx);
   service=registerOps(app,ctx,files,events,{async requestOpsApproval(){approvalCount++;if(clearScope) scoped="";return approve;}},{dataDirectory:data,workspaceRoot:dir});
   origin=await app.listen({host:"127.0.0.1",port:0});
@@ -114,6 +116,21 @@ test("stages immutable releases, previews managed ports, runs HTTP/log/browser c
   expect((await fetch(preview)).status).toBe(401);
   const positive=await fetch(preview,{headers:{cookie}});
   expect(await positive.text()).toBe("release-A");expect(positive.headers.get("content-security-policy")).toContain("sandbox");
+  const invite=await app.inject({method:"POST",url:"/api/temp-access",headers:{cookie},payload:{
+    name:"Review staging",expires_at:new Date(Date.now()+60000).toISOString(),workspace_ids:[workspace],permission:"readonly",
+  }});
+  expect(invite.statusCode).toBe(201);
+  const record=invite.json(),entry=await app.inject(new URL(record.url).pathname);
+  const visitor=String(entry.headers["set-cookie"]).split(";")[0];
+  const listing=await app.inject({url:"/api/guest/previews",headers:{cookie:visitor}});
+  expect(listing.json()).toEqual([{id:a.id,workspace_id:workspace,status:"staging",preview_url:a.preview_url,live_url:null}]);
+  const readOnly=await fetch(preview,{headers:{cookie:visitor}});
+  expect(await readOnly.text()).toBe("release-A");
+  expect(readOnly.headers.get("content-security-policy")).toMatch(/sandbox[^;]+;/);
+  expect(readOnly.headers.get("content-security-policy")).not.toContain("allow-same-origin");
+  expect((await fetch(preview,{method:"POST",headers:{cookie:visitor}})).status).toBe(403);
+  await app.inject({method:"POST",url:"/api/temp-access/"+record.link.id+"/revoke",headers:{cookie}});
+  expect((await fetch(preview,{headers:{cookie:visitor}})).status).toBe(403);
   expect((await fetch(origin+"/preview/"+(new URL(origin).port)+"/",{headers:{cookie}})).status).toBe(403);
   db.native.prepare("INSERT INTO tasks(id,workspace_id,thread_id,prompt,status,created_at,updated_at) VALUES('ops-turn',?,'ops-thread','verify','running','','')").run(workspace);
   const report=await (await op("verify_url",{deployment_id:a.id,expected_content:"release-A",check_browser:true})).json();

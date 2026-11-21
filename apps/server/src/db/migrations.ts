@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { guestMigration } from "../temp-access/migration.js";
 
 export const migrations = [
   {
@@ -167,6 +168,24 @@ export const migrations = [
       ALTER TABLE tasks ADD COLUMN turn_diff_json TEXT;
     `,
   },
+  {
+    version: 6,
+    sql: `
+      CREATE TABLE user_sessions (
+        session_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, ip TEXT NOT NULL, user_agent TEXT NOT NULL,
+        created_at TEXT NOT NULL,last_active_at TEXT NOT NULL,expires_at TEXT NOT NULL,revoked INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX sessions_device ON user_sessions(ip,user_agent);
+      INSERT INTO user_sessions SELECT lower(hex(randomblob(16))),substr(key,9),'','',updated_at,updated_at,value,0
+        FROM settings WHERE key GLOB 'session:*' AND value>strftime('%Y-%m-%dT%H:%M:%fZ','now');
+      DELETE FROM settings WHERE key GLOB 'session:*';
+      CREATE TABLE login_bans (ip TEXT PRIMARY KEY, failures INTEGER NOT NULL, banned_until INTEGER NOT NULL, last_attempt INTEGER NOT NULL);
+      CREATE TABLE audit_logs (
+        id INTEGER PRIMARY KEY, event TEXT NOT NULL, actor TEXT NOT NULL, ip TEXT, details_json TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+    `,
+  },
+  guestMigration,
 ];
 
 export function runMigrations(database: Database.Database): void {

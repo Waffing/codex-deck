@@ -13,7 +13,7 @@ import tempfile
 from contextlib import closing
 
 DB = 'codexdeck.sqlite'
-OMIT = {DB, DB + '-wal', DB + '-shm', DB + '-journal', 'master.key', 'setup-code', 'caches', 'home', 'server-profile.json'}
+OMIT = {DB, DB + '-wal', DB + '-shm', DB + '-journal', 'master.key', 'panel-tls.key', 'setup-code', 'caches', 'home', 'server-profile.json'}
 
 
 def fail(message):
@@ -87,7 +87,7 @@ def backup(data, workspaces, out, managed_data=None, managed_workspaces=None):
     if data == workspaces or workspaces in data.parents:
         fail('The workspace root must not contain the data directory.')
     secret_inodes = set()
-    for name in ('master.key', 'setup-code'):
+    for name in ('master.key', 'panel-tls.key', 'setup-code'):
         file = data / name
         if file.is_file():
             info = file.stat()
@@ -129,7 +129,52 @@ def restore(source, out, target_data, target_workspaces):
         for table, column, previous, target in [('workspaces', 'path', manifest['workspaces'], target_workspaces), ('threads', 'codex_home', manifest['data'], target_data)]:
             for ident, value in db.execute(f'SELECT id,{column} FROM {table} WHERE {column} IS NOT NULL').fetchall():
                 db.execute(f'UPDATE {table} SET {column}=? WHERE id=?', (rebase(value, previous, target), ident))
-        db.execute("DELETE FROM settings WHERE key LIKE 'session:%'")
+        clear_sessions(db)
+
+
+def clear_sessions(db):
+    db.execute("DELETE FROM settings WHERE key LIKE 'session:%'")
+    tables = {v[0] for v in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for table in ('user_sessions', 'guest_sessions'):
+        if table in tables:
+            db.execute('DELETE FROM ' + table)
+    if 'temp_access_links' in tables:
+        db.execute("UPDATE temp_access_links SET status='revoked'")
+
+
+def verify_db(db):
+    if db.execute('PRAGMA integrity_check').fetchall() != [('ok',)] or db.execute('PRAGMA foreign_key_check').fetchone():
+        fail('Database failed integrity verification.')
+    db.execute('SELECT value FROM settings LIMIT 1')
+
+
+def db_snapshot(source, destination, replacing):
+    source = source.absolute()
+    destination = destination.absolute()
+    if source.resolve(strict=True) != source or not source.is_file():
+        fail('Select a regular database file.')
+    if destination.parent.resolve(strict=True) != destination.parent or destination.is_symlink() or source == destination:
+        fail('Invalid destination.')
+    if destination.exists() != replacing or (replacing and not destination.is_file()):
+        fail('Unexpected destination state.')
+    if any(Path(str(destination) + suffix).is_symlink() for suffix in ('-wal', '-shm', '-journal')):
+        fail('Unexpected database sidecar symlink.')
+    # Stage and validate first. SQLite backup commits to the live file atomically.
+    with tempfile.TemporaryDirectory(dir=destination.parent, prefix='.cdx-') as private:
+        staged = Path(private) / DB
+        with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)) as src, closing(sqlite3.connect(staged)) as dest:
+            src.backup(dest)
+            verify_db(dest)
+            if replacing:
+                clear_sessions(dest)
+                dest.commit()
+                with closing(sqlite3.connect(destination.as_uri() + '?mode=rw', uri=True)) as live:
+                    dest.backup(live)
+            else:
+                dest.execute('PRAGMA journal_mode=DELETE')
+        if not replacing:
+            staged.chmod(0o600)
+            os.link(staged, destination)
 
 
 def main():
@@ -147,8 +192,14 @@ def main():
     r.add_argument('--target-workspaces', type=Path, help='absolute path as seen by the restored server')
     v = commands.add_parser('verify')
     v.add_argument('--from', dest='source', required=True, type=Path)
+    for command in ('backup-db', 'restore-db'):
+        sub = commands.add_parser(command)
+        sub.add_argument('--from', dest='source', required=True, type=Path)
+        sub.add_argument('--to', required=True, type=Path)
     args = parser.parse_args()
-    if args.command == 'verify':
+    if args.command in ('backup-db', 'restore-db'):
+        db_snapshot(args.source, args.to, args.command == 'restore-db')
+    elif args.command == 'verify':
         validate(args.source.resolve(strict=True))
     else:
         dest = args.to.absolute()

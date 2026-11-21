@@ -4,7 +4,10 @@ import { cpus, freemem, loadavg, totalmem } from "node:os";
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
 import { projectEvent, subscriptionSchema, type ThreadEvent } from "@codexdeck/shared";
-import { authenticated, createRequireAdmin } from "../auth.js";
+import { authenticated, createRequireAdmin,bindAdminSocket } from "../auth.js";
+import {getGuestSession,onLinkChange,visit} from "../temp-access/service.js";
+import {threadWorkspace} from "../temp-access/routes.js";
+import {clientIp} from "../security/ingress.js";
 import type { ServerContext } from "../app.js";
 import {safeAnswerFragments} from "../codex/timeline.js";
 
@@ -94,13 +97,37 @@ export function registerEventRoutes(app: FastifyInstance, ctx: ServerContext, ev
     websocket: true, preValidation: async (req, reply) => {
       const origin = req.headers.origin;
       if (origin && URL.parse(origin)?.host !== req.headers.host) return reply.code(403).send();
+      const guest=getGuestSession(ctx,req);
+      if(guest){
+        const {thread_id}=req.query as {thread_id?:string};
+        if(thread_id && !guest.link.workspace_ids.includes(String(threadWorkspace(ctx,thread_id))))return reply.code(403).send();
+        return;
+      }
       return createRequireAdmin(ctx)(req, reply);
     },
   }, (socket: WebSocket, req) => {
     let unsubscribe: (() => void) | undefined;
+    const guest=getGuestSession(ctx,req);
+    if(!guest) bindAdminSocket(ctx,req,socket);
+    let expiry:NodeJS.Timeout|undefined,workspace:string|undefined;
+    const check=()=>{
+      if(!guest)return authenticated(ctx,req);
+      const session=getGuestSession(ctx,req);
+      if(!session){socket.close(1008,"Guest access ended");return false;}
+      return true;
+    };
+    function listenExpiry(){
+      if(!guest)return;
+      clearTimeout(expiry);
+      if(!check())return;
+      const session=getGuestSession(ctx,req)!;
+      expiry=setTimeout(listenExpiry,Math.max(1,Math.min(2147483647,Date.parse(session.link.expires_at)-Date.now())));expiry.unref();
+    }
+    const offGuest=guest && onLinkChange(ctx,guest.link.id,listenExpiry);
+    listenExpiry();
     const send = (frame: unknown) => {
       if (socket.readyState !== 1) return;
-      if (!authenticated(ctx, req)) { socket.close(1008, "Session expired"); return; }
+      if (!check()) { socket.close(1008, "Session expired"); return; }
       if (socket.bufferedAmount > 2 * 1024 * 1024) { socket.close(1013, "Reconnect with last_seq_id"); return; }
       socket.send(JSON.stringify(frame));
     };
@@ -110,6 +137,11 @@ export function registerEventRoutes(app: FastifyInstance, ctx: ServerContext, ev
       if (!parsed.success) { socket.close(1008, "Invalid subscription"); return; }
       unsubscribe?.();
       unsubscribe = undefined;
+      if(guest && parsed.data.thread_id) {
+        workspace=String(threadWorkspace(ctx,parsed.data.thread_id));
+        if(!guest.link.workspace_ids.includes(workspace) || parsed.data.debug){socket.close(1008,"Scope denied");return;}
+        visit(ctx,guest,clientIp(req),workspace);
+      }
       if (parsed.data.thread_id) unsubscribe = events.follow(parsed.data.thread_id, parsed.data.last_seq_id, raw => {
         const event=projectEvent(raw,parsed.data.debug);
         if (event) send({type:"event",event});
@@ -118,17 +150,21 @@ export function registerEventRoutes(app: FastifyInstance, ctx: ServerContext, ev
     };
     const query = req.query as { thread_id?: string; last_seq_id?: string;debug?:string };
     subscribe({ type: "subscribe", thread_id: query.thread_id, last_seq_id: Number(query.last_seq_id ?? 0),debug:query.debug==="true" });
-    counts();
-    send(heartbeat());
+    if(!guest){counts();send(heartbeat());}
     const offCounts = events.subscribe(e => {
+      if(guest){
+        if (/^(task_|model_changed)/.test(e.type) && guest.link.workspace_ids.includes(String(threadWorkspace(ctx,e.thread_id))))send({type:"thread_changed",thread_id:e.thread_id});
+        return;
+      }
       if (e.type.startsWith("approval")) counts();
       if (/^(approval|task_|model_changed)/.test(e.type)) send({type:"thread_changed",thread_id:e.thread_id});
     });
     socket.on("message", data => { try { subscribe(JSON.parse(data.toString())); } catch { socket.close(1008, "Invalid frame"); } });
     const timer = setInterval(() => {
-      send(heartbeat());
+      if(guest){if(check()){visit(ctx,guest,clientIp(req),workspace);send({type:"guest_status",link:getGuestSession(ctx,req)!.link});}}
+      else send(heartbeat());
     }, 10000);
     timer.unref();
-    socket.once("close", () => { clearInterval(timer); unsubscribe?.(); offCounts(); });
+    socket.once("close", () => { clearInterval(timer);clearTimeout(expiry);offGuest?.(); unsubscribe?.(); offCounts(); });
   });
 }

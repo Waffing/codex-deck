@@ -8,6 +8,7 @@ import path from "node:path";
 import { writeFile, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { installationCode } from "./routes/auth.js";
+import { listenPublicTls } from "./security/public-listener.js";
 
 export async function startServer(): Promise<void> {
   const workspaceRoot = process.env.CODEXDECK_WORKSPACES ?? repositoryRoot;
@@ -29,8 +30,12 @@ export async function startServer(): Promise<void> {
     gatewayConfig: config,
   }, { dataDirectory, workspaceRoot, managedWorkspaceDirectory: process.env.CODEXDECK_WORKSPACES, ...runtimeOptions() });
   const address = await server.listen({ host: config.host, port: config.port });
+  let tls;
+  try { tls=await listenPublicTls(server,dataDirectory,config.port); }
+  catch (e) { await server.close(); database.native.close(); throw e; }
   console.info(`CodexDeck server listening at ${address}`);
   const close = async () => {
+    tls?.close();
     await server.close();
     database.native.close();
   };
@@ -42,8 +47,9 @@ function runtimeOptions() {
   const range = process.env.CODEXDECK_PORT_POOL;
   const match = range && /^(\d+)-(\d+)$/.exec(range);
   if (range && !match) throw new Error("Invalid port pool.");
-  const approvalTimeoutMs = Number(process.env.CODEXDECK_APPROVAL_TIMEOUT_MS ?? 600000);
-  if (!Number.isSafeInteger(approvalTimeoutMs) || approvalTimeoutMs <= 0) throw new Error("Invalid approval timeout.");
+  const configuredTimeout = process.env.CODEXDECK_APPROVAL_TIMEOUT_MS;
+  const approvalTimeoutMs = configuredTimeout === undefined ? undefined : Number(configuredTimeout);
+  if (approvalTimeoutMs !== undefined && (!Number.isSafeInteger(approvalTimeoutMs) || approvalTimeoutMs <= 0)) throw new Error("Invalid approval timeout.");
   const type = process.env.CODEXDECK_PROXY_TYPE;
   const proxyPath = process.env.CODEXDECK_PROXY_CONFIG;
   let proxyConfig: {type:"caddy"|"nginx";path:string} | undefined;

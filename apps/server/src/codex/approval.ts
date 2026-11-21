@@ -1,6 +1,8 @@
+import {readPreferences} from "../settings/preferences.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { ApprovalDecision } from "@codexdeck/shared";
 import type { ServerContext } from "../app.js";
+import { taskLink } from "../temp-access/service.js";
 
 export interface EventSink { append(thread: string, type: string, payload: unknown, taskId?: string): unknown }
 export interface NoticeSink { send(kind: string, payload: Record<string, unknown>): unknown }
@@ -44,7 +46,7 @@ export class ApprovalEngine {
     resolve: (decision: ApprovalResult) => void; timeout: NodeJS.Timeout; reminder: NodeJS.Timeout }>();
 
   constructor(private context: ServerContext, private events: EventSink, private notifications: NoticeSink,
-    private timeoutMs = 600_000, private reminderMs = 30_000) {}
+    private timeoutMs?: number, private reminderMs = 30_000) {}
 
   list() {
     return (this.context.native.prepare("SELECT * FROM approvals ORDER BY created_at DESC").all() as
@@ -59,11 +61,14 @@ export class ApprovalEngine {
     const script = /^(?:npm|pnpm|yarn) (?:test|build|install)\b/.test(String(payload.command ?? ""));
     const rule = signature(action, script ? {...payload,scriptRevision} : payload);
     const rules: string[] = JSON.parse(state.session_rules_json);
-    const auto = risk !== "high" && ((!script || Boolean(scriptRevision)) && rules.includes(rule) ||
+    const guest=taskLink(this.context,taskId);
+    if(guest && (guest.status!=="active" || guest.permission!=="full_with_approval"))return Promise.resolve({decision:"abort"});
+    const auto = (!guest || risk==="low") && risk !== "high" && ((!script || Boolean(scriptRevision)) && rules.includes(rule) ||
       (!script && ((risk === "low" && state.automation_level !== "conservative") || state.automation_level === "full")));
     const id = randomUUID();
     const timestamp = new Date().toISOString();
-    const expiresAt = new Date(Date.now() + this.timeoutMs).toISOString();
+    const timeoutMs=this.timeoutMs ?? readPreferences(this.context.native).approvalTimeoutSeconds*1000;
+    const expiresAt = new Date(Date.now() + timeoutMs).toISOString();
     const safe = this.context.masker.maskObject(payload);
     this.context.native.prepare(`INSERT INTO approvals (id,thread_id,action,payload_json,status,risk_level,created_at,resolved_at,expires_at)
       VALUES(?,?,?,?,?,?,?,?,?)`).run(id,threadId,action,JSON.stringify(safe),auto ? "approved_auto" : "pending",risk,timestamp,auto ? timestamp : null,auto ? null : expiresAt);
@@ -72,7 +77,7 @@ export class ApprovalEngine {
       return Promise.resolve({ decision:"approve" });
     }
     return new Promise(resolve => {
-      const timeout = setTimeout(() => this.settle(id,{decision:"timeout"}),this.timeoutMs);
+      const timeout = setTimeout(() => this.settle(id,{decision:"timeout"}),timeoutMs);
       const reminder = setTimeout(() => this.notifications.send("approval_pending",{thread_id:threadId, approval_id:id, risk_level:risk}),this.reminderMs);
       this.pending.set(id,{threadId,taskId,rule,risk,resolve,timeout,reminder});
       this.events.append(threadId,"approval_req",{id,action,payload:safe,risk_level:risk,expires_at:expiresAt},taskId);

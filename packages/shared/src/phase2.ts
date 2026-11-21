@@ -42,9 +42,12 @@ export const taskSseSchema = z.object({ id: z.number().int().positive(), event: 
 export type CreateTaskRequest = z.infer<typeof createTaskRequestSchema>;
 export type TaskStatusResponse = z.infer<typeof taskStatusResponseSchema>;
 export const notificationKindSchema = z.enum(["webhook", "feishu", "telegram", "bark"]);
-export const notificationChannelCreateSchema = z.object({
+const channelFields = z.object({
   name: z.string().trim().min(1), type: notificationKindSchema, enabled: z.boolean().default(true),
   config: z.object({ url: z.url({ protocol: /^https?$/ }).optional(), token: z.string().min(1).optional(), chat_id: z.string().min(1).optional() }),
-}).refine(c => c.type === "telegram" ? !!(c.config.token && c.config.chat_id) : !!c.config.url);
+});
+export const notificationChannelCreateSchema = channelFields.refine(c => c.type === "telegram" ? !!(c.config.token && c.config.chat_id) : !!c.config.url);
+export const notificationChannelPatchSchema = channelFields.omit({enabled:true}).partial().extend({enabled:z.boolean().optional()}).strict()
+  .refine(p=>Object.keys(p).length>0);
 export const notificationChannelSchema = z.object({ id: z.string(), name: z.string(), type: notificationKindSchema, enabled: z.boolean(), created_at: z.string(), updated_at: z.string() });
 export type NotificationChannel = z.infer<typeof notificationChannelSchema>;

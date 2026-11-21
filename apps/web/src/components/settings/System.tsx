@@ -6,7 +6,7 @@ import { Empty, Feedback, SectionHead, sizeLabel, timeLabel, useAction } from ".
 import type { AdminAuditEntry } from "@codexdeck/shared";
 
 const typeNames = { webhook: "Webhook", feishu: "飞书", telegram: "Telegram", bark: "Bark" };
-export function System() {
+export function System({section="all"}:{section?:"all"|"notifications"|"system"}={}) {
   const [channels, setChannels] = useState<NotificationChannel[]>([]),
     [profile, setProfile] = useState<ServerProfile | null>(null),
     [edit, setEdit] = useState(false);
@@ -52,7 +52,7 @@ export function System() {
   }
   return (
     <>
-      <SectionHead
+      {section!=="system" && <SectionHead
         title="系统与通知"
         description="查看运行环境，选择审批、任务和部署异常的提醒渠道。"
         actions={
@@ -61,8 +61,8 @@ export function System() {
             添加通知渠道
           </button>
         }
-      />
-      <details className="ad-card">
+      />}
+      {section!=="notifications" && <><details className="ad-card">
         <summary>更改管理员密码</summary>
         <form className="ad-form" onSubmit={event=>{
           event.preventDefault();
@@ -120,7 +120,8 @@ export function System() {
           </details>
         </>
       )}
-      <div className="ad-subhead">
+      </>}
+      {section!=="system" && <><div className="ad-subhead">
         <h2>审批桌面提醒</h2>
       </div>
       <div className="ad-card">
@@ -246,6 +247,9 @@ export function System() {
                 <span className="ad-pill">{c.enabled ? "已启用" : "已停用"}</span>
               </div>
               <div className="ad-actions">
+                <button className="ad-button" disabled={a.busy} onClick={()=>void a.run(async()=>{
+                  await api("/api/notification-channels/"+c.id,json("PATCH",{enabled:!c.enabled})); await load();
+                })}>{c.enabled?"停用渠道":"启用渠道"}</button>
                 <button
                   className="ad-button"
                   disabled={a.busy}
@@ -286,7 +290,7 @@ export function System() {
             </article>
           ))}
         </div>
-      )}
+      )}</>}
     </>
   );
 }

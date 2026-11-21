@@ -1,0 +1,19 @@
+.settings-tabs,.guest-quotas,.settings-row{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}
+.settings-tabs{padding:.6rem 0 1rem;border-bottom:1px solid var(--border);margin-bottom:1rem}
+.settings-tabs button{border-radius:.45rem;padding:.5rem .75rem;color:var(--muted)}
+.settings-tabs button[aria-current]{background:var(--soft);color:var(--text);font-weight:650}
+.settings-form{display:grid;gap:1rem;margin-block:.8rem}
+.settings-form h2,.guest-page h2{font-size:1rem;font-weight:650}
+.settings-form label,.settings-row{display:flex;align-items:center;justify-content:space-between;gap:1rem}
+.settings-form small,.settings-row small{display:block;color:var(--muted);font-size:.78rem}
+.settings-form textarea,.settings-form input:not([type=checkbox]),.settings-form select,.guest-page select,.guest-page textarea{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:.45rem;padding:.45rem .6rem;max-width:100%;min-width:0}
+.settings-form input[type=checkbox]{width:1.05rem;height:1.05rem;flex:none;accent-color:var(--accent)}
+.settings-form input[type=number]{width:7rem}.settings-form textarea{min-height:4rem}.settings-form .ad-button,.settings-form .ad-primary{justify-self:start}
+.settings-dialog{position:fixed;inset:0;margin:auto;width:min(28rem,92vw);max-height:90dvh;overflow-y:auto;z-index:80;box-shadow:0 8px 60px #0005}
+.guest-page{height:100dvh;overflow:auto;background:var(--bg);color:var(--text);padding:clamp(.9rem,3vw,2rem)}
+.guest-layout{max-width:75rem;margin:1rem auto;display:grid;grid-template-columns:minmax(12rem,16rem) minmax(0,1fr);gap:1rem}
+.guest-layout aside{align-self:start;display:grid;gap:.65rem}.guest-layout section{min-width:0}.guest-layout aside label{display:grid;gap:.3rem}.guest-layout aside input{border:1px solid var(--border);background:var(--bg);border-radius:.45rem;padding:.42rem .6rem}
+.guest-banner{position:sticky;top:0;z-index:2;margin:auto;max-width:75rem;background:var(--panel);border:1px solid var(--border);border-radius:.7rem;padding:.8rem 1rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap}
+.guest-quotas{font-variant-numeric:tabular-nums;font-size:.8rem;gap:.7rem}.guest-quotas progress{width:3rem;height:.35rem}
+.cd-turns[data-compact=true] .cd-turn{padding-block:.4rem;margin-block:.35rem}.cd-turns[data-compact=true] .cd-prompt{padding:.35rem .75rem}
+@media(max-width:680px){.settings-form label{flex-wrap:wrap}.settings-tabs{gap:.25rem}.guest-layout{grid-template-columns:1fr}.settings-form textarea{width:100%}.guest-banner{gap:.45rem;padding:.6rem .75rem}}

@@ -20,6 +20,7 @@ Usage:
   codex-deck start [--port <port>] [--data <path>] [--workspaces <path>]
   codex-deck status [--url <base-url>]
   codex-deck doctor
+  codex-deck admin [--offline] <operation> [id]
 
 Options:
   --port <port>          Listening port (default: 3000)
@@ -160,6 +161,13 @@ async function main() {
   if (!command || command === "help" || command === "--help" || command === "-h") {
     help();
     return;
+  }
+  if (command === "admin") {
+    const source = path.join(repositoryRoot, "apps/server/dist/admin-cli.js");
+    const bundled = path.join(cliDirectory, "../runtime/apps/server/dist/admin-cli.js");
+    if (!existsSync(source)) await import("../register-loader.mjs");
+    const { runAdmin } = await import(pathToFileURL(existsSync(source) ? source : bundled).href);
+    return runAdmin(args);
   }
   const options = parseOptions(args);
   if (options.has("help")) {

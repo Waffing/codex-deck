@@ -3,7 +3,9 @@ import { localImportSchema, usageGroupSchema, type UsageReport } from "@codexdec
 import { authenticated, createRequireAdmin } from "../auth.js";
 import type { ServerContext } from "../app.js";
 import type { WorkspaceFiles } from "../files/workspace-files.js";
+import {readPreferences} from "../settings/preferences.js";
 import {turnEvents} from "../codex/timeline.js";
+import {scopedAccess} from "../temp-access/routes.js";
 
 export function registerConsoleRoutes(app:FastifyInstance,ctx:ServerContext,files:WorkspaceFiles) {
   const db=ctx.native;
@@ -27,11 +29,11 @@ export function registerConsoleRoutes(app:FastifyInstance,ctx:ServerContext,file
   });
   app.get("/api/workspaces/local-directories",auth,async ()=>({directories:await files.availableLocalDirectories()}));
   app.post("/api/workspaces/import",auth,async (req,reply)=>{
-    const input=localImportSchema.safeParse(req.body);
+    const input=localImportSchema.safeParse({automation_level:readPreferences(db).automationLevel,...(req.body as object)});
     if (!input.success) return reply.code(400).send({error:"Invalid local workspace directory."});
     return reply.code(201).send(await files.importLocal(input.data));
   });
-  app.get<{Params:{id:string};Querystring:{before?:string;artifact_before?:string;debug?:string}}>("/api/threads/:id/history",auth,async (req,reply)=>{
+  app.get<{Params:{id:string};Querystring:{before?:string;artifact_before?:string;debug?:string}}>("/api/threads/:id/history",scopedAccess(ctx),async (req,reply)=>{
     if (!db.prepare("SELECT 1 FROM threads WHERE id=?").get(req.params.id)) return reply.code(404).send({error:"Unknown thread."});
     const before=Number(req.query.before??Number.MAX_SAFE_INTEGER), artifactBefore=Number(req.query.artifact_before??Number.MAX_SAFE_INTEGER);
     if (![before,artifactBefore].every(n=>Number.isSafeInteger(n)&&n>=0)) return reply.code(400).send({error:"Invalid history cursor."});

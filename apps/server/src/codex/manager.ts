@@ -12,6 +12,8 @@ import { signPayload } from "../security/crypto.js";
 import { OutputMasker } from "./output-masker.js";
 import {summarizeContext} from "./compact.js";
 import {completeAnswer,turnMetrics} from "./timeline.js";
+import {assertGuestTurn,finishGuestTurn,taskLink} from "../temp-access/service.js";
+import {runGuestTurn} from "../temp-access/turn.js";
 
 export interface ManagerOptions {
   dataDirectory: string; workspaceRoot?: string; port?: () => number; codexBin?: string; opsEntry?: string;
@@ -22,7 +24,7 @@ type Files = Pick<WorkspaceFiles, "getRoot" | "beforeTurn" | "afterTurn" | "agen
 type ThreadRow = Thread & { remote_thread_id: string | null; codex_home: string | null };
 type Terminal = "completed" | "failed" | "cancelled";
 type Turn = { taskId: string; threadId: string; workspaceId: string; prompt: string; imageIds:string[]; remoteId?: string;
-  modelAlias?:string|null;
+  modelAlias?:string|null; startedAt?:number; guestAbort?:AbortController;
   cancelled: boolean; summary: string; done: Promise<Terminal>; finish: (status: Terminal) => void };
 type Session = { client: RpcClient; remoteId:string; settings:Json; catalog:string; leases:Record<"model"|"ops",string>; idle?:NodeJS.Timeout };
 type Compacted=Omit<Awaited<ReturnType<typeof summarizeContext>>,"taskId">;
@@ -43,6 +45,7 @@ export class ThreadManager {
   private readonly queueLimit:number;
   private readonly idleMs:number;
   private sessions = new Map<string, Session>();
+  private startingClients = new Map<string,RpcClient>();
   private connecting = new Map<string, Promise<Session>>();
   private jobs = new Map<string, Turn>();
   private active = new Map<string, Turn>();
@@ -65,7 +68,7 @@ export class ThreadManager {
     context.resolveSessionLease=(credential,kind)=>{
       for (const [id,session] of this.sessions) {
         const turn=this.active.get(id);
-        if (this.stopping || !session.client.alive || !turn || turn.cancelled || credential!==session.leases[kind]) continue;
+        if (this.stopping || !session.client.alive || !turn || turn.cancelled || credential!==session.leases[kind] || taskLink(context,turn.taskId)) continue;
         const now=Math.floor(Date.now()/1000);
         return signPayload({aud:kind==="model"?"codexdeck-internal":"codexdeck-ops",thread_id:id,task_id:turn.taskId,
           nonce:randomUUID(),iat:now,exp:now+context.gatewayConfig.internal_token_ttl_seconds},context.masterKey);
@@ -142,7 +145,7 @@ export class ThreadManager {
     return input;
   }
 
-  submit(threadId: string, prompt: string, taskId: string = randomUUID(), imageIds:string[] = []) {
+  submit(threadId: string, prompt: string, taskId: string = randomUUID(), imageIds:string[] = [], guestId?:string) {
     if(this.compacting.has(threadId)) throw error(409,"Thread is compacting.");
     if (this.stopping) throw error(503,"Manager is shutting down.");
     if (this.jobs.size>=this.queueLimit) throw error(429,"Task queue is full.");
@@ -151,8 +154,12 @@ export class ThreadManager {
     if (!row.workspace_id) throw error(404,"Workspace unavailable.");
     const now = new Date().toISOString();
     const safePrompt = this.context.masker.maskString(prompt);
-    this.context.native.prepare(`INSERT INTO tasks(id,thread_id,workspace_id,prompt,status,summary,created_at,updated_at,image_ids_json)
-      VALUES(?,?,?,?,'queued','',?,?,?)`).run(taskId,threadId,row.workspace_id,safePrompt,now,now,JSON.stringify(imageIds));
+    const workspace=row.workspace_id;
+    this.context.native.transaction(()=>{
+      if(guestId) assertGuestTurn(this.context,guestId,workspace);
+      this.context.native.prepare(`INSERT INTO tasks(id,thread_id,workspace_id,prompt,status,summary,created_at,updated_at,image_ids_json,guest_link_id)
+        VALUES(?,?,?,?,'queued','',?,?,?,?)`).run(taskId,threadId,workspace,safePrompt,now,now,JSON.stringify(imageIds),guestId??null);
+    }).immediate();
     this.events.append(threadId,"task_queued",{task_id:taskId},taskId);
     this.enqueue(row.workspace_id, threadId, taskId, prompt,imageIds);
     return { task_id:taskId,thread_id:threadId,status:"queued" as const };
@@ -184,7 +191,10 @@ export class ThreadManager {
       if (this.jobs.has(task.id)) continue;
       if (task.status === "queued") { this.enqueue(task.workspace_id,task.thread_id,task.id,task.prompt,JSON.parse(task.image_ids_json)); continue; }
       const summary = "The host stopped during execution.";
-      db.prepare("UPDATE tasks SET status='failed',summary=?,updated_at=? WHERE id=?").run(summary,now,task.id);
+      db.transaction(()=>{
+        db.prepare("UPDATE tasks SET status='failed',summary=?,updated_at=? WHERE id=?").run(summary,now,task.id);
+        finishGuestTurn(this.context,task.id);
+      })();
       db.prepare("UPDATE threads SET status='idle',updated_at=? WHERE id=?").run(now,task.thread_id);
       const result = {thread_id:task.thread_id,task_id:task.id,workspace_id:task.workspace_id,status:"failed",summary};
       this.events.append(task.thread_id,"task_failed",result,task.id);
@@ -196,7 +206,10 @@ export class ThreadManager {
     if (!this.jobs.delete(turn.taskId)) return;
     const summary = this.context.masker.maskString(turn.summary);
     const now = new Date().toISOString();
-    this.context.native.prepare("UPDATE tasks SET status=?,summary=?,updated_at=? WHERE id=?").run(status,summary,now,turn.taskId);
+    this.context.native.transaction(()=>{
+      this.context.native.prepare("UPDATE tasks SET status=?,summary=?,updated_at=? WHERE id=?").run(status,summary,now,turn.taskId);
+      finishGuestTurn(this.context,turn.taskId);
+    })();
     const event = { task_id:turn.taskId,thread_id:turn.threadId,workspace_id:turn.workspaceId,status,summary };
     this.events.append(turn.threadId,"task_" + status,event,turn.taskId);
     void this.notifications.send("task_" + status,event);
@@ -206,6 +219,7 @@ export class ThreadManager {
     const started=Date.now();
     const { threadId, workspaceId, taskId } = turn;
     if (!this.context.native.prepare("SELECT 1 FROM tasks WHERE id=?").get(taskId)) { this.jobs.delete(taskId); return; }
+    turn.startedAt=started;
     this.active.set(threadId,turn);
     let snapshot: Awaited<ReturnType<Files["beforeTurn"]>> | undefined;
     let terminal: Terminal = "failed";
@@ -215,7 +229,19 @@ export class ThreadManager {
       this.context.native.prepare("UPDATE tasks SET status='running',updated_at=? WHERE id=?").run(now,taskId);
       this.context.native.prepare("UPDATE threads SET status='running',updated_at=? WHERE id=?").run(now,threadId);
       this.events.append(threadId,"task_started",{task_id:taskId},taskId);
+      const guest=taskLink(this.context,taskId);
+      if(guest && guest.status!=="active") throw error(403,"Guest access ended.");
       snapshot = await this.files.beforeTurn(workspaceId,threadId,taskId);
+      if(guest){
+        turn.guestAbort=new AbortController();
+        if(turn.cancelled || this.stopping) {terminal="cancelled";return;}
+        const row=this.row(threadId),input=await this.userInput(row,turn.prompt,turn.imageIds);
+        await runGuestTurn(this.context,{linkId:guest.id,root:await this.files.getRoot(workspaceId),workspace:workspaceId,
+          thread:threadId,task:taskId,port:this.options.port?.()??this.context.gatewayConfig.port,model:row.active_model_alias!,
+          input:input.map(part=>part.type==="image"?{type:"input_image",image_url:part.url}:{type:"input_text",text:part.text}),
+          approvals:this.approvals,events:this.events,signal:turn.guestAbort.signal});
+        terminal="completed";return;
+      }
       const session = await this.connect(threadId);
       if (this.stopping || turn.cancelled) { terminal = "cancelled"; return; }
       const row = this.row(threadId);
@@ -319,7 +345,9 @@ export class ThreadManager {
         }
       },
     },this.options.codexBin);
+    this.startingClients.set(threadId,client);
     try {
+      if (this.active.get(threadId)?.cancelled) throw error(409,"Task cancelled.");
       await client.call("initialize",{ clientInfo:{name:"codexdeck",title:"CodexDeck",version:"0.2.0"},capabilities:{} });
       client.notify("initialized");
       const profile = this.context.masker.maskObject(this.options.profile?.() ?? {});
@@ -337,6 +365,7 @@ export class ThreadManager {
       this.events.append(threadId,row.remote_thread_id ? "process_resumed" : "process_started",{remote_thread_id:remoteId});
       return session;
     } catch (err) { await client.close(); throw err; }
+    finally { this.startingClients.delete(threadId); }
   }
 
   private notify(threadId: string, method: string, params: Json) {
@@ -479,6 +508,7 @@ export class ThreadManager {
     const turn = this.active.get(threadId);
     if (!turn) throw error(409,"No active turn.");
     turn.cancelled = true;
+    turn.guestAbort?.abort();
     const session = this.sessions.get(threadId);
     if (turn.remoteId && session) await session.client.call("turn/interrupt",{threadId:session.remoteId,turnId:turn.remoteId});
   }
@@ -500,12 +530,34 @@ export class ThreadManager {
     return result.decision.startsWith("approve");
   }
 
+  runtimeTasks() {
+    return [...this.active.values()].map(turn => ({
+      thread_id:turn.threadId, task_id:turn.taskId, workspace_id:turn.workspaceId,
+      pid:turn.guestAbort?null:(this.sessions.get(turn.threadId)?.client ?? this.startingClients.get(turn.threadId))?.pid ?? null,
+      elapsed_ms:Math.max(0,Date.now()-(turn.startedAt ?? Date.now())),
+    }));
+  }
+
+  async killTask(threadId: string) {
+    const turn=this.active.get(threadId);
+    if (!turn) throw error(404,"No running task on this thread.");
+    turn.cancelled=true;
+    turn.guestAbort?.abort();
+    const client=this.sessions.get(threadId)?.client ?? this.startingClients.get(threadId);
+    this.sessions.delete(threadId);
+    this.approvals.disconnect(threadId);
+    turn.finish("cancelled");
+    if (client) await client.close(true);
+    return {task_id:turn.taskId,thread_id:threadId,terminated:true};
+  }
+
   async close() {
     this.stopping = true;
     this.queue.stop();
     this.approvals.disconnect();
     for (const turn of this.jobs.values()) {
       turn.cancelled = true;
+      turn.guestAbort?.abort();
       turn.finish("cancelled");
       if (!this.active.has(turn.threadId) || this.active.get(turn.threadId) !== turn) this.terminal(turn,"cancelled");
     }

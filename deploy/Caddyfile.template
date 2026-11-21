@@ -1,4 +1,10 @@
 {$CODEXDECK_DOMAIN} {
 	encode zstd gzip
-	reverse_proxy codexdeck:3000
+	@localOnly path /api/auth/setup /internal/*
+	respond @localOnly 404
+	reverse_proxy codexdeck:3000 {
+		header_up X-CodexDeck-Proxy {env.CODEXDECK_MANAGED_PROXY_TOKEN}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto https
+	}
 }

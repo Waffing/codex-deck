@@ -28,7 +28,7 @@
 release=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffing/codex-deck/releases/latest) && tag=${release##*/} && curl -fsSL "https://raw.githubusercontent.com/Waffing/codex-deck/$tag/deploy/install.sh" | CODEXDECK_VERSION="$tag" bash
 ```
 
-The installer provisions Docker and Compose, creates the persistent directories and binds the console to `127.0.0.1:3000`. In the install directory, read the private first-run code with `docker compose exec codexdeck cat /data/setup-code`. Open the console through localhost or an SSH tunnel, enter that code to create the administrator, then choose a provider and workspace. The code file is removed after setup.
+The V1.2 installer defaults to a loopback console on `127.0.0.1:3000`. Set the first administrator password over SSH with `cdx password`, open the printed SSH tunnel, then sign in and choose a provider and workspace. Pass `--local-only` to select this mode in scripts. Select `--public` for an additional high-port HTTPS listener and an eight-character entrance path. For direct IP access, compare the certificate fingerprint against `cdx status` over SSH before trusting the certificate. These options require a release containing V1.2.
 
 Managed application containers default to 1 CPU, 512 MiB of memory, and 128 processes. `CODEXDECK_RELEASE_KEEP` retains five recent snapshots by default, while the live release and its immediate rollback predecessor stay protected. On restart the controller adopts only containers carrying CodexDeck ownership labels.
 
@@ -67,7 +67,9 @@ From the checkout in a second terminal, read `./data/setup-code` for first setup
 <details>
 <summary>HTTPS, upgrades and backups</summary>
 
-For the Compose HTTPS profile, configure DNS and forward public TCP ports 80 and 443 to host ports 8080 and 8443. Pass `--domain codex.example.com` to enable Caddy. A configured domain enables secure session cookies. With your own TLS proxy, set `CODEXDECK_COOKIE_SECURE=true` and access the console over HTTPS.
+For managed Caddy, select public mode and a domain, then opt in when the installer confirms the required ports are available. Configure DNS and forward public TCP 80 and 443 to host ports 8080 and 8443. On an existing web host, `cdx proxy panel.example.com` prints an independent reverse-proxy configuration and checks the public certificate. Set `CODEXDECK_TRUSTED_PROXIES` to the exact proxy peer seen by CodexDeck and configure the proxy to overwrite forwarded headers.
+
+Run `cdx` for the host menu or use `cdx tasks`, `cdx kill THREAD`, `cdx public on`, `cdx backup` and `cdx restore SNAPSHOT`. `cdx security` reads the same settings as the browser. Apply a JSON patch with `printf '%s' '{"max_failures":6}' | cdx security set`. With the Docker service stopped, recovery uses the installed image and database and requires a running Docker daemon. See the [host operations guide](deploy/HOST-ADMIN.md).
 
 Run the installed `install.sh --upgrade --dir /path/to/install --version vX.Y.Z` for a published target, or `--uninstall --dir /path/to/install` to remove the service. Add `--native` for systemd. The installer retains the running image or service unit for health-check rollback. Take a database backup before upgrading across schema versions.
 

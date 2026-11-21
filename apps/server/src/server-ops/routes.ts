@@ -10,6 +10,8 @@ import { verifySignedPayload } from "../security/crypto.js";
 import { PortPool, fail, probeServer } from "./probe.js";
 import { Deployer,type OpsOptions } from "./deployer.js";
 import { registerPreview } from "./preview-proxy.js";
+import {taskLink} from "../temp-access/service.js";
+import {scopedGuest} from "../temp-access/routes.js";
 
 interface Events {append(thread:string,type:string,payload:unknown):unknown}
 interface Approver {requestOpsApproval(thread:string,tool:string,payload:Record<string,unknown>):Promise<unknown>}
@@ -36,6 +38,12 @@ export function registerOps(app:FastifyInstance,ctx:ServerContext,files:Workspac
   app.get("/api/server/profile",admin,async()=>getProfile());
   app.post("/api/server/probe",admin,probe);
   app.get("/api/deployments",admin,async()=>deployer.rows().map(row=>deployer.dto(row)));
+  app.get("/api/guest/previews",async(req,reply)=>{
+    const guest=scopedGuest(req);
+    if(!guest)return reply.code(403).send({error:"Guest login required."});
+    return deployer.rows().filter(row=>guest.link.workspace_ids.includes(row.workspace_id) && ["staging","live","rolled_back"].includes(row.status))
+      .map(row=>{const {id,workspace_id,status,preview_url,live_url}=deployer.dto(row);return {id,workspace_id,status,preview_url,live_url};});
+  });
   app.post<{Params:{id:string}}>("/api/deployments/:id/action",admin,async(req,reply)=>{
     const result=deploymentActionSchema.safeParse(req.body);
     if(!result.success) return reply.code(400).send({error:"Invalid deployment action."});
@@ -60,8 +68,12 @@ export function registerOps(app:FastifyInstance,ctx:ServerContext,files:Workspac
       typeof claims.thread_id!=="string" || typeof claims.exp!=="number" || claims.exp<=now || typeof claims.iat!=="number" ||
       claims.iat>now+30 || claims.exp-claims.iat>86400) return reply.code(401).send({error:"Invalid local ops token."});
     const thread=claims.thread_id;
-    const authorizedTask=()=>claims.task_id===undefined || (typeof claims.task_id==="string" &&
-      !!ctx.native.prepare("SELECT 1 FROM tasks WHERE id=? AND thread_id=? AND status='running'").get(claims.task_id,thread));
+    const authorizedTask=()=>{
+      const guest=taskLink(ctx,typeof claims.task_id==="string"?claims.task_id:undefined);
+      if(guest && (guest.status!=="active" || guest.permission!=="full_with_approval" || req.params.tool!=="app_deploy_staging")) return false;
+      return claims.task_id===undefined || (typeof claims.task_id==="string" &&
+        !!ctx.native.prepare("SELECT 1 FROM tasks WHERE id=? AND thread_id=? AND status='running'").get(claims.task_id,thread));
+    };
     if(!authorizedTask()) {
       return reply.code(401).send({error:"Task authorization expired."});
     }

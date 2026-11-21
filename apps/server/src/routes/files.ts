@@ -8,7 +8,7 @@ import yazl from "yazl";
 import { lookup } from "mime-types";
 import { artifactSignSchema, filePathQuerySchema, fileSaveSchema, fileTreeQuerySchema } from "@codexdeck/shared";
 import type { ServerContext } from "../app.js";
-import { createRequireAdmin } from "../auth.js";
+import { scopedAccess,scopedGuest } from "../temp-access/routes.js";
 import { fileError, ignored, missing, resolveSafeWorkspacePath, saveWorkspaceFile } from "../files/sandbox.js";
 import { readEditable, writeEditable } from "../files/editor.js";
 import { signDownload, validateDownload } from "../files/signed-url.js";
@@ -17,7 +17,7 @@ import { registerWorkspaceRoutes } from "./workspaces.js";
 
 export function registerFileRoutes(app: FastifyInstance, ctx: ServerContext, files: WorkspaceFiles) {
   type ById = { Params: { id: string } };
-  const auth = { preHandler: createRequireAdmin(ctx) };
+  const auth = scopedAccess(ctx);
   registerWorkspaceRoutes(app, ctx, files);
   app.register(multipart, { limits: { fileSize: 16 * 1024 * 1024, files: 1, fields: 0, parts: 1 } });
   app.addHook("onClose", async () => files.close());
@@ -93,14 +93,20 @@ export function registerFileRoutes(app: FastifyInstance, ctx: ServerContext, fil
   app.post("/api/artifacts/sign", auth, async req => {
     const p = artifactSignSchema.safeParse(req.body);
     if (!p.success) throw fileError(400, "Invalid artifact or turn.");
-    if ("artifact_id" in p.data) return { download_url: files.signArtifact(p.data.artifact_id, p.data.ttl_seconds) };
-    const subject = { kind: "turn" as const, id: p.data.turn_id };
-    files.artifactsFor(subject);
+    const subject = "artifact_id" in p.data ? {kind:"artifact" as const,id:p.data.artifact_id} : {kind:"turn" as const,id:p.data.turn_id};
+    const artifacts=files.artifactsFor(subject), guest=scopedGuest(req);
+    if(guest){
+      if(artifacts.some(a=>!guest.link.workspace_ids.includes(a.workspace_id))) throw fileError(403,"Workspace outside invitation scope.");
+      return {download_url:signDownload({...subject,guest_id:guest.link.id},ctx.masterKey,p.data.ttl_seconds)};
+    }
     return { download_url: signDownload(subject, ctx.masterKey, p.data.ttl_seconds) };
   });
   app.get<{ Params: { "*": string } }>("/api/dl/*", async (req, reply) => {
     const subject = validateDownload(req.params["*"], ctx.masterKey);
     const artifacts = files.artifactsFor(subject);
+    const guest=scopedGuest(req);
+    if(subject.guest_id && guest?.link.id!==subject.guest_id || guest && artifacts.some(a=>!guest.link.workspace_ids.includes(a.workspace_id)))
+      throw fileError(403,"Guest download unavailable.");
     reply.header("Cache-Control", "private, no-store").header("X-Content-Type-Options", "nosniff");
     if (subject.kind === "artifact") {
       const item = artifacts[0];

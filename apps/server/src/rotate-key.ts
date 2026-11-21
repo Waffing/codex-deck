@@ -32,6 +32,10 @@ export function rotateMasterKey(db: Database.Database, current: Buffer, next: Bu
     for (const row of db.prepare('SELECT id,webhook_url FROM tasks WHERE webhook_url IS NOT NULL').all() as {id:string;webhook_url:string}[]) {
       task.run(seal(row.webhook_url), row.id);
     }
+    for (const row of db.prepare("SELECT key,value FROM settings WHERE key IN ('security.totp','security.totp_pending','security.recovery')").all() as {key:string;value:string}[]) {
+      db.prepare("UPDATE settings SET value=? WHERE key=?").run(seal(row.value),row.key);
+    }
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_sessions'").get()) db.prepare("UPDATE user_sessions SET revoked=1").run();
     db.prepare("DELETE FROM settings WHERE key LIKE 'session:%'").run();
     db.prepare("INSERT OR REPLACE INTO settings(key,value,updated_at) VALUES('crypto.key-check',?,?)").run(rotationProof(next), new Date().toISOString());
     return 'Rotated. Configure the new master key before starting the service.';

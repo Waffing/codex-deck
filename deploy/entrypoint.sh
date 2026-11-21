@@ -20,5 +20,9 @@ export HOME=/data/home
 export NPM_CONFIG_CACHE=/data/caches/npm
 export PIP_CACHE_DIR=/data/caches/pip
 export UV_CACHE_DIR=/data/caches/uv
+if [ "${CODEXDECK_LOOPBACK_PUBLISHED:-}" = true ]; then
+  CODEXDECK_LOCAL_PEER="$(ip -4 route show default | awk 'NR==1 {print $3}')"
+  export CODEXDECK_LOCAL_PEER
+fi
 
 exec gosu "$PUID:$PGID" "$@"

@@ -13,7 +13,9 @@ import {Panel,tabKey,type PanelTab} from "./components/layout/Panel";
 import {CommandBar,type DeckCommand} from "./components/layout/CommandBar";
 import {WorkspaceMenu} from "./components/layout/WorkspaceMenu";
 import {ConversationList} from "./components/layout/ConversationList";
-import {PreferenceControls,usePreferences} from "./components/layout/Preferences";
+import {usePreferences} from "./components/layout/Preferences";
+import {SettingsCenter} from "./components/settings/SettingsCenter";
+import {GuestWorkbench} from "./components/GuestWorkbench";
 import {SessionInspector} from "./components/layout/SessionInspector";
 import type {ChatTurn} from "./components/chat/Timeline";
 import type {ThreadEvent} from "@codexdeck/shared";
@@ -24,19 +26,20 @@ const mobileNav=[{view:"workbench",label:"工作台",icon:Terminal},{view:"appro
 const noEvents:ThreadEvent[]=[];
 
 function Wordmark(){return <div className="deck-wordmark"><span className="logo-tile"><Layers3 size={19} strokeWidth={2.3}/></span><strong>Codex<span>Deck</span></strong></div>;}
-export default function App(){
+export default function App(){return location.pathname==="/guest" ? <GuestWorkbench/> : <AdminApp/>;}
+function AdminApp(){
   const [gate,setGate]=useState<"loading"|"setup"|"ready">("loading"),[error,setError]=useState("");
   const [view,setView]=useState<View>(readView),[wsId,setWs]=useState(()=>localStorage.getItem("deck.workspace")??""),[thId,setTh]=useState(()=>localStorage.getItem("deck.thread")??"");
   const [menu,setMenu]=useState<"commands"|"workspaces"|"account"|"threads"|null>(null),[collapsed,setCollapsed]=useState(false);
   const [tabs,setTabs]=useState<PanelTab[]>([]),[selected,setSelected]=useState("");
   const [requesting,setRequesting]=useState(false);
-  const theme=useTheme();
-  const preferences=usePreferences();
   const [inspected,setInspected]=useState<ChatTurn>();
   const [infoOpen,setInfoOpen]=useState(()=>localStorage.getItem("deck.inspector")==="open");
   function toggleInfo(){setInfoOpen(!infoOpen);localStorage.setItem("deck.inspector",infoOpen?"closed":"open")}
   const live=useRealtime();
   const handleError=useCallback((e:unknown)=>{if((e as {status?:number})?.status===401){clearRealtime();setGate("setup");return;}setError(e instanceof Error?e.message:"操作失败");},[]);
+  const preferences=usePreferences(gate==="ready",handleError);
+  const theme=useTheme(preferences.prefs.theme,theme=>preferences.update({theme}));
   const {data,reload}=useSnapshot(gate==="ready",handleError);
   const workspace=data.workspaces.find(w=>w.id===wsId)??data.workspaces[0]??null;
   const threads=data.threads.filter(t=>t.workspace_id===workspace?.id);
@@ -100,7 +103,7 @@ export default function App(){
     {view==="workbench"&&<><MobileOverview approvals={data.approvals} threads={data.threads} workspaces={data.workspaces} refresh={reload} jump={jump} open={open} thread={thread}/>{workspace?<ChatPane onInspect={setInspected} preferences={preferences.prefs} key={workspace.id} workspace={workspace} thread={thread} events={live.thread===activeThread?live.events:noEvents} models={data.models} providers={data.providers} approvals={data.approvals.filter(a=>a.thread_id===activeThread)} onCreateThread={newThread} onRefresh={reload} onOpen={open} mobileApprovalId={data.approvals[0]?.id}/>:<div className="deck-empty"><FolderGit2/><h2>创建工作区</h2><Button onClick={()=>setMenu("workspaces")}>选择或新建工作区</Button></div>}</>}
     {view==="approvals"&&<section className="standalone-page"><h1>待审批 <small>{data.approvals.length}</small></h1>{data.approvals.length?data.approvals.map(a=><ApprovalCard key={a.id} approval={a} workspaceName={data.workspaces.find(w=>w.id===data.threads.find(t=>t.id===a.thread_id)?.workspace_id)?.name??""} onResolved={reload}/>):<div className="deck-empty"><ShieldCheck/><p>当前没有待审批操作</p></div>}</section>}
     {view==="more"&&<section className="standalone-page"><h1>更多</h1>{navigation.slice(2).map(n=><button className="menu-line" key={n.view} onClick={()=>go(n.view)}><n.icon size={18}/>{viewName[n.view]}<ArrowRight size={14}/></button>)}<hr/>{accountActions}</section>}
-    {view!=="workbench"&&view!=="approvals"&&view!=="more"&&<div className="admin-scroll">{view==="system"&&<PreferenceControls {...preferences} mode={theme.mode} onTheme={theme.select}/>}<AdminPages view={view} onChanged={reload} onDrawer={t=>open({kind:t.type,title:t.title,port:t.port,deploymentId:t.deploymentId})}/></div>}
+    {view!=="workbench"&&view!=="approvals"&&view!=="more"&&<div className="admin-scroll">{view==="system"?<SettingsCenter {...preferences} workspaces={data.workspaces}/>:<AdminPages view={view} onChanged={reload} onDrawer={t=>open({kind:t.type,title:t.title,port:t.port,deploymentId:t.deploymentId})}/>}</div>}
     </main>{view==="workbench"&&infoOpen&&!tabs.length&&<SessionInspector turn={inspected} close={toggleInfo} open={open}/>}<Panel workspace={workspace} profile={data.profile} tabs={tabs} selected={selected} select={setSelected} open={open} close={key=>setTabs(old=>key?old.filter(t=>tabKey(t)!==key):[])}/></div>
     <nav className="deck-bottom">{mobileNav.map(n=><button key={n.view} aria-current={(view===n.view||(n.view==="more"&&["providers","system","open-api"].includes(view)))?"page":undefined} onClick={()=>go(n.view)}><n.icon size={19}/>{n.label}{n.view==="approvals"&&count>0&&<i/>}</button>)}</nav>{toast}</div>;
 }

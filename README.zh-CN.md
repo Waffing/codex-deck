@@ -28,7 +28,7 @@
 release=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffing/codex-deck/releases/latest) && tag=${release##*/} && curl -fsSL "https://raw.githubusercontent.com/Waffing/codex-deck/$tag/deploy/install.sh" | CODEXDECK_VERSION="$tag" bash
 ```
 
-安装器会在需要时安装 Docker 和 Compose，创建持久化目录，并将控制台绑定到 `127.0.0.1:3000`。在安装目录执行 `docker compose exec codexdeck cat /data/setup-code` 读取首次启动私密代码。通过本机或 SSH 隧道打开控制台，输入代码创建管理员，再配置供应商和工作区。完成初始化后代码文件会被删除。
+V1.2 安装器默认只监听 `127.0.0.1:3000`。通过 SSH 执行 `cdx password` 设置管理员密码，复制安装后的隧道命令，登录面板后配置模型和工作区。非交互安装可传入 `--local-only`。选择 `--public` 会额外开启高位 HTTPS 端口并生成 8 位随机入口。使用 IP 登录前，通过 SSH 运行 `cdx status`，核对自签名证书的 SHA-256 指纹。以上参数要求安装包含 V1.2 的发布版本。
 
 `tag` 让安装脚本、Compose 文件和镜像使用同一已发布版本。指定版本时，把 `tag` 改成已发布的 `vX.Y.Z`。需要 Chromium 验收时追加 `--with-playwright`。
 
@@ -67,7 +67,9 @@ NODE_ENV=production npx --offline --yes --package=./packages/cli -- codex-deck s
 <details>
 <summary>HTTPS、升级和备份</summary>
 
-启用 Compose HTTPS profile 时，配置 DNS，并将公网 TCP 80 和 443 分别转发到宿主机 8080 和 8443。传入 `--domain codex.example.com` 启用 Caddy，域名配置会启用安全会话 Cookie。使用外部 TLS 代理时设置 `CODEXDECK_COOKIE_SECURE=true`，并确保控制台只通过 HTTPS 访问。
+在公网模式指定域名后，若相关端口均空闲，可在安装器中选择托管 Caddy。配置 DNS，并将公网 TCP 80 和 443 分别转发到宿主机 8080 和 8443。已有网站的服务器可执行 `cdx proxy panel.example.com`，生成独立反代配置片段并检查公网证书。请将 `CODEXDECK_TRUSTED_PROXIES` 设为面板实际看到的代理 IP，并由该代理覆盖转发头。
+
+执行 `cdx` 打开管理菜单。常用命令有 `cdx tasks`、`cdx kill THREAD`、`cdx public on`、`cdx backup` 和 `cdx restore 备份文件名`。Web 与 SSH 共用安全配置，例如 `printf '%s' '{"max_failures":6}' | cdx security set` 将连续失败上限改为 6 次。Docker 面板容器停止时，恢复操作使用本机已有镜像和数据库，需 Docker 守护进程可用。[宿主机运维指南](deploy/HOST-ADMIN.md)
 
 运行安装目录的 `install.sh --upgrade --dir /path/to/install --version vX.Y.Z` 升级指定已发布版本，传入 `--uninstall --dir /path/to/install` 卸载，systemd 部署沿用 `--native`。升级会保留正在运行的镜像或服务单元，健康检查失败时回滚。跨数据库架构版本升级前先备份。
 

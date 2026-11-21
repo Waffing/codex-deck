@@ -14,6 +14,9 @@ import { repositoryRoot } from "./security/paths.js";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { registerAdminAudit } from "./routes/admin-audit.js";
+import { registerPublicGate } from "./security/public-gate.js";
+import { registerSecurityRoutes } from "./security/routes.js";
+import { registerTempAccess } from "./temp-access/routes.js";
 
 export interface ServerContext {
   native: Database.Database;
@@ -22,6 +25,7 @@ export interface ServerContext {
   masker: SecretMasker;
   gatewayConfig: GatewayConfig;
   onUsageRecorded?: () => void;
+  notifySecurity?: (event:string,payload:unknown)=>Promise<void>;
   resolveSessionLease?: (credential:string, kind:"model"|"ops")=>string|null;
 }
 
@@ -29,12 +33,15 @@ export function createServer(context: ServerContext, options?: Phase2Options & {
   const expectedKey = context.native.prepare("SELECT value FROM settings WHERE key='crypto.key-check'").pluck().get();
   if (expectedKey != null && expectedKey !== rotationProof(context.masterKey)) throw new Error("The configured master key does not match the rotated database.");
   const app = Fastify({ logger: false, genReqId:()=>randomUUID(),bodyLimit: 2 * 1024 * 1024, trustProxy: false });
+  registerPublicGate(app,context);
+  registerTempAccess(app,context);
+  registerSecurityRoutes(app,context);
   app.addHook("onRequest",async(req,reply)=>{reply.header("X-Request-Id",req.id);});
   registerAdminAudit(app,context);
   const systemPorts = new Set([22, 80, 443]);
   if (systemPorts.has(context.gatewayConfig.port)) throw new Error("CodexDeck cannot listen on a protected system port.");
 
-  const health = async () => ({ status: "ok", version: process.env.CODEXDECK_VERSION ?? "0.1.0", uptime: Math.floor(process.uptime()) });
+  const health = async () => ({ status: "ok", version: process.env.CODEXDECK_VERSION ?? "1.2.0", uptime: Math.floor(process.uptime()) });
   app.get("/health", health);
   app.get("/api/health", health);
   registerStoredCredentials(context);

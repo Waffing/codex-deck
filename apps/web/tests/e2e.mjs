@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+import {securityCenterJourney} from "./security-center.mjs";
 import {modelLedgerJourney} from "./model-ledger.mjs";
 import { createServer, parseGatewayConfig } from "../../server/dist/app.js";
 import { openDatabase } from "../../server/dist/db/index.js";
@@ -168,6 +169,8 @@ try {
   await modelLedgerJourney(desktop,origin,shot);
   step="移动端主题、协议抽屉、IME、压缩、测速和账本";
   await mobileExperienceJourney(mobile,shot,fits);
+  step="V1.2 设置、管理员与访客双会话";
+  await securityCenterJourney(desktop,browser,shot,instrument,testPassword);
   assert.deepEqual(failures,{pageErrors:[],consoleErrors:[],http5xx:[]});
   console.log("PASS desktop 1440x900, mobile 390x844, single-port SPA / API / WS / preview and replay");
   console.log("Page errors 0 | Console errors 0 | Unexpected HTTP 5xx 0");

@@ -167,7 +167,23 @@ export const notificationChannels = sqliteTable("notification_channels", {
   updatedAt: text("updated_at").notNull(),
 });
 
+export const tempAccessLinks = sqliteTable("temp_access_links", {
+  id:text("id").primaryKey(),name:text("name").notNull(),tokenHash:text("token_hash").notNull().unique(),codeHash:text("code_hash"),
+  expiresAt:text("expires_at").notNull(),workspaceIdsJson:text("workspace_ids_json").notNull(),permission:text("permission").notNull(),
+  maxTurns:integer("max_turns"),usedTurns:integer("used_turns").notNull().default(0),maxTokens:integer("max_tokens"),
+  usedTokens:integer("used_tokens").notNull().default(0),maxCost:real("max_cost"),usedCost:real("used_cost").notNull().default(0),
+  currency:text("currency").notNull(),bindFirstIp:integer("bind_first_ip",{mode:"boolean"}).notNull(),boundIp:text("bound_ip"),
+  createdAt:text("created_at").notNull(),note:text("note").notNull(),firstVisit:text("first_visit"),status:text("status").notNull().default("active"),
+  usageUnconfirmed:integer("usage_unconfirmed",{mode:"boolean"}).notNull().default(false),failedCodes:integer("failed_codes").notNull().default(0),
+  retryAfter:integer("retry_after").notNull().default(0),
+});
+export const guestSessions = sqliteTable("guest_sessions", {
+  id:text("id").primaryKey(),tokenHash:text("token_hash").notNull().unique(),
+  linkId:text("link_id").notNull().references(()=>tempAccessLinks.id,{onDelete:"cascade"}),ip:text("ip").notNull(),
+  lastSeenAt:text("last_seen_at").notNull(),workspaceId:text("workspace_id"),
+});
 export const tasks = sqliteTable("tasks", {
+  guestLinkId:text("guest_link_id").references(()=>tempAccessLinks.id),
   answerMarkdown: text("answer_markdown"),
   turnDiffJson: text("turn_diff_json"),
   imageIdsJson:text("image_ids_json").notNull().default("[]"),
@@ -204,8 +220,21 @@ export const adminAudit = sqliteTable("admin_audit",{
   id:integer("id").primaryKey(),requestId:text("request_id").notNull(), action:text("action").notNull(),
   target:text("target"),details:text("details").notNull(),status:integer("status").notNull(),createdAt:text("created_at").notNull(),
 });
+export const userSessions=sqliteTable("user_sessions",{
+  sessionId:text("session_id").primaryKey(),tokenHash:text("token_hash").notNull().unique(),ip:text("ip").notNull(),
+  userAgent:text("user_agent").notNull(),createdAt:text("created_at").notNull(),lastActiveAt:text("last_active_at").notNull(),
+  expiresAt:text("expires_at").notNull(),revoked:integer("revoked",{mode:"boolean"}).notNull().default(false),
+});
+export const loginBans=sqliteTable("login_bans",{
+  ip:text("ip").primaryKey(),failures:integer("failures").notNull(),bannedUntil:integer("banned_until").notNull(),lastAttempt:integer("last_attempt").notNull(),
+});
+export const auditLogs=sqliteTable("audit_logs",{
+  id:integer("id").primaryKey(),event:text("event").notNull(),actor:text("actor").notNull(),ip:text("ip"),
+  detailsJson:text("details_json").notNull(),createdAt:text("created_at").notNull(),
+});
 export const schema = {
-  taskSubmissions,adminAudit,
+  tempAccessLinks,guestSessions,
+  taskSubmissions,adminAudit,userSessions,loginBans,auditLogs,
   tasks,
   checkpoints,
   settings,

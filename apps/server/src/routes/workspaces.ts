@@ -1,16 +1,20 @@
 import type { FastifyInstance } from "fastify";
 import { agentsScopeSchema, agentsDocumentSchema, gitDiffQuerySchema, workspaceCloneSchema, workspaceCreateSchema } from "@codexdeck/shared";
 import type { ServerContext } from "../app.js";
-import { createRequireAdmin } from "../auth.js";
+import { scopedAccess, scopedGuest } from "../temp-access/routes.js";
 import type { WorkspaceFiles } from "../files/workspace-files.js";
 import { fileError } from "../files/sandbox.js";
+import {readPreferences} from "../settings/preferences.js";
 import { gitDiff, gitStatus } from "../files/git.js";
 import { readEditable, writeEditable } from "../files/editor.js";
 
 export function registerWorkspaceRoutes(app: FastifyInstance, ctx: ServerContext, files: WorkspaceFiles) {
-  const auth = { preHandler: createRequireAdmin(ctx) };
+  const auth = scopedAccess(ctx);
   type ById = { Params: { id: string } };
-  app.get("/api/workspaces", auth, async () => files.list());
+  app.get("/api/workspaces", auth, async req => {
+    const guest=scopedGuest(req);
+    return guest ? files.list().filter(w=>guest.link.workspace_ids.includes(w.id)).map(({path:_path,...w})=>w) : files.list();
+  });
   app.patch<ById>("/api/workspaces/:id",auth,async req=>{
     const p=workspaceCreateSchema.pick({automation_level:true}).required().strict().safeParse(req.body);
     if (!p.success || !(req.body && typeof req.body==="object" && "automation_level" in req.body)) throw fileError(400,"Invalid automation level.");
@@ -20,12 +24,12 @@ export function registerWorkspaceRoutes(app: FastifyInstance, ctx: ServerContext
     return row;
   });
   app.post("/api/workspaces", auth, async (req, reply) => {
-    const p = workspaceCreateSchema.safeParse(req.body);
+    const p = workspaceCreateSchema.safeParse({automation_level:readPreferences(ctx.native).automationLevel,...(req.body as object)});
     if (!p.success) throw fileError(400, "Invalid workspace.");
     return reply.code(201).send(await files.create(p.data.name, p.data.automation_level));
   });
   app.post("/api/workspaces/clone", auth, async (req, reply) => {
-    const p = workspaceCloneSchema.safeParse(req.body);
+    const p = workspaceCloneSchema.safeParse({automation_level:readPreferences(ctx.native).automationLevel,...(req.body as object)});
     if (!p.success) throw fileError(400, "Invalid repository.");
     const url = new URL(p.data.url);
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw fileError(400, "Invalid repository URL.");

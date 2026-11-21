@@ -11,6 +11,8 @@ import { registerOpenApi } from "./routes/open-api.js";
 import { registerOps } from "./server-ops/routes.js";
 import type { OpsOptions } from "./server-ops/deployer.js";
 import { ThreadEvents, registerEventRoutes } from "./ws/events.js";
+import {registerSettingsRoutes} from "./settings/routes.js";
+import {registerEmergencyRoute} from "./security/emergency.js";
 import { registerConsoleRoutes } from "./routes/console.js";
 import { registerUsageRoutes } from "./routes/usage.js";
 
@@ -21,6 +23,7 @@ export function mountPhase2(app: FastifyInstance, ctx: ServerContext, options: P
   app.register(async service => {
     const events = new ThreadEvents(ctx);
     const notifications = new Notifications(ctx);
+    ctx.notifySecurity=(event,payload)=>notifications.send(event,payload);
     const files = new WorkspaceFiles(ctx,options.dataDirectory,(thread,type,payload) => events.append(thread,type,payload),options.managedWorkspaceDirectory);
     const manager = new ThreadManager(ctx,files,events,notifications,{
       ...options,
@@ -31,6 +34,8 @@ export function mountPhase2(app: FastifyInstance, ctx: ServerContext, options: P
           disk_free:profile.disk_free, safe_pool:profile.safe_pool};
       },
     });
+    registerEmergencyRoute(service,ctx);
+    registerSettingsRoutes(service,ctx,manager,options.dataDirectory);
     registerFileRoutes(service,ctx,files);
     registerConsoleRoutes(service,ctx,files);
     registerUsageRoutes(service,ctx,notifications);

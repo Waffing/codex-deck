@@ -5,11 +5,10 @@ export const views=["workbench","services","providers","open-api","system","appr
 export type View=typeof views[number];
 export const viewName:Record<View,string>={workbench:"工作台",services:"已部署服务",providers:"第三方 API 与模型","open-api":"Open API 与用量",system:"系统与通知",approvals:"待审批",more:"更多"};
 export const readView=():View=>views.find(v=>v===location.pathname.split("/").filter(Boolean).at(-1))??"workbench";
-export function useTheme(){
-  const [mode,set]=useState(()=>localStorage.getItem("codexdeck.theme")??"system");
+export function useTheme(mode:"system"|"dark"|"light",set:(v:"system"|"dark"|"light")=>void){
   const [dark,setDark]=useState(false);
   useEffect(()=>{const media=matchMedia("(prefers-color-scheme: dark)");const update=()=>{const d=mode==="system"?media.matches:mode==="dark";setDark(d);document.documentElement.dataset.theme=d?"dark":"light";};update();media.addEventListener("change",update);return ()=>media.removeEventListener("change",update);},[mode]);
-  function select(next:string){if(next==="system")localStorage.removeItem("codexdeck.theme");else localStorage.setItem("codexdeck.theme",next);set(next);}
+  function select(next:"system"|"dark"|"light"){if(next==="system")localStorage.removeItem("codexdeck.theme");else localStorage.setItem("codexdeck.theme",next);set(next);}
   return {dark,mode,select,toggle:()=>select(dark?"light":"dark"),system:()=>select("system")};
 }
 const initial={workspaces:[] as Workspace[],threads:[] as Thread[],models:[] as Model[],providers:[] as Provider[],approvals:[] as Approval[],profile:null as ServerProfile|null};

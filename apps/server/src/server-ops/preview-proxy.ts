@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import WebSocket from "ws";
 import type { ServerContext } from "../app.js";
 import { authenticated } from "../auth.js";
+import {scopedGuest} from "../temp-access/routes.js";
 import type { Deployer } from "./deployer.js";
 import { fail } from "./probe.js";
 
@@ -14,8 +15,11 @@ export function registerPreview(app: FastifyInstance, ctx:ServerContext, deploye
     const targets=new WeakMap<FastifyRequest,{host:string;port:number;path:string}>();
     async function prepare(req:FastifyRequest,reply:FastifyReply) {
       const params=req.params as {port?:string;workspace?:string;"*":string};
-      if(params.port !== undefined && !authenticated(ctx,req)) return reply.code(401).send({error:"Authentication required."});
-      const port=params.port !== undefined ? await deployer.runningPort(Number(params.port)) : await deployer.livePort(params.workspace!);
+      const guest=scopedGuest(req);
+      if(params.port !== undefined && !guest && !authenticated(ctx,req)) return reply.code(401).send({error:"Authentication required."});
+      const scope=params.port!==undefined && guest ? deployer.rows().find(row=>deployer.dto(row).port===Number(params.port) && guest.link.workspace_ids.includes(row.workspace_id))?.workspace_id : params.workspace;
+      if(guest && (!scope || !guest.link.workspace_ids.includes(scope))) throw fail(403,"Workspace outside invitation scope.");
+      const port=params.port !== undefined ? await deployer.runningPort(Number(params.port),scope) : await deployer.livePort(params.workspace!);
       const route=req.url.replace(/^\/(preview|live)\/[^/]+/,"");
       if(!route.startsWith("/") || route.startsWith("//") || route.includes("\\")) throw fail(400,"Invalid preview path.");
       targets.set(req,{...deployer.upstream(port),path:route});

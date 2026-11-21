@@ -13,6 +13,26 @@ TOOL = Path(__file__).resolve().parents[1] / 'backup.py'
 
 
 class BackupTest(unittest.TestCase):
+    def test_database_only_restore_revokes_old_access(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            live, snapshot = root / 'codexdeck.sqlite', root / 'snapshot.sqlite'
+            with closing(sqlite3.connect(live)) as db, db:
+                db.executescript("""CREATE TABLE settings(key TEXT, value TEXT); INSERT INTO settings VALUES('a','v1');
+                    CREATE TABLE user_sessions(id TEXT); INSERT INTO user_sessions VALUES('old');
+                    CREATE TABLE temp_access_links(status TEXT); INSERT INTO temp_access_links VALUES('active');""")
+            def copy(op, a, b):
+                return subprocess.run([sys.executable, str(TOOL), op, '--from', str(a), '--to', str(b)], capture_output=True)
+            self.assertEqual(copy('backup-db', live, snapshot).returncode, 0)
+            self.assertNotEqual(copy('backup-db', live, snapshot).returncode, 0)
+            with closing(sqlite3.connect(live)) as db, db:
+                db.execute("UPDATE settings SET value='v2'")
+            self.assertEqual(copy('restore-db', snapshot, live).returncode, 0)
+            with closing(sqlite3.connect(live)) as db:
+                self.assertEqual(db.execute('SELECT value FROM settings').fetchone()[0], 'v1')
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM user_sessions').fetchone()[0], 0)
+                self.assertEqual(db.execute('SELECT status FROM temp_access_links').fetchone()[0], 'revoked')
+
     def test_live_wal_backup_restore_and_tamper_detection(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary).resolve()

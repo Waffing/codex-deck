@@ -1,23 +1,27 @@
 import { approvalDecisionSchema, threadCreateSchema, threadMessageSchema, threadModelPatchSchema,threadCompactSchema,threadUpdateSchema } from "@codexdeck/shared";
 import type { FastifyInstance } from "fastify";
 import type { ServerContext } from "../app.js";
-import { createRequireAdmin } from "../auth.js";
+import { scopedAccess,scopedGuest } from "../temp-access/routes.js";
 import type { ThreadManager } from "../codex/manager.js";
 
 type ById = { Params: { id: string } };
 export function registerThreadRoutes(app: FastifyInstance, context: ServerContext, manager: ThreadManager) {
-  const auth = { preHandler:createRequireAdmin(context) };
-  app.get<{Querystring:{workspace_id?:string}}>("/api/threads",auth,async request => manager.list(request.query.workspace_id));
+  const auth = scopedAccess(context);
+  app.get<{Querystring:{workspace_id?:string}}>("/api/threads",auth,async request => {
+    const guest=scopedGuest(request);
+    if(guest && !request.query.workspace_id)return guest.link.workspace_ids.flatMap(id=>manager.list(id));
+    return manager.list(request.query.workspace_id);
+  });
   app.post("/api/threads",auth,async (request,reply) => {
     const parsed = threadCreateSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({error:"Invalid thread."});
     const p = parsed.data;
-    return reply.code(201).send(manager.createThread(p.workspace_id,p.model_alias,p.title));
+    return reply.code(201).send(manager.createThread(p.workspace_id,scopedGuest(request)?undefined:p.model_alias,p.title));
   });
   app.post<ById>("/api/threads/:id/messages",auth,async (request,reply) => {
     const parsed = threadMessageSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({error:"Invalid message."});
-    return reply.code(202).send(manager.submit(request.params.id,parsed.data.prompt,undefined,parsed.data.image_ids));
+    return reply.code(202).send(manager.submit(request.params.id,parsed.data.prompt,undefined,parsed.data.image_ids,scopedGuest(request)?.link.id));
   });
   app.patch<ById>("/api/threads/:id",auth,async(req,reply)=>{
     const input=threadUpdateSchema.safeParse(req.body);

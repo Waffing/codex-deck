@@ -104,7 +104,7 @@ describe("SQLite migrations and admin APIs", () => {
     expect(update.statusCode).toBe(200);
     for(const headers of [old,second]) expect((await app.inject({url:"/api/models",headers})).statusCode).toBe(401);
     expect((await app.inject({url:"/api/models",headers:{cookie:cookieHeader(update.headers["set-cookie"])}})).statusCode).toBe(200);
-    for(let n=0;n<12;n++) expect((await submit("login",{password})).statusCode).toBe(401);
+    for(let n=0;n<5;n++) expect((await submit("login",{password})).statusCode).toBe(401);
     expect((await submit("login",{password})).statusCode).toBe(429);
   });
 

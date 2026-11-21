@@ -5,7 +5,7 @@ import { api, json } from "../../lib/api";
 import { ArtifactChip, download } from "../files/Artifacts";
 import type { DrawerTab } from "../files/DrawerContent";
 import { AnswerDocument } from "./AnswerDocument";
-export type ChatPreferences = {debug:boolean; telemetry:boolean; expandTimeline:boolean};
+export type ChatPreferences = {debug:boolean; telemetry:boolean; expandTimeline:boolean; minimap?:boolean; compactBubbles?:boolean; sendShortcut?:"enter"|"ctrl_enter"; contextThreshold?:number};
 export const defaultPreferences:ChatPreferences = {debug:false,telemetry:true,expandTimeline:false};
 export type TaskHistory = {id:string;prompt:string;summary:string;status:string;created_at:string;updated_at:string;checkpoint_ref:string|null;events?:ThreadEvent[];answer_markdown?:string};
 export type History = {tasks:TaskHistory[];artifacts:Artifact[];next_before?:number|null;next_artifact_before?:number|null};
@@ -96,7 +96,7 @@ export function Timeline({turns,workspaceId,onOpen,onError,onEdit,preferences}:{
   useEffect(()=>{if(!preferences.debug)setDebug(false);},[preferences.debug]);
   useEffect(()=>{if(debug)dialog.current?.showModal();else dialog.current?.close();},[debug]);
   async function restore(id:string){setBusy(true);try{await api(`/api/workspaces/${workspaceId}/checkpoints/${encodeURIComponent(id)}/restore`,json('POST',{}));setConfirm(null);}catch(e){onError((e as Error).message);}finally{setBusy(false);}}
-  return <div className="cd-turns">{turns.map(({task,answer,files,projection,finished},i)=><article className="cd-turn" data-turn={task.id} id={'turn-'+task.id} key={task.id}>
+  return <div className="cd-turns" data-compact={preferences.compactBubbles}>{turns.map(({task,answer,files,projection,finished},i)=><article className="cd-turn" data-turn={task.id} id={'turn-'+task.id} key={task.id}>
     <section className="cd-question"><p className="cd-prompt">{task.prompt||'任务已提交'}</p><div className="cd-question-actions">
       <time>{new Date(task.created_at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}</time>
       <button title="复制提问" aria-label="复制提问" onClick={async()=>{try{await navigator.clipboard.writeText(task.prompt);}catch{onError('浏览器未允许访问剪贴板。');}}}><Copy size={13}/></button>

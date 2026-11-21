@@ -1,3 +1,4 @@
+import Database from "better-sqlite3";
 import { installationCode } from "../src/routes/auth.js";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
@@ -146,4 +147,27 @@ test("aggregates UTC periods, excludes unknown cache denominators, exports safe 
   await save();
   expect((await get("/api/usage/budget")).json().alerts).toEqual(first);
   expect((await get("/api/usage/analytics?period=fortnight")).statusCode).toBe(400);
+});
+
+test("shares workbench defaults with new workspaces and exports a consistent restricted SQLite snapshot",async()=>{
+  expect((await app.inject("/api/settings/backup")).statusCode).toBe(401);
+  const update=await app.inject({method:"PATCH",url:"/api/settings/preferences",headers:{cookie},payload:{automationLevel:"semi",approvalTimeoutSeconds:90,minimap:false}});
+  expect(update.json()).toMatchObject({automationLevel:"semi",approvalTimeoutSeconds:90,minimap:false});
+  expect((await app.inject({method:"PATCH",url:"/api/settings/preferences",headers:{cookie},payload:{contextThreshold:150}})).statusCode).toBe(400);
+  const w=(await post("/api/workspaces",{name:"Preference check"})).json();
+  expect(w.automation_level).toBe("semi");
+  const snapshot=await get("/api/settings/backup");
+  expect(snapshot.headers["cache-control"]).toBe("no-store");
+  const downloaded=path.join(root,"exported.sqlite");
+  await writeFile(downloaded,snapshot.rawPayload);
+  const copy=new Database(downloaded,{readonly:true});
+  try{
+    expect(copy.pragma("integrity_check",{simple:true})).toBe("ok");
+    expect(copy.prepare("SELECT id FROM workspaces WHERE id=?").pluck().get(w.id)).toBe(w.id);
+  }finally{copy.close();}
+  await app.inject({url:"/api/workspaces/"+w.id,method:"DELETE",headers:{cookie}});
+  expect((await post("/api/settings/preferences/reset")).json()).toMatchObject({automationLevel:"conservative",minimap:true});
+  expect((await post("/api/settings/reset")).json()).toMatchObject({reset:true});
+  expect((await get("/api/security/config")).statusCode).toBe(401);
+  expect(db.native.prepare("SELECT count(*) FROM audit_logs WHERE event=\x27settings.reset\x27").pluck().get()).toBe(1);
 });

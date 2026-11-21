@@ -90,6 +90,7 @@ export class RpcClient {
   notify(method: string, params?: object) { this.send({ method, params }); }
   answer(id: RpcId, result: object) { this.send({ id, result }); }
   unsupported(id: RpcId) { this.send({ id, error: { code: -32601, message: "Unsupported app-server request." } }); }
+  get pid() { return this.proc.pid ?? null; }
   get alive() { return !this.closed && this.proc.exitCode === null && !this.proc.killed; }
 
   private end() {
@@ -102,9 +103,9 @@ export class RpcClient {
     this.callbacks.exit();
   }
 
-  async close() {
+  async close(force = false) {
     this.proc.stdin.end();
-    if (await Promise.race([this.exited.then(() => true), delay(1200, false, { ref: false })])) return;
+    if (!force && await Promise.race([this.exited.then(() => true), delay(1200, false, { ref: false })])) return;
     if (process.platform === "win32" && this.proc.pid) {
       const killer = spawn(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
         ["/F", "/T", "/PID", String(this.proc.pid)], { stdio: "ignore", windowsHide: true });

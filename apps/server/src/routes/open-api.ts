@@ -30,7 +30,9 @@ export function registerOpenApi(app:FastifyInstance,ctx:ServerContext,files:Work
   app.addHook("onClose",async () => webhooks.close());
   const counts = new Map<string,{since:number;count:number}>();
   function authorize(req:FastifyRequest, scope:ApiKey["scopes"][number]) {
-    const token = /^Bearer (cdk_live_[A-Za-z0-9_-]+)$/.exec(req.headers.authorization ?? "")?.[1];
+    const basicApiKey=req.headers.authorization?.startsWith("Basic ") && req.headers["x-api-key"];
+    const token = /^Bearer (cdk_live_[A-Za-z0-9_-]+)$/.exec(req.headers.authorization ?? "")?.[1] ??
+      (typeof basicApiKey==="string" && /^cdk_live_[A-Za-z0-9_-]+$/.test(basicApiKey)?basicApiKey:undefined);
     if (!token) return fail(401,"Missing API key.");
     const hash = createHash("sha256").update(token).digest("hex");
     const row = db.prepare("SELECT * FROM api_keys WHERE revoked_at IS NULL AND key_hash=?").get(hash) as KeyRow | undefined;

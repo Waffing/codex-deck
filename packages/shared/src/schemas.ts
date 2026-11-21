@@ -160,7 +160,8 @@ export const gatewayConfigSchema = z.object({
 
 export const authSetupRequestSchema = z.object({ password: z.string().min(12).max(256), setup_code: z.string().min(1).max(128) });
 export const authPasswordChangeSchema = z.object({ current_password: z.string().min(1).max(256), new_password: z.string().min(12).max(256) });
-export const authLoginRequestSchema = z.object({ password: z.string().min(1).max(256) });
+export const authLoginRequestSchema = z.object({ password:z.string().min(1).max(256), otp:z.string().max(64).optional(),
+  captcha_id:z.string().max(64).optional(), captcha_answer:z.string().max(16).optional() });
 export const authResponseSchema = z.object({ authenticated: z.boolean(), setup_required: z.boolean() });
 export const authLogoutRequestSchema = z.object({}).optional();
 export const authStatusSchema = authResponseSchema;

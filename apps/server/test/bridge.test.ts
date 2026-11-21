@@ -11,6 +11,7 @@ import Fastify from "fastify";
 import { afterEach,beforeEach,expect,it,vi } from "vitest";
 import { parseGatewayConfig, type ServerContext } from "../src/app.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
+import {registerSettingsRoutes} from "../src/settings/routes.js";
 import { registerThreadRoutes } from "../src/routes/threads.js";
 import { registerGatewayRoutes } from "../src/gateway/server.js";
 import { openDatabase, resolveDataDirectory } from "../src/db/index.js";
@@ -59,6 +60,7 @@ beforeEach(async () => {
     dataDirectory:data,workspaceRoot:root,codexBin:fake,port:() => (app.server.address() as AddressInfo).port,
     approvalTimeoutMs:650, notifyAfterMs:30,
   });
+  registerSettingsRoutes(app,ctx,manager,data);
   registerThreadRoutes(app,ctx,manager);
   registerAuthRoutes(app,ctx);
   registerGatewayRoutes(app,ctx);
@@ -101,6 +103,20 @@ async function decision(id: string, action: string, guidance?: string) {
   const result = await post("/api/approvals/" + id + "/decision",{decision:action,user_guidance:guidance});
   expect(result.statusCode).toBe(204);
 }
+it("kills only the selected live process and releases its workspace for queued work",async()=>{
+  expect((await app.inject("/api/admin/runtime/tasks")).statusCode).toBe(401);
+  const waiting=await submit("wait");
+  await poll(()=>expect(events("item/agentMessage/delta")).toContainEqual(expect.objectContaining({delta:"started!"})));
+  const tasks=(await app.inject({url:"/api/admin/runtime/tasks",headers:{cookie}})).json();
+  expect(tasks).toEqual([expect.objectContaining({thread_id:thread,task_id:waiting,workspace_id:workspace,pid:expect.any(Number)})]);
+  const queued=await submit("next task");
+  expect((await post("/api/admin/runtime/tasks/"+thread+"/kill")).json()).toMatchObject({terminated:true,task_id:waiting});
+  await poll(()=>expect(status(waiting)).toBe("cancelled"));
+  await poll(()=>expect(status(queued)).toBe("completed"));
+  expect((await post("/api/admin/runtime/tasks/"+thread+"/kill")).statusCode).toBe(404);
+  expect((await app.inject({url:"/api/admin/runtime/tasks",headers:{cookie}})).json()).toEqual([]);
+});
+
 it("steers and interrupts a live turn, hot-switches the real gateway without respawning, and resumes after a crash", async () => {
   const waiting = await submit("wait");
   await poll(() => expect(events("item/agentMessage/delta")).toContainEqual(expect.objectContaining({delta:"started!"})));
