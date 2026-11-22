@@ -45,15 +45,21 @@ export function publicMcpProbe(url:URL,body:string,signal:AbortSignal) {
   return request(url,{method:"POST",headers:{"content-type":"application/json",accept:"application/json, text/event-stream"},
     body,signal,redirect:"error",dispatcher:publicAgent});
 }
+const loopbackAgent=addressAgent(address=>ipaddr.process(address.split("%")[0]).range()==="loopback");
 const privateAgent=addressAgent(trustedPrivate);
 export function targetPolicy(url:URL,credentials:boolean,controlPorts:(number|undefined)[]) {
   if(!allowCredentialTransport(url,credentials)) throw new Error("Remote credentials require HTTPS.");
   const port=Number(url.port || (url.protocol==="https:"?443:80));
   const host=url.hostname.replace(/^\[|\]$/g,"");
+  const loopback=host==="localhost" || isIP(host)>0 && ipaddr.process(host).range()==="loopback";
+  const trustedOrigin=url.protocol==="http:" && (process.env.CODEXDECK_TRUSTED_HTTP_ORIGINS ?? "").split(",").some(origin=>origin.trim()===url.origin)
+    && (!isIP(host) || trustedPrivate(host));
+  const privateLiteral=isIP(host)>0 && privateAddress(host);
   const protectedPort=[22,80,443,...controlPorts].includes(port);
-  if(protectedPort && (host==="localhost" || (isIP(host) && privateAddress(host)))) throw new Error("Probe target uses a protected port.");
+  if(protectedPort && (host==="localhost" || privateLiteral)) throw new Error("Probe target uses a protected port.");
   if(port===22 || (protectedPort && url.protocol==="http:" && credentials)) throw new Error("Probe target uses a protected port.");
-  return protectedPort ? publicAgent : url.protocol==="http:" && credentials ? privateAgent : undefined;
+  if(privateLiteral && !loopback && !trustedOrigin) throw new Error("Provider address blocked by network policy.");
+  return loopback ? loopbackAgent : trustedOrigin ? privateAgent : publicAgent;
 }
 export function upstreamFetch(url:URL,init:{method:string;headers:Headers;body?:string;signal:AbortSignal},credentials:boolean,ports:(number|undefined)[]) {
   const dispatcher=targetPolicy(url,credentials,ports);

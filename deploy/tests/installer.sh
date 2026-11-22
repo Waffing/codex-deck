@@ -18,6 +18,43 @@ chmod 0755 "$fixture/corepack"
 native_build nobody "$fixture/build" "$fixture/build" "$fixture/corepack"
 grep -q '^pnpm install --frozen-lockfile ' "$fixture/build/record"
 grep -q '^pnpm build ' "$fixture/build/record"
+# Native systemd resource limits are validated before installation mutates the host.
+default_resource_properties="$( (unset CODEXDECK_NATIVE_MEMORY_MAX CODEXDECK_NATIVE_CPU_QUOTA CODEXDECK_NATIVE_TASKS_MAX; native_resource_properties) )"
+[[ "$default_resource_properties" == $'MemoryMax=512M\nCPUQuota=50%\nTasksMax=192' ]]
+grep -Fq '$resource_properties' "$root/deploy/install.sh"
+printf '[Service]\n%s\n' "$default_resource_properties" > "$fixture/codexdeck.service"
+grep -Fqx 'MemoryMax=512M' "$fixture/codexdeck.service"
+grep -Fqx 'CPUQuota=50%' "$fixture/codexdeck.service"
+grep -Fqx 'TasksMax=192' "$fixture/codexdeck.service"
+
+assert_resource_output() {
+  local variable="$1" value="$2" expected="$3" actual
+  actual="$( (unset CODEXDECK_NATIVE_MEMORY_MAX CODEXDECK_NATIVE_CPU_QUOTA CODEXDECK_NATIVE_TASKS_MAX; export "$variable=$value"; native_resource_properties) )"
+  grep -Fqx "$expected" <<< "$actual" || { printf 'Expected %s for %s=%s\n' "$expected" "$variable" "$value" >&2; exit 1; }
+}
+assert_resource_rejected() {
+  local variable="$1" value="$2"
+  if ( unset CODEXDECK_NATIVE_MEMORY_MAX CODEXDECK_NATIVE_CPU_QUOTA CODEXDECK_NATIVE_TASKS_MAX; export "$variable=$value"; native_resource_properties >/dev/null 2>&1 ); then
+    printf 'Accepted invalid resource setting %s=%s\n' "$variable" "$value" >&2
+    exit 1
+  fi
+}
+assert_resource_output CODEXDECK_NATIVE_MEMORY_MAX 512M 'MemoryMax=512M'
+assert_resource_output CODEXDECK_NATIVE_MEMORY_MAX 64G 'MemoryMax=64G'
+assert_resource_rejected CODEXDECK_NATIVE_MEMORY_MAX 511M
+assert_resource_rejected CODEXDECK_NATIVE_MEMORY_MAX 65G
+assert_resource_rejected CODEXDECK_NATIVE_MEMORY_MAX '2G;ExecStart=/bin/sh'
+assert_resource_output CODEXDECK_NATIVE_CPU_QUOTA 10% 'CPUQuota=10%'
+assert_resource_output CODEXDECK_NATIVE_CPU_QUOTA 6400% 'CPUQuota=6400%'
+assert_resource_rejected CODEXDECK_NATIVE_CPU_QUOTA 9%
+assert_resource_rejected CODEXDECK_NATIVE_CPU_QUOTA 6401%
+assert_resource_rejected CODEXDECK_NATIVE_CPU_QUOTA '200%;ExecStart=/bin/sh'
+assert_resource_output CODEXDECK_NATIVE_TASKS_MAX 64 'TasksMax=64'
+assert_resource_output CODEXDECK_NATIVE_TASKS_MAX 65536 'TasksMax=65536'
+assert_resource_rejected CODEXDECK_NATIVE_TASKS_MAX 63
+assert_resource_rejected CODEXDECK_NATIVE_TASKS_MAX 65537
+assert_resource_rejected CODEXDECK_NATIVE_TASKS_MAX '1024;ExecStart=/bin/sh'
+
 # A healthy HTTP endpoint with a broken executor must restore the live image.
 INSTALL_DIR="$fixture/install"; mkdir -p "$INSTALL_DIR"
 ACTION=upgrade; RELEASE=v0.1.9; IMAGE='codexdeck:test'; EXPLICIT_IMAGE="$IMAGE"; PORT=3251; STORED_PORT=3251

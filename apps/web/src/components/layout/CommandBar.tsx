@@ -10,7 +10,13 @@ export function CommandBar({items,close,onHit}:{items:DeckCommand[];close:()=>vo
   const [query,setQuery]=useState(""),[index,setIndex]=useState(0);
   const [results,setResults]=useState<SearchResults>(),[error,setError]=useState("");
   const [loading,setLoading]=useState(false);
+  const dialog=useRef<HTMLElement>(null);
   const menu=useRef<HTMLDivElement>(null);
+  const returnFocus=useRef<HTMLElement|null>(document.activeElement instanceof HTMLElement?document.activeElement:null);
+  useEffect(()=>{
+    dialog.current?.querySelector<HTMLInputElement>(".command-input input")?.focus();
+    return ()=>{const target=returnFocus.current;if(target?.isConnected)target.focus();};
+  },[]);
   useEffect(()=>{
     const term=query.trim(), abort=new AbortController();
     setResults(undefined);setError("");setLoading(!!term);
@@ -37,7 +43,15 @@ export function CommandBar({items,close,onHit}:{items:DeckCommand[];close:()=>vo
   const choose=(item?:Option)=>{if(item){close();item.run();}};
   const active=Math.max(0,Math.min(index,options.length-1));
   useEffect(()=>{menu.current?.querySelector("button.selected")?.scrollIntoView({block:"nearest"});},[index]);
-  return <section className="deck-menu command-menu" aria-label="全局命令">
+  return <section ref={dialog} className="deck-menu command-menu" role="dialog" aria-modal="true" aria-label="全局命令面板" tabIndex={-1} onKeyDown={e=>{
+    if(e.key!=="Tab")return;
+    const focusable=Array.from(dialog.current?.querySelectorAll<HTMLElement>("input:not([disabled]),button:not([disabled])")??[]).filter(el=>el.getClientRects().length>0);
+    const first=focusable[0],last=focusable.at(-1);
+    if(!first||!last){e.preventDefault();dialog.current?.focus();return;}
+    if(!dialog.current?.contains(document.activeElement)){e.preventDefault();(e.shiftKey?last:first).focus();}
+    else if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+    else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+  }}>
     <div className="command-input"><Search size={17}/><input autoFocus placeholder="查找消息、成品、工作区或命令…" value={query}
       aria-label="搜索命令" maxLength={160} onChange={e=>{setQuery(e.target.value);setIndex(0);}} onKeyDown={e=>{
         if(e.nativeEvent.isComposing)return;

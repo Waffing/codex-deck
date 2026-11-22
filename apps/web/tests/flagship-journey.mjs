@@ -15,6 +15,19 @@ export async function flagshipJourney(page,origin,shot,db){
   }
   await page.goto(origin);await page.getByLabel("任务指令").waitFor();
   if (!mobile) {
+    const trigger=page.getByRole("button",{name:"全局命令面板"});
+    await trigger.click();
+    const dialog=page.getByRole("dialog",{name:"全局命令面板"});
+    await dialog.waitFor();assert.equal(await dialog.getAttribute("aria-modal"),"true");
+    assert.equal(await page.evaluate(()=>document.activeElement?.getAttribute("aria-label")),"搜索命令");
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(await dialog.evaluate(el=>el.contains(document.activeElement)),true);
+    await page.keyboard.press("Tab");
+    assert.equal(await page.evaluate(()=>document.activeElement?.getAttribute("aria-label")),"搜索命令");
+    await page.keyboard.press("Escape");await dialog.waitFor({state:"detached"});
+    assert.equal(await trigger.evaluate(el=>el===document.activeElement),true);
+  }
+  if (!mobile) {
     const toggle = page.getByRole("button",{name:"工具与设置",exact:true});
     const main = page.locator(".desk-main");
     const list = page.locator(".deck-sidebar .session-list");

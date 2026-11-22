@@ -9,7 +9,7 @@ import { createServer, parseGatewayConfig } from "../src/app.js";
 import { runMigrations } from "../src/db/migrations.js";
 import { schema } from "../src/db/schema.js";
 import { SecretMasker } from "../src/security/secret-masker.js";
-import { targetPolicy } from "../src/gateway/transport.js";
+import { targetPolicy, upstreamFetch } from "../src/gateway/transport.js";
 
 let native: Database.Database;
 let app: ReturnType<typeof createServer>;
@@ -228,9 +228,33 @@ test("continues with the bound model after discovery fails and rejects features 
   expect((await app.inject({url:`/api/models/${second.json().id}`,headers:{cookie}})).json().last_probe.ok).toBe(false);
 });
 
-test("accepts public TLS provider presets and protects local and mapped loopback endpoints",()=>{
-  for(const name of ["api.openai.com","openrouter.ai","api.deepseek.com"]) expect(targetPolicy(new URL("https://"+name),true,[3210])).toBeTruthy();
-  for(const host of ["localhost","127.0.0.1","[::1]","[::ffff:7f00:0001]"]) expect(()=>targetPolicy(new URL("https://"+host),true,[3210])).toThrow(/protected/);
+test("blocks untrusted private upstreams and preserves loopback and trusted HTTP origins",async()=>{
+  const publicPolicy=targetPolicy(new URL("https://api.openai.com"),true,[3210]);
+  expect(publicPolicy).toBeTruthy();
+  expect(targetPolicy(new URL("http://api.openai.com:12345"),false,[3210])).toBe(publicPolicy);
+  expect(()=>targetPolicy(new URL("http://10.20.30.40:12345"),false,[3210])).toThrow(/network policy/);
+  const loopbackPolicy=targetPolicy(new URL("http://127.0.0.1:11434"),false,[3210]);
+  expect(loopbackPolicy).not.toBe(publicPolicy);
+
+  const domainTarget=new URL("http://localhost.:12345");
+  expect(targetPolicy(domainTarget,false,[3210])).toBe(publicPolicy);
+  await expect(upstreamFetch(domainTarget,{method:"GET",headers:new Headers(),signal:AbortSignal.timeout(3000)},false,[3210]))
+    .rejects.toMatchObject({cause:expect.objectContaining({message:"Provider address blocked by network policy."})});
+
+  const previous=process.env.CODEXDECK_TRUSTED_HTTP_ORIGINS;
+  const trusted="http://10.20.30.40:12345";
+  try {
+    process.env.CODEXDECK_TRUSTED_HTTP_ORIGINS=trusted;
+    const trustedPolicy=targetPolicy(new URL(trusted),true,[3210]);
+    expect(trustedPolicy).not.toBe(publicPolicy);
+    expect(trustedPolicy).not.toBe(loopbackPolicy);
+  } finally {
+    if(previous===undefined) delete process.env.CODEXDECK_TRUSTED_HTTP_ORIGINS;
+    else process.env.CODEXDECK_TRUSTED_HTTP_ORIGINS=previous;
+  }
+
+  for(const host of ["localhost","127.0.0.1","[::1]","[::ffff:7f00:0001]"])
+    expect(()=>targetPolicy(new URL("https://"+host),true,[3210])).toThrow(/protected/);
 });
 
 test("refuses protected ports and the actual listening port, and never follows upstream redirects", async () => {

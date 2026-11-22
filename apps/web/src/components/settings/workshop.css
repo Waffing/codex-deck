@@ -45,6 +45,7 @@
 .text-reset,.ext-tags button {background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:7px;font-size:12px;padding:3px 6px}
 .ext-tags button {display:flex;align-items:center;gap:4px;font-family:var(--mono)}
 .workshop-toast {position:fixed;right:20px;top:55px;background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:10px;font-size:12px;padding:6px 12px;box-shadow:var(--shadow);z-index:90}
+@media(max-width:767px){.workshop-toast{top:auto;right:8px;bottom:calc(64px + env(safe-area-inset-bottom));max-width:calc(100vw - 16px)}}
 .cd-turn-changes {margin:6px 0;color:var(--muted);font-size:12px}
 .cd-turn-changes summary {cursor:pointer;padding:4px 0}.cd-turn-changes pre {max-height:18rem;overflow:auto}
 .cd-change-row {display:flex;align-items:center;gap:8px;padding:4px}

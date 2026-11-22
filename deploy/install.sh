@@ -48,6 +48,9 @@ Usage:
 Environment overrides:
   CODEXDECK_REPOSITORY=Waffing/codex-deck
   CODEXDECK_VERSION=v0.1.0
+  CODEXDECK_NATIVE_MEMORY_MAX=512M (512M..64G)
+  CODEXDECK_NATIVE_CPU_QUOTA=50% (10%..6400%)
+  CODEXDECK_NATIVE_TASKS_MAX=192 (64..65536)
 
 Install directory defaults to /opt/codexdeck for root and $HOME/codexdeck otherwise.
 Use --native for a systemd installation on the host. --yes keeps data on uninstall.
@@ -659,9 +662,41 @@ native_build() {
     bash -euc 'cd "$1"; "$2" pnpm install --frozen-lockfile; "$2" pnpm build' bash "$source" "$executable"
 }
 
+native_resource_properties() {
+  local memory="${CODEXDECK_NATIVE_MEMORY_MAX:-512M}"
+  local cpu="${CODEXDECK_NATIVE_CPU_QUOTA:-50%}"
+  local tasks="${CODEXDECK_NATIVE_TASKS_MAX:-192}"
+  local amount unit
+
+  [[ "$memory" =~ ^([1-9][0-9]*)(M|G)$ ]] || fail "CODEXDECK_NATIVE_MEMORY_MAX must be an integer size such as 2G or 1536M."
+  amount="${BASH_REMATCH[1]}"
+  unit="${BASH_REMATCH[2]}"
+  if [[ "$unit" == M ]]; then
+    (( ${#amount} <= 5 && 10#$amount >= 512 && 10#$amount <= 65536 )) ||
+      fail "CODEXDECK_NATIVE_MEMORY_MAX must be between 512M and 64G."
+  else
+    (( ${#amount} <= 2 && 10#$amount >= 1 && 10#$amount <= 64 )) ||
+      fail "CODEXDECK_NATIVE_MEMORY_MAX must be between 512M and 64G."
+  fi
+
+  [[ "$cpu" =~ ^([1-9][0-9]*)%$ ]] || fail "CODEXDECK_NATIVE_CPU_QUOTA must be an integer percentage such as 200%."
+  amount="${BASH_REMATCH[1]}"
+  (( ${#amount} <= 4 && 10#$amount >= 10 && 10#$amount <= 6400 )) ||
+    fail "CODEXDECK_NATIVE_CPU_QUOTA must be between 10% and 6400%."
+
+  [[ "$tasks" =~ ^([1-9][0-9]*)$ ]] || fail "CODEXDECK_NATIVE_TASKS_MAX must be an integer."
+  amount="${BASH_REMATCH[1]}"
+  (( ${#amount} <= 5 && 10#$amount >= 64 && 10#$amount <= 65536 )) ||
+    fail "CODEXDECK_NATIVE_TASKS_MAX must be between 64 and 65536."
+
+  printf 'MemoryMax=%s\nCPUQuota=%s\nTasksMax=%s\n' "$memory" "$cpu" "$tasks"
+}
+
 native_install() {
   [[ "$(uname -s)" == Linux ]] || fail "Native systemd installation is supported on Linux only."
   command -v systemctl >/dev/null 2>&1 || fail "Native installation requires systemd."
+  local resource_properties
+  resource_properties="$(native_resource_properties)"
   command -v node >/dev/null 2>&1 || fail "Native installation requires Node.js 22.13 or newer."
   node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 13) ? 0 : 1)' ||
     fail "Native installation requires Node.js 22.13 or newer."
@@ -794,6 +829,7 @@ EnvironmentFile=$env_dir/codexdeck.env
 ExecStart=$(systemd_quote "$node_bin") apps/server/dist/index.js
 Restart=on-failure
 RestartSec=3
+$resource_properties
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
