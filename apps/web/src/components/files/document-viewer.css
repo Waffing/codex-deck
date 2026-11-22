@@ -10,6 +10,26 @@
 .dv-tools { margin-bottom:.65rem; }
 .dv-tools input { max-width:100%; flex:1; min-width:8rem; }
 .dv-prose { overflow-wrap:anywhere; line-height:1.65; }
+.dv-prose a.dv-link-button {
+  display:inline-flex;
+  align-items:center;
+  gap:.3rem;
+  max-width:100%;
+  padding:.2rem .45rem;
+  border:1px solid color-mix(in srgb,var(--accent,#167051) 28%,var(--border,#dbe1dd));
+  border-radius:.4rem;
+  background:color-mix(in srgb,var(--accent,#167051) 7%,var(--surface,#f4f6f4));
+  color:inherit;
+  text-decoration:none;
+  vertical-align:middle;
+  transition:background-color 180ms ease,border-color 180ms ease,transform 180ms ease;
+}
+.dv-prose a.dv-link-button:hover {
+  border-color:color-mix(in srgb,var(--accent,#167051) 52%,var(--border,#dbe1dd));
+  background:color-mix(in srgb,var(--accent,#167051) 13%,var(--surface,#f4f6f4));
+  transform:translateY(-1px);
+}
+.dv-prose a.dv-link-button span { overflow:hidden; text-overflow:ellipsis; }
 .dv-prose :is(h1,h2,h3,h4,p,ol,ul,blockquote) { margin:.7em 0; }
 .dv-prose h1 { font-size:1.6em; font-weight:650; }
 .dv-prose h2 { font-size:1.35em; font-weight:650; }
@@ -29,3 +49,4 @@
 .dv-checker { background:repeating-conic-gradient(#dee3df 0 25%,#fff 0 50%) 0/16px 16px; }
 .dv-diagram { width:100%; border:0; display:block; }
 .dv-pdf { box-shadow:0 1px 6px #0002; }
+@media(prefers-reduced-motion:reduce){.dv-prose a.dv-link-button{transition:none}}

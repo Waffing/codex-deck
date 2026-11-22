@@ -25,15 +25,16 @@
 
 ## API gateway and workbench
 
-Codex CLI, Claude Code and OpenAI-compatible clients can share one gateway. Open **API command center → Providers**, choose from 17 presets, enter the upstream address and credentials, then probe and import its models. Provider credentials stay in the gateway. Give each client its own token, model access and quotas.
+Codex CLI, Claude Code and OpenAI-compatible clients can share one model gateway. Open the **API command center** in the sidebar. The **Service overview** shows running services, enabled providers and active client keys. To add a third-party API, open **Providers**, select a preset, enter the upstream address and credentials, then test the connection and import its models.
 
-<p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/gateway.png" alt="The routing and model library shows aliases, context windows, benchmark results and availability" width="100%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/gateway.png" alt="API command center showing host resources, provider and client key counts, managed services and five navigation tabs" width="100%"></p>
 
 | Task | Where to do it |
 | --- | --- |
-| Give several clients one stable model name | In **Routing and models**, group upstream targets under a virtual alias. Pick a fixed target, priority failover, weighted round-robin or lowest latency. A switch applies to the next request. |
-| Investigate a slow or failed request | The **Request inspector** shows the actual model, protocol path, time to first token, cost and failover history. Redacted payload capture is off by default and expires automatically. Replay sends a short diagnostic probe. |
-| Connect a CLI or SDK | **External clients and quotas** provides configurations for Codex CLI, Claude Code, the OpenAI SDK and Cursor. Issue the required `proxy:responses`, `proxy:chat`, `proxy:messages` or `proxy:models` scopes and supply the new bearer token on the client. |
+| Pause a provider | Under **Providers**, choose **Disable** to see which models, conversations, fallback routes and defaults use it. Confirm to pause it. References are preserved when you re-enable it. To keep dependent requests working, switch the upstream or configure an available fallback in **Models and routing** first. |
+| Give several clients one stable model name | In **Models and routing**, group upstream targets under a virtual alias. Pick a fixed target, priority failover, weighted round-robin or lowest latency. A switch applies to the next request. |
+| Investigate a slow or failed request | **Requests and usage** shows the actual model, protocol path, time to first token, cost and failover history. Redacted payload capture is off by default and expires automatically. Replay sends a short diagnostic probe. |
+| Connect a CLI or SDK | **Client access** provides configurations for Codex CLI, Claude Code, the OpenAI SDK and Cursor. Issue the required `proxy:responses`, `proxy:chat`, `proxy:messages` or `proxy:models` scopes and supply the new bearer token on the client. |
 | Control usage | Set model allowlists, requests and tokens per minute, and daily or monthly budgets on client keys. Provider budgets can alert or block. Provider cards show recent request outcomes and circuit state. |
 | Manage the workbench | Open MCP, Skills, plugins, prompts, authorization or usage from the sidebar. Type `/` in the composer, use the arrow keys to select a command and press Enter. |
 

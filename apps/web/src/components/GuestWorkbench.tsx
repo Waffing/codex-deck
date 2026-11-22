@@ -7,6 +7,7 @@ import {clearOutbox,deliver,discard,queueMessage,useOutbox} from "../stores/outb
 import {download} from "./files/Artifacts";
 import {permissions,Quotas,remaining} from "./settings/TemporaryAccess";
 import {useAction,Feedback} from "./settings/common";
+import "./settings/settings-center.css";
 
 
 export function GuestWorkbench(){
@@ -40,7 +41,7 @@ export function GuestWorkbench(){
     <div className="guest-layout"><aside className="ad-card"><h2>授权工作区</h2><select aria-label="授权工作区" value={wid} onChange={e=>{chooseWorkspace(e.target.value);chooseThread("");search("");}}>{spaces.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}</select>
     <label>会话<select aria-label="访客会话" value={tid} onChange={e=>chooseThread(e.target.value)}>{allowedThreads.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select></label>
     {canWrite&&<button className="ad-button" onClick={()=>void action.run(async()=>{const t=await api<Thread>("/api/threads",json("POST",{workspace_id:wid,title:"访客会话"}));setThreads(v=>[t,...v]);chooseThread(t.id);})}>新建访客会话</button>}
-    {services.filter(s=>s.workspace_id===wid && s.preview_url).map(s=><a key={s.id} href={s.preview_url} rel="noopener noreferrer" target="_blank">预览服务 · {s.preview_url?.split("/")[2]}</a>)}
+    {services.filter(s=>s.workspace_id===wid && s.preview_url).map(s=><a className="ad-button" key={s.id} href={s.preview_url} rel="noopener noreferrer" target="_blank">预览服务 · {s.preview_url?.split("/")[2]}</a>)}
     <label>查找文件<input aria-label="查找文件" value={query} onChange={e=>search(e.target.value)}/></label>{files.map(p=><button key={p} onClick={()=>void action.run(async()=>setPreview(await api("/api/workspaces/"+wid+"/files/content?path="+encodeURIComponent(p))))}>{p}</button>)}
     </aside><section><Feedback {...action}/>{preview&&<div className="ad-card"><strong>{preview.path}</strong><button onClick={()=>setPreview(undefined)}>关闭预览</button><pre>{preview.content}</pre></div>}
     <GuestChat key={link.id+":"+wid+":"+tid} tid={tid} wid={wid} canWrite={canWrite} fail={fail} end={end} setLink={setLink}

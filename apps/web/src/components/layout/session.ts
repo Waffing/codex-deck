@@ -4,7 +4,7 @@ import {cached,cachePut,cacheTicket} from "../../lib/cache";
 import {api} from "../../lib/api";
 export const views=["workbench","services","artifacts","providers","open-api","system","approvals","more","mcp","skills","plugins","prompts","sessions","access","usage","apps"] as const;
 export type View=typeof views[number];
-export const viewName:Record<View,string>={workbench:"工作台",services:"已部署服务",artifacts:"成品资产箱",providers:"API 指挥中心","open-api":"Open API 与用量",system:"设置",approvals:"待审批",more:"更多",mcp:"MCP",skills:"Skills",plugins:"插件",prompts:"提示词",sessions:"会话",access:"授权中心",usage:"用量统计",apps:"应用"};
+export const viewName:Record<View,string>={workbench:"工作台",services:"API 指挥中心",artifacts:"成品资产箱",providers:"API 指挥中心","open-api":"Open API 与用量",system:"设置",approvals:"待审批",more:"更多",mcp:"MCP",skills:"Skills",plugins:"插件",prompts:"提示词",sessions:"会话",access:"授权中心",usage:"用量统计",apps:"应用"};
 export const readView=():View=>views.find(v=>v===location.pathname.split("/").filter(Boolean).at(-1))??"workbench";
 export function useTheme(mode:"system"|"dark"|"light",set:(v:"system"|"dark"|"light")=>void){
   const [dark,setDark]=useState(false);

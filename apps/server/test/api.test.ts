@@ -121,6 +121,15 @@ describe("SQLite migrations and admin APIs", () => {
     expect((await app.inject({method:"PUT",url:"/api/models/default",headers,payload:{alias:a.alias}})).statusCode).toBe(200);
     db.native.prepare("INSERT INTO threads(id,title,status,created_at,updated_at,active_model_alias) VALUES('t','t','idle','now','now',?)").run(a.alias);
     expect((await app.inject({url:base+"/references",headers})).json()).toEqual({threads:1,isDefault:true,fallback:["beta"]});
+    const disabledProvider=await app.inject({method:"PATCH",url:`/api/providers/${provider.id}`,headers,payload:{enabled:false}});
+    expect(disabledProvider.statusCode).toBe(200);
+    expect(disabledProvider.json().enabled).toBe(false);
+    expect((await app.inject({url:base+"/references",headers})).json()).toEqual({threads:1,isDefault:true,fallback:["beta"]});
+    expect(db.native.prepare("SELECT provider_id FROM models WHERE id=?").pluck().get(a.id)).toBe(provider.id);
+    expect((await app.inject({url:"/api/models/default",headers})).json().alias).toBe("alpha");
+    const enabledProvider=await app.inject({method:"PATCH",url:`/api/providers/${provider.id}`,headers,payload:{enabled:true}});
+    expect(enabledProvider.statusCode).toBe(200);
+    expect(enabledProvider.json().enabled).toBe(true);
     expect((await app.inject({method:"DELETE",url:base,headers})).statusCode).toBe(409);
     expect((await app.inject({method:"PATCH",url:base,headers,payload:{alias:"renamed"}})).statusCode).toBe(200);
     expect((await app.inject({url:"/api/models/default",headers})).json().alias).toBe("renamed");

@@ -3,7 +3,7 @@ import { MermaidDiagram } from "../files/MermaidDiagram";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { Check, Copy, Download, ImageDown } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, ImageDown } from "lucide-react";
 
 type HtmlNode = { type: string; tagName?: string; value?: string; properties?: Record<string, unknown>; children?: HtmlNode[] };
 const annotation = /(失败|错误|告警|警告|\b(?:error|failed|warning)\b)|(成功|已通过|已完成|\b(?:passed|success)\b)|(\d+(?:[.,]\d+)*\s*(?:ms\b|s\b|min\b|tok\/s\b|tokens?\b|%|秒|分钟))|((?:[.\w-]+\/)+[\w.-]+|\b[\w-]+\.(?:tsx?|jsx?|md|py|json|toml|ya?ml|css|rs|go)\b)/gi;
@@ -62,11 +62,17 @@ function CodeBlock({ children, node }: ComponentProps<"pre"> & { node?: HtmlNode
 const components: Components = {
   pre: CodeBlock,
   table: ({ children }) => <div className="md-table-scroll"><table>{children}</table></div>,
-  a: ({ children, href }) => <a href={href} rel="noreferrer noopener" target="_blank">{children}</a>,
+  a: ({ children, href }) => <a className="md-link-button" href={href} rel="noreferrer noopener" target="_blank">
+    <span>{children}</span>
+    <ExternalLink size={12} aria-hidden="true" />
+  </a>,
   img: ({ src, alt }) => {
     if (typeof src !== "string" || !src) return <span>{alt}</span>;
     // Reading a conversation must not silently contact a third-party image server.
-    return /^\/api\/artifacts\/[^/]/.test(src) ? <img src={src} alt={alt ?? ""} loading="lazy"/> : <a href={src} target="_blank" rel="noreferrer noopener">{alt || "查看图片"}</a>;
+    return /^\/api\/artifacts\/[^/]/.test(src) ? <img src={src} alt={alt ?? ""} loading="lazy"/> : <a className="md-link-button md-image-link" href={src} target="_blank" rel="noreferrer noopener">
+      <span>{alt || "查看图片"}</span>
+      <ExternalLink size={12} aria-hidden="true" />
+    </a>;
   },
 };
 

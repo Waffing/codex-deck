@@ -159,7 +159,6 @@ export function registerProviderRoutes(app: FastifyInstance, context: ServerCont
       (p.balance_token===undefined && !!old.balanceTokenEnc)
     );
     if(!await canSaveCredentialTransport(new URL(base),hasKey || hasBalanceToken || hasHeaders || implicitMove)) return reply.code(400).send({error:"Remote credentials require HTTPS."});
-    if(p.enabled===false && db.select().from(models).where(eq(models.providerId,old.id)).all().some(inUse)) return reply.code(409).send({error:"Migrate the referenced models before disabling this provider."});
     const clearProbe=base!==old.baseUrl || (protocol!==undefined && protocol!==old.protocolType) || !!rules || !!pool || sealedHeaders!==undefined || (p.quirks && JSON.stringify(p.quirks)!==old.quirksJson);
     const row = sql.transaction(()=>{
       const updated = db.update(providers).set({

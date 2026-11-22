@@ -7,7 +7,7 @@ import type { McpEntry, PromptTemplate } from "@codexdeck/shared";
 
 export type Choice = {label:string;value:string;description?:string;command?:string;Icon:LucideIcon;badge?:string;custom?:boolean};
 const builtins:Choice[] = [
-  {label:"MCP",value:"/mcp",description:"管理工具服务器",Icon:Plug},
+  {label:"MCP",value:"/mcp",description:"管理并调用工具服务器",Icon:Plug},
   {label:"代码审查",value:"/review",description:"查看工作区差异并复审",Icon:ClipboardCheck},
   {label:"创建聊天分支",value:"/fork",description:"从当前会话继续",Icon:GitFork},
   {label:"初始化",value:"/init",description:"编辑项目 AGENTS.md",Icon:FileCode2},

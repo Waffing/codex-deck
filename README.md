@@ -25,15 +25,16 @@
 
 ## API 指挥中心与工作台
 
-Codex CLI、Claude Code 和 OpenAI 兼容客户端可以使用同一个网关。在 **API 指挥中心 → 厂商切换台** 从 17 个预设中选择渠道，填写上游地址和凭证，探测连接后导入模型。供应商密钥保存在网关，各客户端使用独立的授权令牌与配额。
+Codex CLI、Claude Code 和 OpenAI 兼容客户端可以共用一个模型网关。打开侧栏的 **API 指挥中心**，在 **服务总览** 查看运行中的服务、已启用的渠道和有效客户端 Key。要接入第三方 API，进入 **供应商**，选择预设、填写上游地址和凭证，探测连接后导入模型。
 
-<p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/gateway.png" alt="API 指挥中心的虚拟路由与模型库，显示模型别名、上下文窗口、测速和可用性" width="100%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/Waffing/codex-deck/codexdeck-media/docs/assets/gateway.png" alt="API 指挥中心的服务总览，包含主机体检、供应商与客户端 Key 数量、托管实例和五个管理入口" width="100%"></p>
 
 | 操作 | 入口与结果 |
 | --- | --- |
-| 给多个客户端提供稳定的模型名 | **虚拟路由与模型库** 将多个实际模型编为一个虚拟模型。支持手动固定、优先级故障转移、加权轮询和最低延迟。切换目标从下一个请求生效。 |
-| 诊断失败或慢请求 | **请求检视器** 显示实际模型、协议、首字延迟、成本和切流过程。临时抓包默认关闭，管理员开启后可查看脱敏报文，到期自动关闭。重放使用短探针。 |
-| 接入 CLI 或 SDK | **外部接入与配额** 可复制 Codex CLI、Claude Code、OpenAI SDK 和 Cursor 的配置。为客户端分配所需的 `proxy:responses`、`proxy:chat`、`proxy:messages` 或 `proxy:models` 权限；在客户端填写签发的 Bearer Token。 |
+| 临时停用一个供应商 | 在 **供应商** 点“停用”查看受影响的模型、会话、备用路线和默认模型，再确认。已有引用会保留，可以随时重新启用。要让依赖它的请求继续工作，先在 **模型与路由** 更换上游或配置可用备用模型。 |
+| 给多个客户端提供稳定的模型名 | 在 **模型与路由** 将多个实际模型编为一个虚拟模型。支持手动固定、优先级故障转移、加权轮询和最低延迟。切换目标从下一个请求生效。 |
+| 诊断失败或慢请求 | **请求与账本** 显示实际模型、协议、首字延迟、成本和切流过程。临时抓包默认关闭，管理员开启后可查看脱敏报文，到期自动关闭。重放使用短探针。 |
+| 接入 CLI 或 SDK | 在 **客户端接入** 复制 Codex CLI、Claude Code、OpenAI SDK 和 Cursor 的配置。为客户端分配所需的 `proxy:responses`、`proxy:chat`、`proxy:messages` 或 `proxy:models` 权限，在客户端填写签发的 Bearer Token。 |
 | 管理成本和可用性 | 设置 Key 的模型白名单、每分钟请求数、每分钟 Token 数、日／月预算。厂商可选预算告警或阻断，健康点阵和熔断状态显示在厂商卡片上。 |
 | 管理工作台 | 从侧栏进入 MCP、Skills、插件、提示词、授权中心和用量统计。在输入框使用 `/` 选择命令，方向键和 Enter 可完成操作。 |
 

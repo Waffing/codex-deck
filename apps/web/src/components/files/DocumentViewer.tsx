@@ -1,5 +1,5 @@
 import { Children, isValidElement, lazy, Suspense, useEffect, useState, type ReactNode } from "react";
-import { Download, FileText } from "lucide-react";
+import { Download, ExternalLink, FileText } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { WorkBook } from "xlsx";
@@ -18,7 +18,10 @@ const waiting = <p role="status">正在载入预览…</p>;
 
 function MarkdownFile({ text }: { text: string }) {
   return <article className="dv-prose"><Markdown remarkPlugins={[remarkGfm]} skipHtml components={{
-    a: ({ children, href }) => href && /^https?:\/\//i.test(href) ? <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> : <span>{children}</span>,
+    a: ({ children, href }) => href && /^https?:\/\//i.test(href) ? <a className="dv-link-button" href={href} target="_blank" rel="noopener noreferrer">
+      <span>{children}</span>
+      <ExternalLink size={12} aria-hidden="true" />
+    </a> : <span>{children}</span>,
     img: ({src,alt}) => typeof src === "string" && /^data:image\/(png|jpeg|gif|webp);base64,/i.test(src)
       ? <img alt={alt || ""} src={src} /> : <span>{alt}</span>,
     pre: ({ children }) => {

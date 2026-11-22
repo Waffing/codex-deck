@@ -193,6 +193,7 @@ export async function mobileExperienceJourney(page, shot, fits) {
   await page.getByLabel("开发者原始 JSON 调试").click();
 
   await openMobileView("API 指挥中心");
+  await page.getByRole("tab",{name:"供应商"}).tap();
   const card=page.locator("article.ad-card").first();
   await card.getByLabel("已保存密钥").locator(".ad-pill").nth(1).waitFor();
   assert.equal(await card.getByLabel("已保存密钥").locator(".ad-pill").count(),2);
@@ -202,7 +203,7 @@ export async function mobileExperienceJourney(page, shot, fits) {
   await library.getByText("lab/library",{exact:false}).first().waitFor();
   await fits(page);
   await library.getByRole("button",{name:"关闭"}).tap();
-  await page.getByRole("tab",{name:"虚拟路由与模型库"}).tap();
+  await page.getByRole("tab",{name:"模型与路由"}).tap();
   const board=page.locator(".benchmark-board");
   await board.getByRole("switch",{name:/选择测速 .*library/}).click();
   const measured=page.waitForResponse(r=>r.url().endsWith("/api/models/benchmark") && r.status()===200);

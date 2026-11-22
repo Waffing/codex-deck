@@ -73,12 +73,28 @@ const blankModel: ModelDraft = {
   enabled: true,
 };
 type References = {threads:number; fallback:string[]; isDefault:boolean};
+type DisableImpact = {provider:Provider; models:number; sessions:number; fallback:number; isDefault:boolean};
 
-export function Providers({ onChanged }: { onChanged?: () => void }) {
+export type ProviderTab = "厂商切换台" | "虚拟路由与模型库" | "请求检视器" | "外部接入与配额";
+const providerTabs: ProviderTab[] = ["厂商切换台", "虚拟路由与模型库", "请求检视器", "外部接入与配额"];
+
+export function Providers({
+  onChanged,
+  initialTab = "厂商切换台",
+  embedded = false,
+  description,
+  onGoToModels,
+}: {
+  onChanged?: () => void;
+  initialTab?: ProviderTab;
+  embedded?: boolean;
+  description?: string;
+  onGoToModels?: () => void;
+}) {
   const [providers, setProviders] = useState<Provider[]>([]),
     [models, setModels] = useState<Model[]>([]),
     [presets, setPresets] = useState<Preset[]>([]);
-  const [tab,setTab]=useState("厂商切换台"),[routes,setRoutes]=useState<RoutingProfile[]>([]),[passphrase,setPassphrase]=useState("");
+  const [tab,setTab]=useState<ProviderTab>(initialTab),[routes,setRoutes]=useState<RoutingProfile[]>([]),[passphrase,setPassphrase]=useState("");
   const [health,setHealth]=useState<{provider_id:string;states:number[];availability:number|null;circuit:{state:string}}[]>([]);
   const [editor, setEditor] = useState<{ type: "provider" | "model"; id?: string } | null>(null);
   const [p, setP] = useState<ProviderDraft>(blankProvider),
@@ -88,6 +104,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
   const [defaultAlias,setDefaultAlias]=useState<string|null>(null);
   const [refs,setRefs]=useState<References|null>(null);
   const [replacement,setReplacement]=useState("");
+  const [disableImpact,setDisableImpact]=useState<DisableImpact|null>(null);
   const inspectId=useRef<string|undefined>(undefined);
   const file = useRef<HTMLInputElement | null>(null);
   const a = useAction();
@@ -112,6 +129,31 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
   async function changed() {
     await load();
     onChanged?.();
+  }
+  function requestProviderState(row:Provider, enabled:boolean) {
+    if(enabled) {
+      void a.run(async()=>{
+        await api("/api/providers/"+row.id,json("PATCH",{enabled:true}));
+        await changed();
+      },"供应商已启用");
+      return;
+    }
+    void a.run(async()=>{
+      const linked=models.filter(model=>model.provider_id===row.id);
+      const usages=await Promise.all(linked.map(model=>api<References>(`/api/models/${model.id}/references`)));
+      setDisableImpact({
+        provider:row,
+        models:linked.length,
+        sessions:usages.reduce((sum,usage)=>sum+usage.threads,0),
+        fallback:usages.reduce((sum,usage)=>sum+usage.fallback.length,0),
+        isDefault:usages.some(usage=>usage.isDefault),
+      });
+    });
+  }
+  function showModelsForImpact() {
+    setDisableImpact(null);
+    if(onGoToModels) onGoToModels();
+    else setTab("虚拟路由与模型库");
   }
   function editProvider(row?: Provider) {
     setP(
@@ -291,15 +333,14 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
   return (
     <>
       <SectionHead
-        title="API 指挥中心"
-        actions={
-          <button className="ad-primary" onClick={() => {setTab("厂商切换台");editProvider()}}>
-            <Plus size={15} />
-            添加渠道
-          </button>
-        }
+        title={embedded ? tab==="厂商切换台" ? "上游供应商" : tab==="虚拟路由与模型库" ? "模型与路由" : tab==="外部接入与配额" ? "客户端接入" : "请求检视器" : "API 指挥中心"}
+        actions={tab==="厂商切换台" && <button className="ad-primary" onClick={() => {setTab("厂商切换台");editProvider()}}>
+          <Plus size={15} />
+          添加供应商
+        </button>}
       />
-      <div role="tablist" aria-label="API 指挥中心" className="gw-tabs">{["厂商切换台","虚拟路由与模型库","请求检视器","外部接入与配额"].map(t=><button key={t} type="button" role="tab" aria-selected={tab===t} onClick={()=>{setTab(t);setEditor(null);setDeleting(null)}}>{t}</button>)}</div>
+      {embedded && description && <p className="api-cockpit-section-copy">{description}</p>}
+      {!embedded && <div role="tablist" aria-label="API 指挥中心" className="gw-tabs">{providerTabs.map(t=><button key={t} type="button" role="tab" aria-selected={tab===t} onClick={()=>{setTab(t);setEditor(null);setDeleting(null)}}>{t}</button>)}</div>}
       <Feedback error={a.error} notice={a.notice} busy={a.busy} />
       {tab==="请求检视器" && <GatewayInspector providers={providers}/>}
       {tab==="外部接入与配额" && <><GatewayClients models={models} routes={routes}/><OpenApi showLedger={false}/></>}
@@ -333,18 +374,18 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
         </div>
       </div>
       {editor?.type === "provider" && (
-        <div className="gw-backdrop"><form role="dialog" aria-label={editor.id?"编辑渠道":"添加渠道"} className="ad-form-panel ad-form gw-drawer"
+        <div className="gw-backdrop"><form role="dialog" aria-label={editor.id?"编辑供应商":"添加供应商"} className="ad-form-panel ad-form gw-drawer"
           onSubmit={(e) => {
             e.preventDefault();
             void a.run(saveProvider, "渠道已保存");
           }}
         >
           <div className="ad-labelrow">
-            <strong>{editor.id ? "编辑渠道" : "添加渠道"}</strong>
+            <strong>{editor.id ? "编辑供应商" : "添加供应商"}</strong>
             <button
               className="ad-button"
               type="button"
-              aria-label="关闭渠道编辑"
+              aria-label="关闭供应商编辑"
               onClick={() => {
                 setEditor(null);
                 setP(blankProvider);
@@ -488,7 +529,7 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                   {" · "}{new Date(row.last_balance.checked_at).toLocaleString()} {row.last_balance.error}
                   {row.last_balance.status!=="ok"&&row.last_balance.balance_at&&` · 余额取自 ${new Date(row.last_balance.balance_at).toLocaleString()}`}
                 </small>}</div>
-              <div className="ad-pill-group"><span className="ad-pill">{row.protocol_type??"自动协议"}</span><span className="ad-pill">{(row.keys??[]).filter(k=>k.status==="ready").length}/{row.keys?.length??0} Key 可用</span></div>
+              <div className="ad-pill-group"><span className="ad-pill">{row.protocol_type??"自动协议"}</span><span className="ad-pill">{models.filter(model=>model.provider_id===row.id).length} 个模型</span><span className="ad-pill">{(row.keys??[]).filter(k=>k.status==="ready").length}/{row.keys?.length??0} Key 可用</span></div>
               <HealthDots health={health.find(h=>h.provider_id===row.id)} reset={()=>void a.run(async()=>{await api("/api/providers/"+row.id+"/reset-circuit",json("POST",{}));await changed()},"熔断器已复位")}/>
               <Abilities probe={row.last_probe} />
               {row.last_probe?.error && <small>{row.last_probe.error}</small>}
@@ -512,6 +553,9 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                 <button className="ad-button" onClick={() => editProvider(row)}>
                   <SlidersHorizontal size={13} />
                   编辑
+                </button>
+                <button className={row.enabled ? "ad-button ad-danger" : "ad-button"} disabled={a.busy} onClick={() => requestProviderState(row,!row.enabled)}>
+                  {row.enabled ? "停用供应商" : "重新启用"}
                 </button>
               </div>
             </article>
@@ -546,9 +590,9 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
             <label>
               所属渠道
               <select value={m.provider_id} onChange={(e) => setM({ ...m, provider_id: e.target.value })}>
-                {providers.map((r) => (
+                {providers.filter(row=>row.enabled||row.id===m.provider_id).map((r) => (
                   <option key={r.id} value={r.id}>
-                    {r.name}
+                    {r.name}{r.enabled ? "" : " · 已停用"}
                   </option>
                 ))}
               </select>
@@ -762,9 +806,10 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
                         "—"}
                     </td>
                     <td>
-                      <button className="ad-button" onClick={() => editModel(row)}>
-                        编辑
-                      </button>
+                      <div className="gw-model-actions">
+                        <button className="ad-button" onClick={() => editModel(row)}>编辑</button>
+                        <button className="ad-button" onClick={() => editModel(row)}>更换上游</button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -778,6 +823,33 @@ export function Providers({ onChanged }: { onChanged?: () => void }) {
       {deleteConfirm}
       <BenchmarkBoard current={defaultAlias} models={models.filter(m=>m.enabled&&providers.some(p=>p.id===m.provider_id&&p.enabled))} changed={changed}/>
       </>}
+      {disableImpact && <div className="gw-backdrop">
+        <section className="gw-impact-dialog" role="dialog" aria-modal="true" aria-labelledby="provider-disable-title">
+          <div className="ad-labelrow">
+            <div>
+              <h2 id="provider-disable-title">停用 {disableImpact.provider.name}</h2>
+              <p>停用后，该供应商下的模型将不再接受新请求。</p>
+            </div>
+            <button className="ad-button" type="button" aria-label="关闭停用确认" onClick={() => setDisableImpact(null)}><X size={14}/></button>
+          </div>
+          <div className="gw-impact-stats">
+            <div><strong>{disableImpact.models}</strong><span>关联模型</span></div>
+            <div><strong>{disableImpact.sessions}</strong><span>会话引用</span></div>
+            <div><strong>{disableImpact.fallback}</strong><span>备用/路由引用</span></div>
+            <div><strong>{disableImpact.isDefault ? "是" : "否"}</strong><span>含默认模型</span></div>
+          </div>
+          <p className="gw-impact-note">现有模型、会话、默认项、备用链路和密钥配置都会保留，不会自动迁移。没有可用备用模型时，请求可能失败。你可以先在模型与路由中为模型更换上游，保留原有模型别名和引用。</p>
+          <div className="ad-actions">
+            <button className="ad-button" type="button" onClick={showModelsForImpact}>查看模型与路由</button>
+            <button className="ad-button" type="button" onClick={() => setDisableImpact(null)}>取消</button>
+            <button className="ad-primary ad-danger" type="button" disabled={a.busy} onClick={() => void a.run(async()=>{
+              await api("/api/providers/"+disableImpact.provider.id,json("PATCH",{enabled:false}));
+              setDisableImpact(null);
+              await changed();
+            },"供应商已停用")}>确认停用</button>
+          </div>
+        </section>
+      </div>}
     </>
   );
 }

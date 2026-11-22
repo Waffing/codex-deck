@@ -22,6 +22,25 @@
   max-width: 1210px;
   margin: auto;
 }
+.admin-pages a[href]:not(.ad-plain-link):not(.ad-code) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  text-decoration: none;
+  transition: background-color 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+.admin-pages a[href]:not(.ad-plain-link):not(.ad-code):hover {
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  transform: translateY(-1px);
+}
 .ad-section-head,
 .ad-subhead,
 .ad-actions,
@@ -150,6 +169,12 @@
   gap: 14px;
   align-content: start;
   min-width: 0;
+  transition: border-color 180ms ease, box-shadow 200ms ease, transform 200ms ease;
+}
+.ad-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  box-shadow: 0 14px 34px color-mix(in srgb, var(--text) 7%, transparent);
+  transform: translateY(-1px);
 }
 .ad-card small,
 .ad-form small,
@@ -434,6 +459,218 @@
 .ad-pair strong {
   display: block;
 }
+
+/* API cockpit shell used by ApiServiceCockpit */
+.api-cockpit {
+  min-width: 0;
+  animation: api-page-in 220ms ease-out both;
+}
+.api-cockpit-crumb {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.api-cockpit-crumb strong {
+  color: var(--text);
+  font-weight: 650;
+}
+.api-cockpit-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 21px;
+}
+.api-cockpit-hero h1 {
+  margin: 0 0 7px;
+  font-size: 28px;
+  line-height: 1.2;
+}
+.api-cockpit-hero p,
+.api-cockpit-section-intro p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.api-cockpit-hero-actions,
+.api-cockpit-runtime-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.api-cockpit-runtime {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: linear-gradient(100deg, color-mix(in srgb, var(--accent) 9%, var(--panel)), var(--panel));
+}
+.api-cockpit-runtime-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.api-cockpit-runtime-icon {
+  display: grid;
+  place-items: center;
+  width: 35px;
+  height: 35px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 13%, var(--panel));
+  color: var(--accent);
+}
+.api-cockpit-runtime-main strong,
+.api-cockpit-runtime-main small {
+  display: block;
+}
+.api-cockpit-runtime-main small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.api-status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-inline-end: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+  vertical-align: 1px;
+}
+.api-status-dot.running {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.api-cockpit-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.api-cockpit-metrics > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  transition: box-shadow 180ms ease, transform 180ms ease;
+}
+.api-cockpit-metrics > div:hover {
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--text) 7%, transparent);
+  transform: translateY(-1px);
+}
+.api-cockpit-metrics small,
+.api-cockpit-metrics span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.api-cockpit-metrics strong {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font: 650 21px/1.2 var(--mono, monospace);
+  font-variant-numeric: tabular-nums;
+}
+.api-cockpit-metrics .api-metric-good {
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 15px;
+}
+.api-cockpit-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  margin: 3px 0 21px;
+  border-bottom: 1px solid var(--border);
+  scrollbar-width: thin;
+}
+.api-cockpit-tabs button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 39px;
+  padding: 7px 11px;
+  flex: 0 0 auto;
+  border-radius: 8px 8px 0 0;
+  color: var(--muted);
+  transition: background-color 180ms ease, color 180ms ease;
+}
+.api-cockpit-tabs button:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+.api-cockpit-tabs button[aria-selected="true"] {
+  color: var(--text);
+  font-weight: 650;
+}
+.api-cockpit-tabs button[aria-selected="true"]::after {
+  position: absolute;
+  right: 10px;
+  bottom: -1px;
+  left: 10px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  content: "";
+}
+.api-cockpit-panel {
+  min-width: 0;
+  animation: api-panel-in 220ms ease-out both;
+}
+.api-cockpit-section-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 10px 0 13px;
+}
+.api-cockpit-section-intro h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 650;
+}
+.api-cockpit-section-copy {
+  margin: -10px 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+@keyframes api-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes api-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 @keyframes ad-spin {
   to {
     transform: rotate(360deg);
@@ -473,9 +710,36 @@
   .ad-onekey {
     padding: 19px;
   }
+  .api-cockpit-hero {
+    display: grid;
+    gap: 13px;
+  }
+  .api-cockpit-hero-actions,
+  .api-cockpit-runtime-actions {
+    justify-content: flex-start;
+  }
+  .api-cockpit-runtime {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .api-cockpit-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .api-cockpit-section-intro {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 9px;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .ad-spin {
+  .ad-spin,
+  .ad-card,
+  .api-cockpit,
+  .api-cockpit-panel {
     animation: none;
+  }
+  .api-cockpit-metrics > div,
+  .api-cockpit-tabs button {
+    transition: none;
   }
 }
