@@ -80,7 +80,11 @@ Linux 原生安装和容器内回退需要非 root 服务账户、bubblewrap 和
 release=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffing/codex-deck/releases/latest) && tag=${release##*/} && curl -fsSL "https://raw.githubusercontent.com/Waffing/codex-deck/$tag/deploy/install.sh" | CODEXDECK_VERSION="$tag" bash
 ```
 
+首次在 Debian/Ubuntu 或 DNF/YUM 系 Linux 安装时，脚本会补齐 Docker/Compose 与 curl、CA 证书、OpenSSL、Git、jq、Python、ripgrep 和 Nginx。新装 Nginx 保持停用，不覆盖站点配置或监听 80/443。公网 HTTPS 使用独立高位端口，安装完成后按输出在云安全组放行该 TCP 端口。
+
 **首次登录**请按安装器输出的地址和初始化命令操作。使用 `v0.1.1` 的 Docker 安装时，在安装目录执行 `docker compose exec codexdeck cat /data/setup-code`，将一次性代码填入设置向导并创建管理员密码。使用包含 V1.2 宿主机工具的版本时，通过 SSH 运行 `cdx password`。公网入口和证书指纹的核对方法见[宿主机运维指南](deploy/HOST-ADMIN.md)。
+
+公网安装请在提示时启用公网访问。安装器会打印包含 HTTPS 端口和随机入口路径的完整地址，必须使用该地址访问。根路径返回伪装 404 是入口保护的预期行为。还需在云厂商安全组放行安装器显示的 TCP 端口；安装器不会改动系统防火墙或占用 80/443。
 
 `tag` 让安装脚本、Compose 文件和镜像使用同一已发布版本。指定版本时，把 `tag` 改成已发布的 `vX.Y.Z`。需要 Chromium 验收时追加 `--with-playwright`。
 
@@ -90,7 +94,7 @@ release=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffi
 tag="${CODEXDECK_VERSION:-$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffing/codex-deck/releases/latest)}"; tag="${tag##*/}"; curl -fsSL "https://raw.githubusercontent.com/Waffing/codex-deck/$tag/deploy/install.sh" | CODEXDECK_VERSION="$tag" bash -s -- --with-playwright
 ```
 
-**Linux 原生安装（systemd）**。安装 Node.js 22.13+、Corepack、Git 和系统级官方 Codex CLI。独立构建账户负责安装依赖，`codexdeck` 服务账户运行发布版本。默认目录下用 `sudo cat /opt/codexdeck/source/data/setup-code` 读取首次启动代码。
+**Linux 原生安装（systemd）**。安装器会补齐 Node.js 22.13+、Corepack、Git、官方 Codex CLI、bubblewrap、构建工具和 Nginx 软件包。新装的 Nginx 默认站点保持停用，避免接管系统 80/443 端口。独立构建账户负责安装依赖，`codexdeck` 服务账户运行发布版本。默认目录下用 `sudo cat /opt/codexdeck/source/data/setup-code` 读取首次启动代码。
 
 ```sh
 tag="${CODEXDECK_VERSION:-$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffing/codex-deck/releases/latest)}"; tag="${tag##*/}"; curl -fsSL "https://raw.githubusercontent.com/Waffing/codex-deck/$tag/deploy/install.sh" | CODEXDECK_VERSION="$tag" bash -s -- --native

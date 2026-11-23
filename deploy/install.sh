@@ -35,6 +35,7 @@ ACCESS_EXPLICIT=0
 ENTRY_PATH=""
 PUBLIC_PORT=""
 MANAGED_CADDY=0
+NATIVE_CODEX_BIN=""
 
 usage() {
   cat <<'USAGE'
@@ -306,7 +307,7 @@ panel_cert() {
     return
   fi
   san="IP:127.0.0.1,DNS:localhost"
-  for ip in $(hostname -I); do
+  for ip in $(hostname -I 2>/dev/null || true); do
     if [[ "$ip" =~ ^[0-9.]+$ || "$ip" =~ ^[a-fA-F0-9:]+$ ]]; then san+=",IP:$ip"; fi
   done
   if [[ -n "$DOMAIN" ]]; then san+=",DNS:$DOMAIN"; fi
@@ -437,6 +438,187 @@ ensure_docker() {
   fi
 }
 
+host_packages() {
+  local family="$1" mode="$2"
+  case "$family:$mode" in
+    debian:docker)
+      printf '%s\n' ca-certificates curl git jq nginx openssl python3 python3-venv ripgrep iproute2
+      ;;
+    debian:native)
+      printf '%s\n' ca-certificates curl git jq nginx openssl python3 python3-venv ripgrep iproute2 util-linux passwd build-essential bubblewrap
+      ;;
+    rpm:docker)
+      printf '%s\n' ca-certificates curl git jq nginx openssl python3 python3-pip ripgrep iproute
+      ;;
+    rpm:native)
+      printf '%s\n' ca-certificates curl git jq nginx openssl python3 python3-pip ripgrep iproute util-linux-user shadow-utils gcc-c++ make bubblewrap
+      ;;
+    *)
+      fail "Unsupported package set $family:$mode."
+      ;;
+  esac
+}
+
+system_package_installed() {
+  local package="$1"
+  if command -v dpkg-query >/dev/null 2>&1; then
+    dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'
+  elif command -v rpm >/dev/null 2>&1; then
+    rpm -q "$package" >/dev/null 2>&1
+  else
+    return 1
+  fi
+}
+
+install_debian_packages() (
+  local policy="/usr/sbin/policy-rc.d" temporary="" created_policy=0
+  trap 'if [[ "$created_policy" == 1 ]]; then as_root rm -f -- "$policy"; fi' EXIT
+
+  if ! as_root test -e "$policy" && ! as_root test -L "$policy"; then
+    temporary="$(mktemp)"
+    printf '#!/bin/sh\nexit 101\n' >"$temporary"
+    created_policy=1
+    as_root install -m 0755 "$temporary" "$policy"
+    rm -f -- "$temporary"
+  fi
+  as_root env DEBIAN_FRONTEND=noninteractive apt-get update || return 1
+  as_root env DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends "$@" || return 1
+)
+
+ensure_host_packages() {
+  local mode="$1" family="" package missing=0 nginx_missing=0
+  local -a packages=()
+  if command -v apt-get >/dev/null 2>&1; then family=debian
+  elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then family=rpm
+  else fail "Automatic prerequisites support Debian/Ubuntu and DNF/YUM-based Linux servers."; fi
+
+  mapfile -t packages < <(host_packages "$family" "$mode")
+  for package in "${packages[@]}"; do
+    if ! system_package_installed "$package"; then
+      missing=1
+      [[ "$package" != nginx ]] || nginx_missing=1
+    fi
+  done
+  if [[ "$missing" == 0 ]]; then
+    note "Required host packages are already installed."
+    return
+  fi
+
+  note "Installing required host packages for $mode mode."
+  local nginx_masked=0 nginx_unit_state=""
+  if [[ "$nginx_missing" == 1 ]] && command -v systemctl >/dev/null 2>&1; then
+    nginx_unit_state="$(as_root systemctl is-enabled nginx.service 2>/dev/null || true)"
+    if [[ "$nginx_unit_state" != masked* ]]; then
+      as_root systemctl mask --runtime nginx.service
+      nginx_masked=1
+    fi
+  fi
+  if [[ "$family" == debian ]]; then
+    if ! install_debian_packages "${packages[@]}"; then
+      if [[ "$nginx_masked" == 1 ]]; then
+        as_root systemctl unmask --runtime nginx.service || true
+        as_root systemctl disable nginx.service >/dev/null 2>&1 || true
+      fi
+      fail "Could not install required Debian/Ubuntu packages."
+    fi
+  elif command -v dnf >/dev/null 2>&1; then
+    if ! as_root dnf install --assumeyes "${packages[@]}"; then
+      if [[ "$nginx_masked" == 1 ]]; then
+        as_root systemctl unmask --runtime nginx.service || true
+        as_root systemctl disable nginx.service >/dev/null 2>&1 || true
+      fi
+      fail "Could not install required DNF packages."
+    fi
+  else
+    if ! as_root yum install --assumeyes "${packages[@]}"; then
+      if [[ "$nginx_masked" == 1 ]]; then
+        as_root systemctl unmask --runtime nginx.service || true
+        as_root systemctl disable nginx.service >/dev/null 2>&1 || true
+      fi
+      fail "Could not install required YUM packages."
+    fi
+  fi
+  if [[ "$nginx_masked" == 1 ]]; then
+    as_root systemctl unmask --runtime nginx.service
+    as_root systemctl disable nginx.service >/dev/null 2>&1 || true
+    note "Nginx is installed and left inactive. Its package defaults will not claim ports 80 or 443."
+  fi
+}
+
+node_version_supported() {
+  local version="${1#v}" major minor
+  IFS=. read -r major minor _ <<<"$version"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+  (( 10#$major > 22 || (10#$major == 22 && 10#$minor >= 13) ))
+}
+
+ensure_native_node() {
+  local node_bin version installer npm_bin corepack_bin
+  export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+  node_bin="$(command -v node || true)"
+  if [[ -n "$node_bin" ]]; then version="$("$node_bin" --version 2>/dev/null || true)"; fi
+  if [[ -z "$node_bin" || ( "$node_bin" != /usr/bin/* && "$node_bin" != /usr/local/bin/* ) ]] ||
+      ! node_version_supported "${version:-}"; then
+    note "Installing Node.js 22 for native mode."
+    if command -v apt-get >/dev/null 2>&1; then
+      installer="$(mktemp)"
+      curl -fsSL https://deb.nodesource.com/setup_22.x -o "$installer" ||
+        fail "Could not download the Node.js 22 repository setup."
+      as_root bash "$installer"
+      rm -f -- "$installer"
+      install_debian_packages nodejs
+    elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+      installer="$(mktemp)"
+      curl -fsSL https://rpm.nodesource.com/setup_22.x -o "$installer" ||
+        fail "Could not download the Node.js 22 repository setup."
+      as_root bash "$installer"
+      rm -f -- "$installer"
+      if command -v dnf >/dev/null 2>&1; then as_root dnf install --assumeyes nodejs
+      else as_root yum install --assumeyes nodejs
+      fi
+    else
+      fail "Native mode can install Node.js automatically on Debian/Ubuntu and DNF/YUM-based servers."
+    fi
+    export PATH="/usr/bin:/usr/local/bin:/bin:$PATH"
+    node_bin="$(command -v node || true)"
+    version="$("$node_bin" --version 2>/dev/null || true)"
+    node_version_supported "$version" || fail "Node.js 22.13 or newer could not be installed."
+  fi
+  npm_bin="$(command -v npm || true)"
+  [[ -n "$npm_bin" ]] || fail "Node.js is present but npm is unavailable."
+  corepack_bin="$(command -v corepack || true)"
+  if [[ -z "$corepack_bin" ]]; then
+    as_root env PATH="$(dirname "$node_bin"):/usr/local/bin:/usr/bin:/bin" NPM_CONFIG_PREFIX=/usr/local \
+      "$npm_bin" install --global corepack
+    corepack_bin="$(command -v corepack || true)"
+  fi
+  [[ -n "$corepack_bin" ]] || fail "Could not install Corepack."
+  as_root env PATH="$(dirname "$node_bin"):/usr/local/bin:/usr/bin:/bin" "$corepack_bin" enable
+}
+
+ensure_native_codex() {
+  local service_user="$1" dockerfile codex_version toolchain
+  NATIVE_CODEX_BIN="$(command -v codex || true)"
+  if [[ -n "$NATIVE_CODEX_BIN" ]] &&
+      as_root runuser -u "$service_user" -- test -x "$NATIVE_CODEX_BIN"; then
+    return
+  fi
+
+  dockerfile="$(mktemp)"
+  fetch_deploy_file Dockerfile "$dockerfile"
+  codex_version="$(sed -n 's/^ARG CODEX_VERSION=//p' "$dockerfile" | head -n 1)"
+  rm -f -- "$dockerfile"
+  [[ "$codex_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    fail "Could not read the pinned Codex CLI version from deploy/Dockerfile."
+  toolchain="$INSTALL_DIR/toolchain"
+  as_root install -d -m 0755 "$toolchain"
+  note "Installing the pinned OpenAI Codex CLI $codex_version for native mode."
+  as_root env NPM_CONFIG_PREFIX="$toolchain" npm install --global --omit=dev "@openai/codex@$codex_version"
+  NATIVE_CODEX_BIN="$toolchain/bin/codex"
+  as_root runuser -u "$service_user" -- test -x "$NATIVE_CODEX_BIN" ||
+    fail "The installed Codex CLI is not executable by the codexdeck service account."
+}
+
 prepare_install_directory() {
   if [ "$DIR_SET" -eq 0 ]; then
     prompt_value "安装目录" "$DEFAULT_DIR"
@@ -538,6 +720,7 @@ select_image() {
 }
 
 docker_install() {
+  ensure_host_packages docker
   ensure_docker
   local previous="" running="" profile=()
   if [[ "$MANAGED_CADDY" == 1 && -f "$INSTALL_DIR/Caddyfile" ]] &&
@@ -619,7 +802,8 @@ docker_install() {
   # Expand the mapped service UID and GID inside the running container.
   # shellcheck disable=SC2016
   if { [ "$ACTION" != "upgrade" ] || compose "${profile[@]}" pull; } && compose "${profile[@]}" up -d && wait_for_health &&
-     compose exec -T codexdeck sh -ec 'exec gosu "$PUID:$PGID" node /app/apps/server/dist/admin-cli.js require-executor'; then
+     compose exec -T codexdeck sh -ec 'exec gosu "$PUID:$PGID" node /app/apps/server/dist/admin-cli.js require-executor' &&
+     { [[ "$PUBLIC" != true || "$EXISTING_INSTALL" == 1 ]] || wait_for_public_entry; }; then
     if [ -n "$previous" ]; then rm -f -- "$previous/.env"; fi
     return 0
   fi
@@ -652,6 +836,22 @@ wait_for_health() {
   done
   printf '%s\n' "CodexDeck did not become healthy. Recent container logs:" >&2
   compose logs --tail 50 >&2 || true
+  return 1
+}
+
+wait_for_public_entry() {
+  [[ "$PUBLIC" == true ]] || return 0
+  local attempt status url="https://127.0.0.1:$PUBLIC_PORT$ENTRY_PATH"
+  for ((attempt=1; attempt<=20; attempt++)); do
+    status="$(curl --insecure --silent --show-error --connect-timeout 2 --max-time 4 \
+      --output /dev/null --write-out '%{http_code}' "$url" 2>/dev/null || true)"
+    if [[ "$status" == 302 ]]; then
+      note "Public HTTPS entry check passed at $url."
+      return 0
+    fi
+    sleep 1
+  done
+  printf 'Public HTTPS entry check failed for %s. Check the selected port and cloud security group.\n' "$url" >&2
   return 1
 }
 
@@ -694,6 +894,8 @@ native_resource_properties() {
 
 native_install() {
   [[ "$(uname -s)" == Linux ]] || fail "Native systemd installation is supported on Linux only."
+  ensure_host_packages native
+  ensure_native_node
   command -v systemctl >/dev/null 2>&1 || fail "Native installation requires systemd."
   local resource_properties
   resource_properties="$(native_resource_properties)"
@@ -701,7 +903,6 @@ native_install() {
   node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 13) ? 0 : 1)' ||
     fail "Native installation requires Node.js 22.13 or newer."
   command -v corepack >/dev/null 2>&1 || fail "Native installation requires Corepack."
-  command -v codex >/dev/null 2>&1 || fail "Install the OpenAI Codex CLI and retry native installation."
   command -v git >/dev/null 2>&1 || fail "Native installation requires Git."
   if [[ ! -x /usr/bin/bwrap ]]; then
     note "Installing bubblewrap for the non-root full access executor."
@@ -725,6 +926,7 @@ native_install() {
   if ! getent passwd "$build_user" >/dev/null; then
     as_root useradd --system --create-home --home-dir "$build_home" --shell /usr/sbin/nologin "$build_user"
   fi
+  ensure_native_codex "$service_user"
   as_root install -d -m 0755 "$INSTALL_DIR/releases"
   as_root runuser -u "$build_user" -- test -x "$INSTALL_DIR/releases" ||
     fail "The build account cannot enter $INSTALL_DIR/releases. Use a shared service directory such as /opt/codexdeck."
@@ -754,7 +956,7 @@ native_install() {
   native_build "$build_user" "$build_home" "$source" "$(command -v corepack)"
   as_root install -m 0644 /dev/null "$source/.codexdeck-installed-release"
   node_bin="$(command -v node)"
-  codex_bin="$(command -v codex)"
+  codex_bin="$NATIVE_CODEX_BIN"
   if [ "$(id -u)" -eq 0 ]; then
     runuser -u "$service_user" -- test -x "$node_bin" ||
       fail "Node.js is not executable by codexdeck. Install Node.js system-wide."
@@ -843,7 +1045,8 @@ EOF
   if as_root systemctl restart codexdeck && wait_for_native_health &&
      as_root systemd-run --quiet --pipe --wait --collect --uid="$service_user" \
        --property="EnvironmentFile=$env_dir/codexdeck.env" --setenv=NODE_ENV=production \
-       "$node_bin" "$source/apps/server/dist/admin-cli.js" require-executor; then
+       "$node_bin" "$source/apps/server/dist/admin-cli.js" require-executor &&
+     { [[ "$PUBLIC" != true || "$EXISTING_INSTALL" == 1 ]] || wait_for_public_entry; }; then
     if [ -n "$old_unit" ]; then as_root rm -f -- "$old_unit"; fi
     if [ -n "$old_env" ]; then as_root rm -f -- "$old_env"; fi
     as_root install -m 0755 "$source/deploy/install.sh" "$INSTALL_DIR/install.sh"
@@ -966,9 +1169,30 @@ uninstall() {
   note "CodexDeck services have been removed."
 }
 
+public_entry_url() {
+  local host="$1"
+  if [[ "$host" == *:* && "$host" != \[*\] ]]; then host="[$host]"; fi
+  printf 'https://%s:%s%s' "$host" "$PUBLIC_PORT" "$ENTRY_PATH"
+}
+
+detect_public_ipv4() {
+  local address
+  address="$(curl -4fsS --connect-timeout 2 --max-time 4 https://api.ipify.org 2>/dev/null || true)"
+  if [[ "$address" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    printf '%s' "$address"
+    return 0
+  fi
+  return 1
+}
+
 print_success() {
-  local host="http://127.0.0.1:$PORT" public="$DOMAIN"
-  if [ -n "$public" ]; then host="https://$public"; fi
+  local public_url="" public_host=""
+  if [[ "$PUBLIC" == true ]]; then
+    if [[ -n "$DOMAIN" ]]; then public_host="$DOMAIN"
+    else public_host="$(detect_public_ipv4 || true)"
+    fi
+    if [[ -n "$public_host" ]]; then public_url="$(public_entry_url "$public_host")"; fi
+  fi
   local docker_command="docker"
   if [ "$DOCKER_SUDO" -eq 1 ]; then docker_command="sudo docker"; fi
   local logs="cd \"$INSTALL_DIR\" && $docker_command compose logs -f"
@@ -984,7 +1208,6 @@ print_success() {
   CodexDeck is ready
   ------------------
   Local URL:       http://127.0.0.1:$PORT
-  Public URL:      ${public:+https://$public}
   Setup wizard:    http://127.0.0.1:$PORT
   Health check:    curl -fsS http://127.0.0.1:$PORT/api/health
   Logs:            $logs
@@ -996,14 +1219,16 @@ EOF
   if [ "$MODE" = "docker" ]; then
     note "Host Ollama: configure a container-reachable URL, e.g. http://host.docker.internal:11434/v1 with Docker host-gateway mapping."
   else note "Setup code (first start): sudo cat '$INSTALL_DIR/source/data/setup-code'"; fi
-  if [ -n "$public" ]; then
-    if [[ "$MANAGED_CADDY" == 1 ]]; then note "Forward public TCP 80/443 to this host's 8080/8443. Verify DNS and HTTPS from an external network."; fi
-    printf '  Domain (after proxy setup): %s%s\n' "$host" "$ENTRY_PATH"
-  fi
   if [[ "$PUBLIC" == true ]]; then
-    printf '  Direct HTTPS: https://<server-ip>:%s%s\n' "$PUBLIC_PORT" "$ENTRY_PATH"
+    if [[ -n "$public_url" ]]; then
+      printf '  HTTPS entry:    %s\n' "$public_url"
+    else
+      note "Could not detect a public IPv4 address. Use https://<your-public-ip>:$PUBLIC_PORT$ENTRY_PATH"
+    fi
+    printf '  Required ingress: TCP %s in the cloud security group\n' "$PUBLIC_PORT"
+    note "Nginx is installed for host proxy integration. The managed endpoint uses its isolated TLS port and does not claim 80/443."
     note "First login: set the administrator password over SSH with cdx password."
-    note "Run cdx status over SSH and compare the certificate SHA-256 fingerprint before trusting the IP certificate."
+    note "Run cdx status over SSH and compare the certificate SHA-256 fingerprint before trusting the certificate."
   else
     printf '  SSH tunnel: ssh -N -L 127.0.0.1:%s:127.0.0.1:%s user@server\n' "$PORT" "$PORT"
     note "Use cdx public on or cdx temp-link in an SSH session."

@@ -80,7 +80,11 @@ Automatic verification is opt-in. Checks run offline by default in a copy of the
 release=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffing/codex-deck/releases/latest) && tag=${release##*/} && curl -fsSL "https://raw.githubusercontent.com/Waffing/codex-deck/$tag/deploy/install.sh" | CODEXDECK_VERSION="$tag" bash
 ```
 
+On a first install to Debian/Ubuntu or a DNF/YUM Linux host, the script installs Docker/Compose plus curl, CA certificates, OpenSSL, Git, jq, Python, ripgrep and Nginx. A newly installed Nginx service stays inactive, and existing site configuration and ports 80/443 remain untouched. Public HTTPS uses a separate high port. Allow the printed TCP port in the cloud security group.
+
 **First sign-in.** Follow the address and setup instructions printed by your installer. For Docker release `v0.1.1`, run `docker compose exec codexdeck cat /data/setup-code` in the installation directory. Enter the one-time code in the setup wizard and create your administrator password. Versions that include the V1.2 host tools use `cdx password` over SSH. For public access and certificate fingerprint checks, see the [host operations guide](deploy/HOST-ADMIN.md).
+
+Choose public access during installation to receive the complete HTTPS URL, including its selected port and random entry path. Use that exact URL. A disguised 404 at `/` is expected while entry protection is enabled. Allow the printed TCP port in the cloud security group. The installer does not change the host firewall or claim ports 80/443.
 
 Managed application containers default to 1 CPU, 512 MiB of memory, and 128 processes. `CODEXDECK_RELEASE_KEEP` retains five recent snapshots by default, while the live release and its immediate rollback predecessor stay protected. On restart the controller adopts only containers carrying CodexDeck ownership labels.
 
@@ -90,7 +94,7 @@ Managed application containers default to 1 CPU, 512 MiB of memory, and 128 proc
 tag="${CODEXDECK_VERSION:-$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffing/codex-deck/releases/latest)}"; tag="${tag##*/}"; curl -fsSL "https://raw.githubusercontent.com/Waffing/codex-deck/$tag/deploy/install.sh" | CODEXDECK_VERSION="$tag" bash -s -- --with-playwright
 ```
 
-**Native Linux with systemd**. Install Node.js 22.13+, Corepack, Git and the official Codex CLI system-wide. A dedicated build account installs dependencies. The `codexdeck` service account runs the release. At the default install location, retrieve the first-run code with `sudo cat /opt/codexdeck/source/data/setup-code`.
+**Native Linux with systemd**. The installer prepares Node.js 22.13+, Corepack, Git, the official Codex CLI, bubblewrap, build tools and the Nginx package. A newly installed default Nginx site stays disabled, so the service does not claim port 80 or 443. A dedicated build account installs dependencies. The `codexdeck` service account runs the release. At the default install location, retrieve the first-run code with `sudo cat /opt/codexdeck/source/data/setup-code`.
 
 ```sh
 tag="${CODEXDECK_VERSION:-$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/Waffing/codex-deck/releases/latest)}"; tag="${tag##*/}"; curl -fsSL "https://raw.githubusercontent.com/Waffing/codex-deck/$tag/deploy/install.sh" | CODEXDECK_VERSION="$tag" bash -s -- --native
